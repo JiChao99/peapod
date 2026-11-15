@@ -14,6 +14,8 @@
 [![CI](https://github.com/jichao99/peapod/actions/workflows/ci.yml/badge.svg)](https://github.com/jichao99/peapod/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+English | [简体中文](README.zh-CN.md)
+
 Peapod opens 2–10 pages in one window. You operate the **primary** page — clicks, typing, scrolling, form submits — and every other page replays the same operations live, in order. Useful for comparing environments (dev / staging / prod), exercising multi-account flows, checking responsive layouts, and capturing batch screenshots.
 
 Built with [MyGo](https://github.com/egoist/mygo): native Go UI, single binary, no bundled browser engine.
