@@ -1,0 +1,30 @@
+# Build output
+/build/
+.mygo/
+/peapod
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.syso
+
+# Test / coverage artifacts
+*.test
+*.out
+
+# App runtime output
+/screenshots/
+
+# OS / IDE
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Dependencies / local design scratch
+node_modules/
+/vibe_images/
+
+# Local roadmap, not published
+/docs/PLAN.md

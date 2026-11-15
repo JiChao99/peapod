@@ -1,0 +1,11 @@
+{
+  "name": "Peapod",
+  "slug": "peapod",
+  "identifier": "io.github.jichao99.peapod",
+  "icon": "assets/icon.png",
+  "version": "0.1.0",
+  "out": "build",
+  "copyright": "© 2026 Alec.Ji",
+  "publisher": "Alec.Ji",
+  "license": "MIT"
+}
