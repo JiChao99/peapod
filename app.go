@@ -295,15 +295,22 @@ func (a *app) startTask() {
 		a.setNotice(err.Error())
 		return
 	}
+	if err := a.launch(req); err != nil {
+		a.setNotice(err.Error())
+	}
+}
+
+// launch begins a resolved request: it marks the task starting and counts
+// down before creating pages. It is shared by the panel and the MCP server.
+func (a *app) launch(req startRequest) error {
 	a.mu.Lock()
 	if a.status == "cleanup-error" {
 		a.mu.Unlock()
-		a.setNotice(a.tr("err.cleanupBlocked"))
-		return
+		return fmt.Errorf("%s", a.tr("err.cleanupBlocked"))
 	}
 	if a.status != "idle" {
 		a.mu.Unlock()
-		return
+		return fmt.Errorf("%s", a.tr("err.notIdle"))
 	}
 	a.seq++
 	a.taskID = fmt.Sprintf("task-%d", a.seq)
@@ -314,9 +321,11 @@ func (a *app) startTask() {
 	a.cancel = make(chan struct{})
 	cancel := a.cancel
 	taskID := a.taskID
+	lang := a.lang
 	a.mu.Unlock()
 	a.win.Invalidate()
-	go a.runCountdown(taskID, cancel, req, a.lang)
+	go a.runCountdown(taskID, cancel, req, lang)
+	return nil
 }
 
 // cancelStart aborts the countdown before any page is created.

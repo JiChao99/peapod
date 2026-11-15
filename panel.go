@@ -134,6 +134,8 @@ func (a *app) applySyncToggles() {
 }
 
 func (a *app) syncUIFor(ps pageState) *bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if v, ok := a.syncUI[ps.ID]; ok {
 		return v
 	}

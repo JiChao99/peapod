@@ -37,6 +37,9 @@ func main() {
 		if err := mygo.App.Dock.SetIcon(iconSmallPNG); err != nil {
 			log.Printf("set app icon: %v", err)
 		}
+		if err := a.startMCP(); err != nil {
+			log.Printf("start mcp: %v", err)
+		}
 		a.win.Invalidate()
 	})
 
