@@ -202,6 +202,12 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 		Variant: field.InputOutlined,
 	}).AlignSelf(ui.Stretch)
 
+	ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
+		a.fieldLabel(c, tk, a.tr("ui.template"))
+		field.Input(c, &a.template, field.InputProps{Placeholder: a.tr("ui.template.placeholder"), Variant: field.InputFilled})
+		ui.Text(c, a.tr("ui.template.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
+	})
+
 	ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 		ui.Column(c).Grow(1).Gap(2).Children(func() {
 			ui.Text(c, a.tr("ui.shareStorage")).FontSize(14).TextColor(tk.Text)
@@ -212,7 +218,11 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 
 	ui.Column(c).Gap(2).Children(func() {
 		a.fieldLabel(c, tk, a.tr("ui.pages", len(a.configs)))
-		ui.Text(c, a.tr("ui.pages.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
+		hint := a.tr("ui.pages.hint")
+		if a.templateMode() {
+			hint = a.tr("ui.pages.hintTemplate")
+		}
+		ui.Text(c, hint).FontSize(12).TextColor(tk.TextTertiary).Wrap()
 	})
 	for i, cfg := range a.configs {
 		a.setupRow(c, tk, cfg, i)
@@ -248,7 +258,13 @@ func (a *app) setupRow(c *ui.Context, tk *theme.Tokens, cfg *pageConfig, i int) 
 			}
 		})
 		field.Input(c, &cfg.name, field.InputProps{Placeholder: a.tr("ui.page.name"), Variant: field.InputFilled})
+		if a.templateMode() {
+			field.Input(c, &cfg.vars, field.InputProps{Placeholder: a.tr("ui.vars.placeholder"), Variant: field.InputFilled})
+		}
 		field.Input(c, &cfg.url, field.InputProps{Placeholder: a.urlPlaceholder(i), Variant: field.InputFilled})
+		if a.templateMode() {
+			ui.Text(c, a.templatePreview(cfg)).FontSize(12).TextColor(tk.TextTertiary).SingleLine()
+		}
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Column(c).Grow(1).AlignItems(ui.Stretch).Children(func() {
 				field.InputNumber(c, &cfg.resW, field.InputNumberProps{Min: 200, Max: 3840, Step: 10, Placeholder: a.tr("ui.res.w"), Variant: field.InputFilled})
@@ -261,7 +277,33 @@ func (a *app) setupRow(c *ui.Context, tk *theme.Tokens, cfg *pageConfig, i int) 
 	})
 }
 
+func (a *app) templateMode() bool { return strings.TrimSpace(a.template) != "" }
+
+// templatePreview renders a setup row's generated URL so the effect of the
+// template and vars is visible while typing.
+func (a *app) templatePreview(cfg *pageConfig) string {
+	vars, bad := parseVars(cfg.vars)
+	if bad != "" {
+		return a.tr("err.varsShort", bad)
+	}
+	base, missing := renderTemplate(strings.TrimSpace(a.template), vars)
+	if len(missing) > 0 {
+		return a.tr("err.templateShort", strings.Join(missing, ", "))
+	}
+	path := strings.TrimSpace(cfg.url)
+	if path == "" {
+		path = "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return base + path
+}
+
 func (a *app) urlPlaceholder(i int) string {
+	if a.templateMode() {
+		return a.tr("ui.page.path")
+	}
 	if i == 0 {
 		return a.tr("ui.page.urlPrimary")
 	}
