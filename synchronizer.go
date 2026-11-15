@@ -58,6 +58,11 @@ func (a *app) enqueueOp(p *pageRecord, op operation) {
 	if p.closed || !p.syncOn || p.status == "paused" {
 		return
 	}
+	// Anything but a scroll may navigate the page when replayed; navigation
+	// follow must not race that with a LoadURL of its own.
+	if op.Type != "scroll" {
+		p.navPendingAt = time.Now()
+	}
 	select {
 	case p.queue <- op:
 	default:

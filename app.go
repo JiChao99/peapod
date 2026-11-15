@@ -30,6 +30,7 @@ type pageRecord struct {
 	id         string
 	name       string
 	url        string
+	base       string // variant prefix swapped when following navigations
 	resW, resH float64
 	view       *mygo.WebView
 	session    *mygo.Session
@@ -39,6 +40,10 @@ type pageRecord struct {
 	closed     bool
 	lastError  *syncError
 	queue      chan operation
+
+	// navPendingAt is guarded by mu: when an operation that may navigate was
+	// enqueued, so navigation follow lets the replay navigate this page itself.
+	navPendingAt time.Time
 
 	// appliedZoom is touched only on the main thread by the native panel: it
 	// tracks the last zoom set to fit the configured resolution.
@@ -121,9 +126,12 @@ func newApp() *app {
 	return a
 }
 
-// resolvedPage is a setup row after URL inheritance and validation.
+// resolvedPage is a setup row after URL inheritance and validation. base is
+// the page's variant prefix: its origin in plain mode, the rendered template
+// in template mode.
 type resolvedPage struct {
 	name, url  string
+	base       string
 	resW, resH float64
 }
 
@@ -221,7 +229,7 @@ func (a *app) buildRequest() (startRequest, error) {
 			return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
 		}
 		pages = append(pages, resolvedPage{
-			name: a.cfgName(cfg, i), url: raw,
+			name: a.cfgName(cfg, i), url: raw, base: originOf(raw),
 			resW: clampRes(cfg.resW, a.resW), resH: clampRes(cfg.resH, a.resH),
 		})
 	}
@@ -322,19 +330,31 @@ func (a *app) setActive(id string) {
 	a.win.Invalidate()
 }
 
-// reloadPage reloads a page and clears its paused state.
+// reloadPage reloads a page and clears its paused state. A running follower
+// reloads to the primary's current URL mapped onto its own variant, so one
+// click also repairs a desynced page.
 func (a *app) reloadPage(id string) {
 	a.mu.Lock()
 	p := a.pages[id]
 	var view *mygo.WebView
+	resync := ""
 	if p != nil && !p.closed {
 		p.status = "loading"
 		p.lastError = nil
 		view = p.view
+		if a.status == "running" && !p.isPrimary {
+			if primary := a.pages[a.primaryID]; primary != nil && !primary.closed {
+				resync = mapNavigation(primary.base, p.base, primary.url)
+			}
+		}
 	}
 	a.mu.Unlock()
 	if view != nil {
-		view.Page().Reload()
+		if resync != "" {
+			view.Page().LoadURL(resync)
+		} else {
+			view.Page().Reload()
+		}
 	}
 	a.win.Invalidate()
 }
@@ -498,6 +518,7 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 			id:        id,
 			name:      rp.name,
 			url:       rp.url,
+			base:      rp.base,
 			resW:      rp.resW,
 			resH:      rp.resH,
 			view:      view,
@@ -551,10 +572,21 @@ func (a *app) attachHandlers(p *pageRecord) {
 	})
 	page.OnDidNavigate(func(u string) {
 		a.mu.Lock()
+		var targets []followTarget
 		if !p.closed {
 			p.url = u
+			if p.isPrimary {
+				targets = a.followTargets(p, u)
+			} else {
+				// This page navigated; any replay that was expected to cause
+				// it has landed, so follow may act on the next primary move.
+				p.navPendingAt = time.Time{}
+			}
 		}
 		a.mu.Unlock()
+		for _, t := range targets {
+			t.view.Page().LoadURL(t.url)
+		}
 		a.pushState()
 	})
 }
