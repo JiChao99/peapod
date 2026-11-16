@@ -125,7 +125,11 @@ func (a *app) replayOnce(p *pageRecord, op operation) {
 	}
 	if m, ok := result.(map[string]any); ok {
 		if completed, _ := m["completed"].(bool); !completed {
-			a.pausePage(p, op, fmt.Errorf("replay did not complete"))
+			if code, _ := m["errorCode"].(string); code != "" {
+				a.pausePage(p, op, fmt.Errorf("%s", code))
+			} else {
+				a.pausePage(p, op, fmt.Errorf("replay did not complete"))
+			}
 			return
 		}
 	}
@@ -278,7 +282,7 @@ func (a *app) pausePage(p *pageRecord, op operation, cause error) {
 
 func errorCode(err error) string {
 	msg := err.Error()
-	for _, code := range []string{"ANCHOR_TIMEOUT", "INVALID_LOCATOR", "AMBIGUOUS", "NOT_FOUND"} {
+	for _, code := range []string{"ANCHOR_TIMEOUT", "INVALID_LOCATOR", "AMBIGUOUS", "NOT_FOUND", "SENSITIVE"} {
 		if strings.Contains(msg, code) {
 			return code
 		}

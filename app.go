@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -63,25 +64,26 @@ type pageRecord struct {
 	appliedZoom float64
 }
 
-// pageState is the panel's read-only view of one page.
+// pageState is the panel's read-only view of one page. The json tags are the
+// MCP peapod_status contract (docs/mcp.md); the panel reads the Go fields.
 type pageState struct {
-	ID        string
-	Name      string
-	URL       string
-	Status    string
-	SyncOn    bool
-	IsPrimary bool
-	Error     *syncError
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	URL       string     `json:"url"`
+	Status    string     `json:"status"`
+	SyncOn    bool       `json:"syncOn"`
+	IsPrimary bool       `json:"isPrimary"`
+	Error     *syncError `json:"error"`
 }
 
-// appState is everything the native panel renders.
+// appState is everything the native panel renders, and the peapod_status payload.
 type appState struct {
-	Status   string // idle, starting, running, stopping, cleanup-error
-	Pages    []pageState
-	ActiveID string
-	Errors   []syncError
-	Message  string
-	Notice   string
+	Status   string      `json:"status"` // idle, starting, running, stopping, cleanup-error
+	Pages    []pageState `json:"pages"`
+	ActiveID string      `json:"activeId"`
+	Errors   []syncError `json:"errors"`
+	Message  string      `json:"message"`
+	Notice   string      `json:"notice"`
 }
 
 // app holds the task state. mu guards the task/page fields, which services and
@@ -103,6 +105,11 @@ type app struct {
 	cancel    chan struct{}
 	seq       int
 
+	// taskViewMode is the resolved view mode of the running task, guarded by mu.
+	// The stage renders from it, not the setup form's viewMode, so an MCP-started
+	// task lays out by the mode it actually requested.
+	taskViewMode string
+
 	configs      []*pageConfig
 	configSeq    int
 	template     string // optional URL template with {placeholders}; empty = plain URLs
@@ -115,7 +122,12 @@ type app struct {
 	themeMode string // system | light | dark
 	scalePct  string // UI zoom percent: 100 | 125 | 150
 	shotName  string // base name for batch screenshots
-	lang      string // zh | en
+	lang      string // zh | en; bound to the panel Select, touched only on the main thread
+
+	// langVal publishes lang for off-thread readers (MCP handlers, cleanup and
+	// screenshot goroutines). The panel stores it after each frame; readers load
+	// it through currentLang so they never race the Select's write to lang.
+	langVal atomic.Value
 }
 
 func newApp() *app {
@@ -137,7 +149,17 @@ func newApp() *app {
 		},
 		configSeq: 3,
 	}
+	a.langVal.Store(a.lang)
 	return a
+}
+
+// currentLang returns the published UI language for off-thread readers. It
+// falls back to zh before the panel has published a value.
+func (a *app) currentLang() string {
+	if v, ok := a.langVal.Load().(string); ok && v != "" {
+		return v
+	}
+	return "zh"
 }
 
 // resolvedPage is a setup row after URL inheritance and validation. base is
@@ -314,15 +336,22 @@ func (a *app) startTask() {
 		a.setNotice(err.Error())
 		return
 	}
+	if err := a.launch(req); err != nil {
+		a.setNotice(err.Error())
+	}
+}
+
+// launch begins a resolved request: it marks the task starting and counts
+// down before creating pages. It is shared by the panel and the MCP server.
+func (a *app) launch(req startRequest) error {
 	a.mu.Lock()
 	if a.status == "cleanup-error" {
 		a.mu.Unlock()
-		a.setNotice(a.tr("err.cleanupBlocked"))
-		return
+		return fmt.Errorf("%s", a.tr("err.cleanupBlocked"))
 	}
 	if a.status != "idle" {
 		a.mu.Unlock()
-		return
+		return fmt.Errorf("%s", a.tr("err.notIdle"))
 	}
 	a.seq++
 	a.taskID = fmt.Sprintf("task-%d", a.seq)
@@ -333,9 +362,11 @@ func (a *app) startTask() {
 	a.cancel = make(chan struct{})
 	cancel := a.cancel
 	taskID := a.taskID
+	lang := a.currentLang()
 	a.mu.Unlock()
 	a.win.Invalidate()
-	go a.runCountdown(taskID, cancel, req, a.lang)
+	go a.runCountdown(taskID, cancel, req, lang)
+	return nil
 }
 
 // cancelStart aborts the countdown before any page is created.
@@ -349,12 +380,18 @@ func (a *app) cancelStart() {
 	a.win.Invalidate()
 }
 
-// stopTask tears down every page and clears its session data.
-func (a *app) stopTask() {
+// stopTask tears down every page and clears its session data. cleanup-error is
+// rejected: cleanup already emptied a.pages, so re-running it would reset to
+// idle without retrying the failed wipe and silently clear the restart lockout.
+func (a *app) stopTask() error {
 	a.mu.Lock()
+	if a.status == "cleanup-error" {
+		a.mu.Unlock()
+		return fmt.Errorf("%s", a.tr("err.cleanupBlocked"))
+	}
 	if a.status == "idle" || a.status == "stopping" {
 		a.mu.Unlock()
-		return
+		return nil
 	}
 	if a.status == "starting" && a.cancel != nil {
 		close(a.cancel)
@@ -369,7 +406,8 @@ func (a *app) stopTask() {
 	}
 	a.mu.Unlock()
 	a.win.Invalidate()
-	go a.cleanup(pages, a.lang)
+	go a.cleanup(pages, a.currentLang())
+	return nil
 }
 
 // setActive switches which page the stage shows.
@@ -446,7 +484,7 @@ func (a *app) screenshotAll() {
 	if base == "" {
 		base = "screenshot"
 	}
-	lang := a.lang
+	lang := a.currentLang()
 	go func() {
 		dir, err := screenshotDir(base)
 		if err != nil {
@@ -609,6 +647,7 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 	}
 	a.status = "running"
 	a.activeID = a.primaryID
+	a.taskViewMode = req.viewMode
 	a.mu.Unlock()
 	a.win.Invalidate()
 }
@@ -691,6 +730,7 @@ func (a *app) cleanup(pages []*pageRecord, lang string) {
 	a.activeID = ""
 	a.primaryID = ""
 	a.cancel = nil
+	a.taskViewMode = ""
 	if failed {
 		a.status = "cleanup-error"
 		a.message = trLang(lang, "err.cleanupFailed")

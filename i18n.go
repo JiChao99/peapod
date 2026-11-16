@@ -2,9 +2,9 @@ package main
 
 import "fmt"
 
-// tr localizes a UI string for the panel's current language. It is called on
-// the main thread while building the view.
-func (a *app) tr(key string, args ...any) string { return trLang(a.lang, key, args...) }
+// tr localizes a UI string for the panel's current language. It reads the
+// published language, so it is safe from the main thread and MCP goroutines.
+func (a *app) tr(key string, args ...any) string { return trLang(a.currentLang(), key, args...) }
 
 // trLang localizes with an explicit language, for messages produced off the
 // main thread (the language is captured when the work is launched).
@@ -94,6 +94,7 @@ var catalogs = map[string]map[string]string{
 		"err.templateBaseShort":   "模板基址不能包含查询串或片段",
 		"err.cleanupBlocked":      "上次任务清理失败，请重启应用后再试",
 		"err.notRunning":          "任务未运行，无法截图",
+		"err.notIdle":             "任务已在运行或正在启动",
 		"err.noPages":             "没有可截图的页面",
 		"err.shotDir":             "截图目录创建失败：%s",
 		"notice.shotPartial":      "截图完成：%d 张成功，%d 张失败 · %s",
@@ -173,6 +174,7 @@ var catalogs = map[string]map[string]string{
 		"err.templateBaseShort":   "Template base must not contain a query or fragment",
 		"err.cleanupBlocked":      "Last cleanup failed; restart the app and try again",
 		"err.notRunning":          "Task is not running; cannot capture",
+		"err.notIdle":             "A task is already running or starting",
 		"err.noPages":             "No pages to capture",
 		"err.shotDir":             "Failed to create screenshot folder: %s",
 		"notice.shotPartial":      "Captured: %d ok, %d failed · %s",
