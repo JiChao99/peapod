@@ -107,6 +107,15 @@ func TestCleanTemplateBase(t *testing.T) {
 		{"https://a.com/?lang=en", "", false},
 		{"https://a.com/en#frag", "", false},
 		{"https://a.com/?", "", false},
+		// A bare '#' has an empty fragment but still swallows an appended path.
+		{"https://a.com/en#", "", false},
+		{"https://a.com#", "", false},
+		// Origins normalize like plain mode; the path prefix is preserved.
+		{"https://EXAMPLE.com:443/en", "https://example.com/en", true},
+		{"https://Example.COM/en/", "https://example.com/en", true},
+		{"http://EXAMPLE.com:80/en", "http://example.com/en", true},
+		{"https://EXAMPLE.com:8443/en", "https://example.com:8443/en", true},
+		{"https://EXAMPLE.com:443/EN", "https://example.com/EN", true},
 	}
 	for _, c := range cases {
 		got, ok := cleanTemplateBase(c.in)
