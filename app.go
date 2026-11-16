@@ -21,6 +21,7 @@ type pageConfig struct {
 	id         string
 	name       string
 	url        string
+	vars       string // template-mode placeholder assignments
 	resW, resH float64
 }
 
@@ -104,6 +105,7 @@ type app struct {
 
 	configs      []*pageConfig
 	configSeq    int
+	template     string // optional URL template with {placeholders}; empty = plain URLs
 	viewMode     string // desktop | mobile
 	lastViewMode string
 	resW, resH   float64 // preset seeded by viewMode; each page copies it
@@ -221,27 +223,65 @@ func (a *app) removePage(id string) {
 	}
 }
 
-// buildRequest resolves the setup form: the primary URL is required, empty
-// non-primary URLs inherit it, and every page gets a display name.
+// buildRequest resolves the setup form. In plain mode the primary URL is
+// required and empty non-primary URLs inherit it. In template mode each page's
+// variant base is rendered from the shared template plus its own vars, and the
+// URL field becomes an optional path appended to that base.
 func (a *app) buildRequest() (startRequest, error) {
 	if len(a.configs) < 2 || len(a.configs) > 10 {
 		return startRequest{}, fmt.Errorf("%s", a.tr("err.pageCount"))
 	}
-	primaryURL := strings.TrimSpace(a.configs[0].url)
-	if err := a.validateURL(primaryURL); err != nil {
-		return startRequest{}, fmt.Errorf("%s", a.tr("err.primaryURL", err.Error()))
+	tmpl := strings.TrimSpace(a.template)
+	primaryURL := ""
+	if tmpl == "" {
+		primaryURL = strings.TrimSpace(a.configs[0].url)
+		if err := a.validateURL(primaryURL); err != nil {
+			return startRequest{}, fmt.Errorf("%s", a.tr("err.primaryURL", err.Error()))
+		}
 	}
 	pages := make([]resolvedPage, 0, len(a.configs))
 	for i, cfg := range a.configs {
-		raw := strings.TrimSpace(cfg.url)
-		if i > 0 && raw == "" {
-			raw = primaryURL
-		}
-		if err := a.validateURL(raw); err != nil {
-			return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
+		var raw, base string
+		if tmpl == "" {
+			raw = strings.TrimSpace(cfg.url)
+			if i > 0 && raw == "" {
+				raw = primaryURL
+			}
+			if err := a.validateURL(raw); err != nil {
+				return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
+			}
+			base = originOf(raw)
+		} else {
+			vars, bad := parseVars(cfg.vars)
+			if bad != "" {
+				return startRequest{}, fmt.Errorf("%s", a.tr("err.vars", a.cfgName(cfg, i), bad))
+			}
+			b, missing := renderTemplate(tmpl, vars)
+			if len(missing) > 0 {
+				return startRequest{}, fmt.Errorf("%s", a.tr("err.template", a.cfgName(cfg, i), strings.Join(missing, ", ")))
+			}
+			if err := a.validateURL(b); err != nil {
+				return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
+			}
+			clean, ok := cleanTemplateBase(b)
+			if !ok {
+				return startRequest{}, fmt.Errorf("%s", a.tr("err.templateBase", a.cfgName(cfg, i)))
+			}
+			base = clean
+			path := strings.TrimSpace(cfg.url)
+			if path == "" {
+				path = "/"
+			}
+			if !strings.HasPrefix(path, "/") {
+				path = "/" + path
+			}
+			raw = base + path
+			if err := a.validateURL(raw); err != nil {
+				return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
+			}
 		}
 		pages = append(pages, resolvedPage{
-			name: a.cfgName(cfg, i), url: raw, base: originOf(raw),
+			name: a.cfgName(cfg, i), url: raw, base: base,
 			resW: clampRes(cfg.resW, a.resW), resH: clampRes(cfg.resH, a.resH),
 		})
 	}
