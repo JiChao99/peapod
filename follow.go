@@ -59,16 +59,25 @@ func (a *app) followTargets(primary *pageRecord, raw string) []followTarget {
 		}
 		target := mapNavigation(primary.base, f.base, raw)
 		if target == "" {
+			// The primary left the variant space: any destination saved earlier
+			// no longer represents its latest navigation, so drop it.
+			f.pendingNav = ""
+			continue
+		}
+		// Busy replaying (or about to navigate on its own): remember the latest
+		// destination even when it matches the current URL — a replay still in
+		// flight may commit a different URL, and the saved target reconciles it.
+		// A queued navigation barrier makes new-document actions wait for it.
+		if len(f.queue) > 0 || f.replaying || time.Since(f.navPendingAt) < navFollowGrace {
+			f.pendingNav = target
+			select {
+			case f.queue <- operation{Type: navBarrier}:
+			default:
+			}
 			continue
 		}
 		if target == f.url {
 			f.pendingNav = ""
-			continue
-		}
-		// Busy replaying (or about to navigate on its own): remember the
-		// destination and reconcile once replay is safe, instead of losing it.
-		if len(f.queue) > 0 || f.replaying || time.Since(f.navPendingAt) < navFollowGrace {
-			f.pendingNav = target
 			continue
 		}
 		f.pendingNav = ""

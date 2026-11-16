@@ -208,3 +208,111 @@ func TestFinishReplayReconciles(t *testing.T) {
 		t.Errorf("click after grace should reconcile, pendingNav = %q", f.pendingNav)
 	}
 }
+
+func TestFollowTargetsClearsPendingNavWhenUnmappable(t *testing.T) {
+	a, primary := followFixture()
+	f := a.pages["p2"]
+	f.pendingNav = "https://b.com/step2"
+	a.followTargets(primary, "https://elsewhere.com/x")
+	if f.pendingNav != "" {
+		t.Errorf("unmappable primary URL must clear pendingNav, got %q", f.pendingNav)
+	}
+}
+
+func TestFollowTargetsRetainsPendingNavWhenBusyAtTarget(t *testing.T) {
+	a, primary := followFixture()
+	f := a.pages["p2"]
+	f.replaying = true
+	f.url = "https://b.com/step1"
+	f.pendingNav = "https://b.com/step2"
+	// Primary goes Back to /step1, mapping onto the follower's current URL while
+	// its replay is still in flight: the latest target must be retained.
+	a.followTargets(primary, "https://a.com/step1")
+	if f.pendingNav != "https://b.com/step1" {
+		t.Errorf("busy follower must retain the latest target, got %q", f.pendingNav)
+	}
+}
+
+func TestFollowTargetsEnqueuesNavBarrier(t *testing.T) {
+	a, primary := followFixture()
+	f := a.pages["p2"]
+	f.replaying = true
+	a.followTargets(primary, "https://a.com/step2")
+	if f.pendingNav != "https://b.com/step2" {
+		t.Fatalf("pendingNav = %q, want remembered destination", f.pendingNav)
+	}
+	select {
+	case op := <-f.queue:
+		if op.Type != navBarrier {
+			t.Errorf("queued op = %q, want navBarrier", op.Type)
+		}
+	default:
+		t.Error("expected a navigation barrier queued behind the busy replay")
+	}
+}
+
+func TestFinishReplayDefersNavigatingInput(t *testing.T) {
+	a, _ := followFixture()
+	f := a.pages["p2"]
+	f.replaying = true
+	f.pendingNav = "https://b.com/step2"
+	f.navPendingAt = time.Now()
+	// input/change/select may navigate too, so they get the same grace as click.
+	a.finishReplay(f, operation{Type: "input"})
+	if f.pendingNav != "https://b.com/step2" {
+		t.Errorf("input within grace must defer, pendingNav = %q", f.pendingNav)
+	}
+}
+
+func TestReconcileNavLockedEligibility(t *testing.T) {
+	a, _ := followFixture()
+	f := a.pages["p2"]
+	f.pendingNav = "https://b.com/step2"
+
+	f.syncOn = false
+	if nav := a.reconcileNavLocked(f, false); nav != "" {
+		t.Errorf("sync-off follower must not auto-navigate, got %q", nav)
+	}
+	f.syncOn = true
+	f.status = "paused"
+	if nav := a.reconcileNavLocked(f, false); nav != "" {
+		t.Errorf("paused follower must not auto-navigate, got %q", nav)
+	}
+	f.status = "ready"
+	f.queue <- operation{Type: "click"}
+	if nav := a.reconcileNavLocked(f, false); nav != "" {
+		t.Errorf("busy queue must defer reconciliation, got %q", nav)
+	}
+	<-f.queue
+	if nav := a.reconcileNavLocked(f, false); nav != "https://b.com/step2" {
+		t.Errorf("eligible follower should reconcile, got %q", nav)
+	}
+	if f.pendingNav != "" {
+		t.Errorf("pendingNav should clear after reconcile, got %q", f.pendingNav)
+	}
+}
+
+func TestApplyNavBarrierReconcilesAfterGrace(t *testing.T) {
+	a, _ := followFixture()
+	f := a.pages["p2"]
+	f.pendingNav = "https://b.com/step2"
+	f.navPendingAt = time.Now().Add(-2 * navFollowGrace)
+	a.applyNavBarrier(f)
+	if f.pendingNav != "" {
+		t.Errorf("barrier should reconcile after grace, pendingNav = %q", f.pendingNav)
+	}
+}
+
+func TestReplayWorkerAppliesBarrierBeforeOps(t *testing.T) {
+	a, _ := followFixture()
+	f := a.pages["p2"]
+	f.pendingNav = "https://b.com/step2"
+	f.navPendingAt = time.Now().Add(-2 * navFollowGrace)
+	f.queue <- operation{Type: navBarrier}
+	f.queue <- operation{Type: "input", Anchor: anchor{Type: "id", Selector: "x"}}
+	close(f.queue)
+	a.replayWorker(f)
+	if f.pendingNav != "" {
+		t.Errorf("barrier must reconcile before queued ops, pendingNav = %q", f.pendingNav)
+	}
+}
