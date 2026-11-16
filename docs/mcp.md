@@ -72,6 +72,25 @@ Because the port/token rotate per launch, either regenerate this config from `mc
 | `peapod_send_operation` | `operation` | Replay a host-trusted operation on every synced follower. |
 | `peapod_screenshot` | optional `pageId` (default primary) | Capture one page as a PNG image. |
 
+### `peapod_status` response
+
+Keys are lower camelCase, matching `peapod_start` / `peapod_stop`:
+
+```json
+{
+  "status": "running",
+  "activeId": "p1",
+  "pages": [
+    { "id": "p1", "name": "Primary", "url": "https://dev.example.com/", "status": "ready", "syncOn": true, "isPrimary": true, "error": null }
+  ],
+  "errors": [],
+  "message": "",
+  "notice": ""
+}
+```
+
+`status` is one of `idle`, `starting`, `running`, `stopping`, `cleanup-error`. After a failed data wipe the task stays in `cleanup-error`: `peapod_start` and `peapod_stop` both report the lockout until the app is restarted, so a new task can never run on un-wiped session data.
+
 ### `peapod_start` pages
 
 Each page accepts `name`, and either plain-mode `url` or template-mode `vars` + `path`, plus optional `resW` / `resH` (200–3840).

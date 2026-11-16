@@ -177,7 +177,9 @@ func (a *app) panelAction(c *ui.Context, tk *theme.Tokens, st appState) {
 	case "running":
 		if action.Button(c, a.tr("ui.stop"), action.ButtonProps{Variant: action.Primary, Size: theme.Large}).
 			AlignSelf(ui.Stretch).Clicked() {
-			a.stopTask()
+			if err := a.stopTask(); err != nil {
+				a.setNotice(err.Error())
+			}
 		}
 	case "stopping":
 		action.Button(c, a.tr("ui.stopping"), action.ButtonProps{Variant: action.Primary, Size: theme.Large}).

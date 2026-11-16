@@ -157,6 +157,84 @@ func TestMCPStatusTool(t *testing.T) {
 	}
 }
 
+func TestStateJSONContract(t *testing.T) {
+	st := appState{
+		Status: "running", ActiveID: "p1",
+		Pages:  []pageState{{ID: "p1", Name: "Primary", URL: "https://a.com/", Status: "ready", SyncOn: true, IsPrimary: true}},
+		Errors: []syncError{},
+	}
+	raw, err := json.Marshal(st)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &top); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, k := range []string{"status", "pages", "activeId", "errors", "message", "notice"} {
+		if _, ok := top[k]; !ok {
+			t.Fatalf("missing documented key %q in %s", k, raw)
+		}
+	}
+	for _, k := range []string{"Status", "Pages", "ActiveID"} {
+		if _, ok := top[k]; ok {
+			t.Fatalf("unexpected capitalized key %q in %s", k, raw)
+		}
+	}
+	var pages []map[string]json.RawMessage
+	if err := json.Unmarshal(top["pages"], &pages); err != nil {
+		t.Fatalf("decode pages: %v", err)
+	}
+	for _, k := range []string{"id", "name", "url", "status", "syncOn", "isPrimary", "error"} {
+		if _, ok := pages[0][k]; !ok {
+			t.Fatalf("missing page key %q in %s", k, raw)
+		}
+	}
+}
+
+func TestStopTaskRejectsCleanupError(t *testing.T) {
+	a := newApp()
+	a.mu.Lock()
+	a.status = "cleanup-error"
+	a.mu.Unlock()
+	if err := a.stopTask(); err == nil {
+		t.Fatal("stopTask must reject cleanup-error, got nil")
+	}
+	a.mu.Lock()
+	got := a.status
+	a.mu.Unlock()
+	if got != "cleanup-error" {
+		t.Fatalf("stopTask cleared the restart lockout: status = %q", got)
+	}
+	a.mu.Lock()
+	a.status = "idle"
+	a.mu.Unlock()
+	if err := a.stopTask(); err != nil {
+		t.Fatalf("idle stopTask should be a no-op, got %v", err)
+	}
+}
+
+func TestMCPStopCleanupError(t *testing.T) {
+	a := newApp()
+	cs := connectMCP(t, a)
+	a.mu.Lock()
+	a.status = "cleanup-error"
+	a.mu.Unlock()
+	res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: "peapod_stop"})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if !res.IsError {
+		t.Fatalf("peapod_stop must surface the lockout, got %s", resultText(t, res))
+	}
+	a.mu.Lock()
+	got := a.status
+	a.mu.Unlock()
+	if got != "cleanup-error" {
+		t.Fatalf("lockout cleared via MCP: status = %q", got)
+	}
+}
+
 func TestMCPStartRejectsBadInput(t *testing.T) {
 	a := newApp()
 	cs := connectMCP(t, a)

@@ -60,25 +60,26 @@ type pageRecord struct {
 	appliedZoom float64
 }
 
-// pageState is the panel's read-only view of one page.
+// pageState is the panel's read-only view of one page. The json tags are the
+// MCP peapod_status contract (docs/mcp.md); the panel reads the Go fields.
 type pageState struct {
-	ID        string
-	Name      string
-	URL       string
-	Status    string
-	SyncOn    bool
-	IsPrimary bool
-	Error     *syncError
+	ID        string     `json:"id"`
+	Name      string     `json:"name"`
+	URL       string     `json:"url"`
+	Status    string     `json:"status"`
+	SyncOn    bool       `json:"syncOn"`
+	IsPrimary bool       `json:"isPrimary"`
+	Error     *syncError `json:"error"`
 }
 
-// appState is everything the native panel renders.
+// appState is everything the native panel renders, and the peapod_status payload.
 type appState struct {
-	Status   string // idle, starting, running, stopping, cleanup-error
-	Pages    []pageState
-	ActiveID string
-	Errors   []syncError
-	Message  string
-	Notice   string
+	Status   string      `json:"status"` // idle, starting, running, stopping, cleanup-error
+	Pages    []pageState `json:"pages"`
+	ActiveID string      `json:"activeId"`
+	Errors   []syncError `json:"errors"`
+	Message  string      `json:"message"`
+	Notice   string      `json:"notice"`
 }
 
 // app holds the task state. mu guards the task/page fields, which services and
@@ -375,12 +376,18 @@ func (a *app) cancelStart() {
 	a.win.Invalidate()
 }
 
-// stopTask tears down every page and clears its session data.
-func (a *app) stopTask() {
+// stopTask tears down every page and clears its session data. cleanup-error is
+// rejected: cleanup already emptied a.pages, so re-running it would reset to
+// idle without retrying the failed wipe and silently clear the restart lockout.
+func (a *app) stopTask() error {
 	a.mu.Lock()
+	if a.status == "cleanup-error" {
+		a.mu.Unlock()
+		return fmt.Errorf("%s", a.tr("err.cleanupBlocked"))
+	}
 	if a.status == "idle" || a.status == "stopping" {
 		a.mu.Unlock()
-		return
+		return nil
 	}
 	if a.status == "starting" && a.cancel != nil {
 		close(a.cancel)
@@ -396,6 +403,7 @@ func (a *app) stopTask() {
 	a.mu.Unlock()
 	a.win.Invalidate()
 	go a.cleanup(pages, a.currentLang())
+	return nil
 }
 
 // setActive switches which page the stage shows.

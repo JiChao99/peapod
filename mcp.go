@@ -217,7 +217,9 @@ func (a *app) registerMCPTools(srv *sdk.Server) {
 
 	sdk.AddTool(srv, &sdk.Tool{Name: "peapod_stop", Description: "Stop the task, destroy every page and wipe its session data."},
 		func(_ context.Context, _ *sdk.CallToolRequest, _ struct{}) (*sdk.CallToolResult, any, error) {
-			a.stopTask()
+			if err := a.stopTask(); err != nil {
+				return mcpErr(err), nil, nil
+			}
 			return mcpJSON(map[string]string{"status": "stopping"}), nil, nil
 		})
 
