@@ -137,3 +137,74 @@ func TestBuildRequestSetsBases(t *testing.T) {
 		t.Errorf("inheriting follower base = %q", req.pages[2].base)
 	}
 }
+
+func TestOriginOfNormalizes(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"https://EXAMPLE.com:443/start", "https://example.com"},
+		{"http://Example.COM:80/x", "http://example.com"},
+		{"https://Example.com:8443/x", "https://example.com:8443"},
+		{"http://[::1]:8099/x", "http://[::1]:8099"},
+		{"https://a.com/start", "https://a.com"},
+	}
+	for _, c := range cases {
+		if got := originOf(c.in); got != c.want {
+			t.Errorf("originOf(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestFollowTargetsRemembersPendingNav(t *testing.T) {
+	a, primary := followFixture()
+	f := a.pages["p2"]
+	f.replaying = true
+	targets := a.followTargets(primary, "https://a.com/step2")
+	if len(targets) != 1 || targets[0].url != "https://c.com/step2" {
+		t.Fatalf("busy follower must be skipped, got %+v", targets)
+	}
+	if f.pendingNav != "https://b.com/step2" {
+		t.Errorf("pendingNav = %q, want remembered destination", f.pendingNav)
+	}
+}
+
+func TestFollowTargetsClearsPendingNavAtTarget(t *testing.T) {
+	a, primary := followFixture()
+	f := a.pages["p2"]
+	f.pendingNav = "https://b.com/step2"
+	f.url = "https://b.com/step2"
+	a.followTargets(primary, "https://a.com/step2")
+	if f.pendingNav != "" {
+		t.Errorf("pendingNav should clear once at target, got %q", f.pendingNav)
+	}
+}
+
+func TestFinishReplayReconciles(t *testing.T) {
+	a, _ := followFixture()
+	f := a.pages["p2"]
+
+	// Non-navigating replay reconciles a skipped destination immediately.
+	f.replaying = true
+	f.pendingNav = "https://b.com/step2"
+	a.finishReplay(f, operation{Type: "input"})
+	if f.replaying {
+		t.Error("replaying flag not cleared")
+	}
+	if f.pendingNav != "" {
+		t.Errorf("input replay should reconcile, pendingNav = %q", f.pendingNav)
+	}
+
+	// A navigating replay within the grace window defers to its own navigation.
+	f.replaying = true
+	f.pendingNav = "https://b.com/step3"
+	f.navPendingAt = time.Now()
+	a.finishReplay(f, operation{Type: "click"})
+	if f.pendingNav != "https://b.com/step3" {
+		t.Errorf("click within grace should defer, pendingNav = %q", f.pendingNav)
+	}
+
+	// Once the grace expires the skipped destination is reconciled.
+	f.navPendingAt = time.Now().Add(-2 * navFollowGrace)
+	a.finishReplay(f, operation{Type: "click"})
+	if f.pendingNav != "" {
+		t.Errorf("click after grace should reconcile, pendingNav = %q", f.pendingNav)
+	}
+}
