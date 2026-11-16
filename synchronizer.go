@@ -58,6 +58,11 @@ func (a *app) enqueueOp(p *pageRecord, op operation) {
 	if p.closed || !p.syncOn || p.status == "paused" {
 		return
 	}
+	// Anything but a scroll may navigate the page when replayed; navigation
+	// follow must not race that with a LoadURL of its own.
+	if op.Type != "scroll" {
+		p.navPendingAt = time.Now()
+	}
 	select {
 	case p.queue <- op:
 	default:
@@ -79,10 +84,14 @@ func (a *app) replayOnce(p *pageRecord, op operation) {
 	a.mu.Lock()
 	paused := p.status == "paused" || !p.syncOn || p.closed
 	view := p.view
+	if !paused && view != nil {
+		p.replaying = true
+	}
 	a.mu.Unlock()
 	if paused || view == nil {
 		return
 	}
+	defer a.finishReplay(p, op)
 
 	if err := a.resolveAnchor(view, op.Anchor); err != nil {
 		a.pausePage(p, op, err)
@@ -105,6 +114,29 @@ func (a *app) replayOnce(p *pageRecord, op operation) {
 			a.pausePage(p, op, fmt.Errorf("replay did not complete"))
 			return
 		}
+	}
+}
+
+// finishReplay clears the in-flight flag and reconciles a follow destination
+// that was skipped while this page was busy. A navigating replay (click/submit)
+// may still commit its own navigation within the grace window, so in that case
+// reconciliation waits for the grace to expire or the follower's own navigate.
+func (a *app) finishReplay(p *pageRecord, op operation) {
+	a.mu.Lock()
+	p.replaying = false
+	nav := ""
+	if !p.closed && p.syncOn && p.status != "paused" && len(p.queue) == 0 &&
+		p.pendingNav != "" && p.pendingNav != p.url {
+		navigating := op.Type == "click" || op.Type == "submit"
+		if !navigating || time.Since(p.navPendingAt) >= navFollowGrace {
+			nav = p.pendingNav
+			p.pendingNav = ""
+		}
+	}
+	view := p.view
+	a.mu.Unlock()
+	if nav != "" && view != nil {
+		view.Page().LoadURL(nav)
 	}
 }
 
