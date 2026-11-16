@@ -1,6 +1,7 @@
 package main
 
 import (
+	"net/url"
 	"regexp"
 	"strings"
 )
@@ -40,4 +41,16 @@ func renderTemplate(t string, vars map[string]string) (string, []string) {
 		return m
 	})
 	return out, missing
+}
+
+// cleanTemplateBase normalizes a rendered variant base. It rejects query and
+// fragment components — a path appended after them would land inside the query
+// or fragment instead of the path — and trims trailing slashes so base+path
+// never doubles a slash. ok is false when the base is unusable as a prefix.
+func cleanTemplateBase(base string) (string, bool) {
+	u, err := url.Parse(base)
+	if err != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return "", false
+	}
+	return strings.TrimRight(base, "/"), true
 }

@@ -46,6 +46,14 @@ type pageRecord struct {
 	// enqueued, so navigation follow lets the replay navigate this page itself.
 	navPendingAt time.Time
 
+	// replaying is guarded by mu: true while replayOnce is resolving/replaying
+	// an operation, so navigation follow never replaces the document mid-replay.
+	replaying bool
+
+	// pendingNav is guarded by mu: the latest follow destination skipped while
+	// this page was busy replaying, reconciled once replay is safe.
+	pendingNav string
+
 	// appliedZoom is touched only on the main thread by the native panel: it
 	// tracks the last zoom set to fit the configured resolution.
 	appliedZoom float64
@@ -251,7 +259,11 @@ func (a *app) buildRequest() (startRequest, error) {
 			if err := a.validateURL(b); err != nil {
 				return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
 			}
-			base = b
+			clean, ok := cleanTemplateBase(b)
+			if !ok {
+				return startRequest{}, fmt.Errorf("%s", a.tr("err.templateBase", a.cfgName(cfg, i)))
+			}
+			base = clean
 			path := strings.TrimSpace(cfg.url)
 			if path == "" {
 				path = "/"
@@ -260,6 +272,9 @@ func (a *app) buildRequest() (startRequest, error) {
 				path = "/" + path
 			}
 			raw = base + path
+			if err := a.validateURL(raw); err != nil {
+				return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
+			}
 		}
 		pages = append(pages, resolvedPage{
 			name: a.cfgName(cfg, i), url: raw, base: base,
@@ -615,6 +630,8 @@ func (a *app) attachHandlers(p *pageRecord) {
 	page.OnDidNavigate(func(u string) {
 		a.mu.Lock()
 		var targets []followTarget
+		var nav string
+		view := p.view
 		if !p.closed {
 			p.url = u
 			if p.isPrimary {
@@ -623,11 +640,20 @@ func (a *app) attachHandlers(p *pageRecord) {
 				// This page navigated; any replay that was expected to cause
 				// it has landed, so follow may act on the next primary move.
 				p.navPendingAt = time.Time{}
+				if p.pendingNav == u {
+					p.pendingNav = ""
+				} else if p.pendingNav != "" && len(p.queue) == 0 && !p.replaying {
+					nav = p.pendingNav
+					p.pendingNav = ""
+				}
 			}
 		}
 		a.mu.Unlock()
 		for _, t := range targets {
 			t.view.Page().LoadURL(t.url)
+		}
+		if nav != "" && view != nil {
+			view.Page().LoadURL(nav)
 		}
 		a.pushState()
 	})
@@ -726,10 +752,22 @@ func (a *app) validateURL(raw string) error {
 	return nil
 }
 
+// originOf returns the scheme://host[:port] prefix used as a variant base. It
+// normalizes the way browsers report origins (lowercase host, no default port)
+// so a configured URL like https://EXAMPLE.com:443 still matches the URL the
+// web view reports after navigating.
 func originOf(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return raw
 	}
-	return u.Scheme + "://" + u.Host
+	host := strings.ToLower(u.Hostname())
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]"
+	}
+	port := u.Port()
+	if port == "" || (u.Scheme == "http" && port == "80") || (u.Scheme == "https" && port == "443") {
+		return u.Scheme + "://" + host
+	}
+	return u.Scheme + "://" + host + ":" + port
 }

@@ -294,7 +294,11 @@ func (a *app) resolveMCPRequest(in startIn) (startRequest, error) {
 			if err := a.validateURL(b); err != nil {
 				return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", mcpName(p, i), err.Error()))
 			}
-			base = b
+			clean, ok := cleanTemplateBase(b)
+			if !ok {
+				return startRequest{}, fmt.Errorf("%s", a.tr("err.templateBase", mcpName(p, i)))
+			}
+			base = clean
 			path := strings.TrimSpace(p.Path)
 			if path == "" {
 				path = "/"
@@ -303,6 +307,9 @@ func (a *app) resolveMCPRequest(in startIn) (startRequest, error) {
 				path = "/" + path
 			}
 			raw = base + path
+			if err := a.validateURL(raw); err != nil {
+				return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", mcpName(p, i), err.Error()))
+			}
 		}
 		pages = append(pages, resolvedPage{
 			name: mcpName(p, i), url: raw, base: base,
