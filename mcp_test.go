@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -234,6 +237,90 @@ func TestMCPToolsListed(t *testing.T) {
 	for name, seen := range want {
 		if !seen {
 			t.Errorf("tool %q not registered", name)
+		}
+	}
+}
+
+func TestResolveMCPRequestViewportDefaults(t *testing.T) {
+	a := newApp()
+	// The panel preset must not leak into MCP defaults.
+	a.resW, a.resH = 999, 999
+
+	desktop, err := a.resolveMCPRequest(startIn{Pages: []mcpPage{{URL: "https://a.com"}, {URL: ""}}})
+	if err != nil {
+		t.Fatalf("desktop: %v", err)
+	}
+	for i, p := range desktop.pages {
+		if p.resW != 1280 || p.resH != 800 {
+			t.Errorf("desktop page %d = %vx%v, want 1280x800", i, p.resW, p.resH)
+		}
+	}
+
+	mobile, err := a.resolveMCPRequest(startIn{ViewMode: "mobile", Pages: []mcpPage{{URL: "https://a.com"}, {URL: ""}}})
+	if err != nil {
+		t.Fatalf("mobile: %v", err)
+	}
+	for i, p := range mobile.pages {
+		if p.resW != 390 || p.resH != 844 {
+			t.Errorf("mobile page %d = %vx%v, want 390x844", i, p.resW, p.resH)
+		}
+	}
+
+	// Explicit dimensions override the mode default and are clamped.
+	custom, err := a.resolveMCPRequest(startIn{ViewMode: "mobile", Pages: []mcpPage{
+		{URL: "https://a.com", ResW: 1024, ResH: 768},
+		{URL: "", ResW: 5000, ResH: 100},
+	}})
+	if err != nil {
+		t.Fatalf("custom: %v", err)
+	}
+	if custom.pages[0].resW != 1024 || custom.pages[0].resH != 768 {
+		t.Errorf("explicit = %vx%v, want 1024x768", custom.pages[0].resW, custom.pages[0].resH)
+	}
+	if custom.pages[1].resW != 3840 || custom.pages[1].resH != 200 {
+		t.Errorf("clamped = %vx%v, want 3840x200", custom.pages[1].resW, custom.pages[1].resH)
+	}
+}
+
+func TestWriteDiscovery(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "mcp.json")
+	// A pre-existing world-readable file must not keep its mode or content.
+	if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	m := &mcpServer{url: "http://127.0.0.1:1234/mcp", token: "tok"}
+	if err := m.writeDiscoveryTo(dir); err != nil {
+		t.Fatalf("writeDiscoveryTo: %v", err)
+	}
+	data, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var got map[string]string
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got["url"] != m.url || got["token"] != m.token {
+		t.Fatalf("discovery = %v, want url/token", got)
+	}
+	// The temp file was renamed away, leaving only mcp.json.
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, e := range entries {
+		if e.Name() != "mcp.json" {
+			t.Errorf("unexpected leftover file %q", e.Name())
+		}
+	}
+	// Windows does not honor Unix mode bits; assert them only where meaningful.
+	if runtime.GOOS != "windows" {
+		if fi, err := os.Stat(target); err == nil && fi.Mode().Perm() != 0o600 {
+			t.Errorf("file mode = %v, want 0600", fi.Mode().Perm())
+		}
+		if di, err := os.Stat(dir); err == nil && di.Mode().Perm() != 0o700 {
+			t.Errorf("dir mode = %v, want 0700", di.Mode().Perm())
 		}
 	}
 }

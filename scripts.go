@@ -159,6 +159,14 @@ func replayScript(operationJSON string) string {
       const matches = document.querySelectorAll(operation.anchor.selector);
       if (matches.length !== 1) throw new Error(matches.length ? 'AMBIGUOUS' : 'NOT_FOUND');
       const target = matches[0];
+      // Mirror the capture filter on the resolved element: a host-injected
+      // operation (MCP) can name a password/file input the guest filter never
+      // saw, so refuse to replay onto it here too.
+      const tag = String(target.tagName || '').toLowerCase();
+      const inputType = String(target.type || '').toLowerCase();
+      if (tag === 'input' && (inputType === 'password' || inputType === 'file')) {
+        return { completed: false, errorCode: 'SENSITIVE' };
+      }
       const dispatch = (type) => target.dispatchEvent(new Event(type, { bubbles: true }));
       if (operation.type === 'click') {
         target.click();

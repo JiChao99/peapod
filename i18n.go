@@ -2,9 +2,9 @@ package main
 
 import "fmt"
 
-// tr localizes a UI string for the panel's current language. It is called on
-// the main thread while building the view.
-func (a *app) tr(key string, args ...any) string { return trLang(a.lang, key, args...) }
+// tr localizes a UI string for the panel's current language. It reads the
+// published language, so it is safe from the main thread and MCP goroutines.
+func (a *app) tr(key string, args ...any) string { return trLang(a.currentLang(), key, args...) }
 
 // trLang localizes with an explicit language, for messages produced off the
 // main thread (the language is captured when the work is launched).

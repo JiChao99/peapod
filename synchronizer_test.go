@@ -41,11 +41,24 @@ func TestErrorCode(t *testing.T) {
 		{fmt.Errorf("INVALID_LOCATOR"), "INVALID_LOCATOR"},
 		{fmt.Errorf("AMBIGUOUS"), "AMBIGUOUS"},
 		{fmt.Errorf("NOT_FOUND"), "NOT_FOUND"},
+		{fmt.Errorf("SENSITIVE"), "SENSITIVE"},
 		{fmt.Errorf("something else"), "REPLAY_FAILED"},
 	}
 	for _, c := range cases {
 		if got := errorCode(c.err); got != c.want {
 			t.Errorf("errorCode(%v) = %q, want %q", c.err, got, c.want)
+		}
+	}
+}
+
+// TestReplayScriptSensitiveGuard locks in that replay refuses password/file
+// targets, mirroring the capture filter, so a host-injected operation cannot
+// type into them on a follower.
+func TestReplayScriptSensitiveGuard(t *testing.T) {
+	s := replayScript(`{"type":"input","anchor":{"type":"id","selector":"#pw"},"value":"x"}`)
+	for _, want := range []string{"password", "file", "SENSITIVE"} {
+		if !strings.Contains(s, want) {
+			t.Errorf("replayScript missing %q guard", want)
 		}
 	}
 }

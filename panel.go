@@ -106,6 +106,10 @@ func (a *app) view(c *ui.Context) {
 			a.renderStage(c, tk, st)
 		})
 	})
+
+	// Publish the language the Select may have just changed so off-thread
+	// readers (MCP, cleanup, screenshots) see it without racing the binding.
+	a.langVal.Store(a.lang)
 }
 
 // uiZoom is the whole-interface scale chosen in the panel, 1 for 100%.
@@ -390,6 +394,7 @@ func (a *app) pageCard(c *ui.Context, tk *theme.Tokens, ps pageState, activeID s
 
 func (a *app) renderStage(c *ui.Context, tk *theme.Tokens, st appState) {
 	a.mu.Lock()
+	mobile := a.taskViewMode == "mobile"
 	var activeView *mygo.WebView
 	var activeRec *pageRecord
 	activeName := ""
@@ -407,7 +412,6 @@ func (a *app) renderStage(c *ui.Context, tk *theme.Tokens, st appState) {
 	a.mu.Unlock()
 
 	zoom := float64(c.Zoom())
-	mobile := a.viewMode == "mobile"
 	barH := c.TitleBar().Height
 
 	ui.Column(c).Grow(1).MinWidth(0).Background(tk.BgLayout).Children(func() {

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -99,6 +100,11 @@ type app struct {
 	cancel    chan struct{}
 	seq       int
 
+	// taskViewMode is the resolved view mode of the running task, guarded by mu.
+	// The stage renders from it, not the setup form's viewMode, so an MCP-started
+	// task lays out by the mode it actually requested.
+	taskViewMode string
+
 	configs      []*pageConfig
 	configSeq    int
 	template     string // optional URL template with {placeholders}; empty = plain URLs
@@ -111,7 +117,12 @@ type app struct {
 	themeMode string // system | light | dark
 	scalePct  string // UI zoom percent: 100 | 125 | 150
 	shotName  string // base name for batch screenshots
-	lang      string // zh | en
+	lang      string // zh | en; bound to the panel Select, touched only on the main thread
+
+	// langVal publishes lang for off-thread readers (MCP handlers, cleanup and
+	// screenshot goroutines). The panel stores it after each frame; readers load
+	// it through currentLang so they never race the Select's write to lang.
+	langVal atomic.Value
 }
 
 func newApp() *app {
@@ -133,7 +144,17 @@ func newApp() *app {
 		},
 		configSeq: 3,
 	}
+	a.langVal.Store(a.lang)
 	return a
+}
+
+// currentLang returns the published UI language for off-thread readers. It
+// falls back to zh before the panel has published a value.
+func (a *app) currentLang() string {
+	if v, ok := a.langVal.Load().(string); ok && v != "" {
+		return v
+	}
+	return "zh"
 }
 
 // resolvedPage is a setup row after URL inheritance and validation. base is
@@ -336,7 +357,7 @@ func (a *app) launch(req startRequest) error {
 	a.cancel = make(chan struct{})
 	cancel := a.cancel
 	taskID := a.taskID
-	lang := a.lang
+	lang := a.currentLang()
 	a.mu.Unlock()
 	a.win.Invalidate()
 	go a.runCountdown(taskID, cancel, req, lang)
@@ -374,7 +395,7 @@ func (a *app) stopTask() {
 	}
 	a.mu.Unlock()
 	a.win.Invalidate()
-	go a.cleanup(pages, a.lang)
+	go a.cleanup(pages, a.currentLang())
 }
 
 // setActive switches which page the stage shows.
@@ -447,7 +468,7 @@ func (a *app) screenshotAll() {
 	if base == "" {
 		base = "screenshot"
 	}
-	lang := a.lang
+	lang := a.currentLang()
 	go func() {
 		dir, err := screenshotDir(base)
 		if err != nil {
@@ -609,6 +630,7 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 	}
 	a.status = "running"
 	a.activeID = a.primaryID
+	a.taskViewMode = req.viewMode
 	a.mu.Unlock()
 	a.win.Invalidate()
 }
@@ -688,6 +710,7 @@ func (a *app) cleanup(pages []*pageRecord, lang string) {
 	a.activeID = ""
 	a.primaryID = ""
 	a.cancel = nil
+	a.taskViewMode = ""
 	if failed {
 		a.status = "cleanup-error"
 		a.message = trLang(lang, "err.cleanupFailed")

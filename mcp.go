@@ -76,12 +76,38 @@ func (m *mcpServer) writeDiscovery() error {
 	if err != nil {
 		return err
 	}
-	dir = filepath.Join(dir, "Peapod")
+	return m.writeDiscoveryTo(filepath.Join(dir, "Peapod"))
+}
+
+// writeDiscoveryTo writes the discovery file into dir. It writes a freshly
+// created 0600 temp file and renames it over the target, so a pre-existing
+// wider-perm mcp.json can never keep its mode and briefly expose the token.
+func (m *mcpServer) writeDiscoveryTo(dir string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return err
+	}
 	data, _ := json.MarshalIndent(map[string]string{"url": m.url, "token": m.token}, "", "  ")
-	return os.WriteFile(filepath.Join(dir, "mcp.json"), data, 0o600)
+	f, err := os.CreateTemp(dir, "mcp-*.json")
+	if err != nil {
+		return err
+	}
+	tmp := f.Name()
+	defer os.Remove(tmp)
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Chmod(0o600); err != nil {
+		f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp, filepath.Join(dir, "mcp.json"))
 }
 
 // mcpAuth requires the bearer token on every request.
@@ -270,6 +296,12 @@ func (a *app) resolveMCPRequest(in startIn) (startRequest, error) {
 	if mode != "mobile" {
 		mode = "desktop"
 	}
+	// Omitted dimensions default by the requested mode, not the panel preset,
+	// so this goroutine never reads UI-owned resW/resH.
+	defW, defH := 1280.0, 800.0
+	if mode == "mobile" {
+		defW, defH = 390, 844
+	}
 	pages := make([]resolvedPage, 0, len(in.Pages))
 	for i, p := range in.Pages {
 		var raw, base string
@@ -313,7 +345,7 @@ func (a *app) resolveMCPRequest(in startIn) (startRequest, error) {
 		}
 		pages = append(pages, resolvedPage{
 			name: mcpName(p, i), url: raw, base: base,
-			resW: clampRes(p.ResW, a.resW), resH: clampRes(p.ResH, a.resH),
+			resW: clampRes(p.ResW, defW), resH: clampRes(p.ResH, defH),
 		})
 	}
 	return startRequest{pages: pages, shareStorage: in.ShareStorage, viewMode: mode}, nil

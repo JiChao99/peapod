@@ -29,22 +29,31 @@ func (a *app) hostCapture(op operation) error {
 }
 
 // setSync flips a page's sync flag and its panel Switch binding together so
-// the two never disagree.
+// the two never disagree. Both writes happen on the UI thread: the binding is
+// owned by the Switch widget, and applySyncToggles copies it back into syncOn
+// each frame, so writing either off-thread would race the widget or be reverted
+// on the next render.
 func (a *app) setSync(id string, on bool) error {
 	a.mu.Lock()
 	p := a.pages[id]
-	if p == nil || p.closed {
-		a.mu.Unlock()
+	alive := p != nil && !p.closed
+	a.mu.Unlock()
+	if !alive {
 		return fmt.Errorf("unknown page %q", id)
 	}
-	p.syncOn = on
-	if v, ok := a.syncUI[id]; ok {
-		*v = on
-	} else {
-		b := on
-		a.syncUI[id] = &b
-	}
-	a.mu.Unlock()
+	mygo.RunOnMain(func() {
+		a.mu.Lock()
+		if p := a.pages[id]; p != nil && !p.closed {
+			p.syncOn = on
+		}
+		if v, ok := a.syncUI[id]; ok {
+			*v = on
+		} else {
+			b := on
+			a.syncUI[id] = &b
+		}
+		a.mu.Unlock()
+	})
 	a.pushState()
 	return nil
 }
