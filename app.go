@@ -53,6 +53,10 @@ type pageRecord struct {
 	// this page was busy replaying, reconciled once replay is safe.
 	pendingNav string
 
+	// navSignal is a buffered ping sent on every committed navigation so a
+	// queued navigation barrier can wait for the follower to reach its target.
+	navSignal chan struct{}
+
 	// appliedZoom is touched only on the main thread by the native panel: it
 	// tracks the last zoom set to fit the configured resolution.
 	appliedZoom float64
@@ -349,6 +353,10 @@ func (a *app) reloadPage(id string) {
 	if p != nil && !p.closed {
 		p.status = "loading"
 		p.lastError = nil
+		// An explicit reload/resync supersedes any deferred follow destination;
+		// leaving it would let the navigation handler undo the repair.
+		p.pendingNav = ""
+		p.navPendingAt = time.Time{}
 		view = p.view
 		if a.status == "running" && !p.isPrimary {
 			if primary := a.pages[a.primaryID]; primary != nil && !primary.closed {
@@ -535,6 +543,7 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 			syncOn:    true,
 			isPrimary: i == 0,
 			queue:     make(chan operation, 256),
+			navSignal: make(chan struct{}, 1),
 		}
 		a.attachHandlers(p)
 
@@ -585,6 +594,10 @@ func (a *app) attachHandlers(p *pageRecord) {
 		view := p.view
 		if !p.closed {
 			p.url = u
+			select {
+			case p.navSignal <- struct{}{}:
+			default:
+			}
 			if p.isPrimary {
 				targets = a.followTargets(p, u)
 			} else {
@@ -593,9 +606,8 @@ func (a *app) attachHandlers(p *pageRecord) {
 				p.navPendingAt = time.Time{}
 				if p.pendingNav == u {
 					p.pendingNav = ""
-				} else if p.pendingNav != "" && len(p.queue) == 0 && !p.replaying {
-					nav = p.pendingNav
-					p.pendingNav = ""
+				} else {
+					nav = a.reconcileNavLocked(p, false)
 				}
 			}
 		}
