@@ -41,8 +41,9 @@ type followTarget struct {
 
 // followTargets decides which followers load a mapped URL after the primary
 // committed a navigation to raw. The caller holds a.mu. Followers that are
-// switched off, paused, closed, already at the target, or still replaying an
-// operation that may navigate on its own are skipped.
+// switched off, paused, closed or already at the target are skipped; followers
+// busy replaying (or about to navigate on their own) remember the destination
+// in pendingNav and are reconciled once replay is safe.
 func (a *app) followTargets(primary *pageRecord, raw string) []followTarget {
 	if a.status != "running" || primary == nil || !primary.isPrimary || primary.closed {
 		return nil
@@ -56,13 +57,21 @@ func (a *app) followTargets(primary *pageRecord, raw string) []followTarget {
 		if f == nil || f.closed || !f.syncOn || f.status == "paused" {
 			continue
 		}
-		if len(f.queue) > 0 || time.Since(f.navPendingAt) < navFollowGrace {
-			continue
-		}
 		target := mapNavigation(primary.base, f.base, raw)
-		if target == "" || target == f.url {
+		if target == "" {
 			continue
 		}
+		if target == f.url {
+			f.pendingNav = ""
+			continue
+		}
+		// Busy replaying (or about to navigate on its own): remember the
+		// destination and reconcile once replay is safe, instead of losing it.
+		if len(f.queue) > 0 || f.replaying || time.Since(f.navPendingAt) < navFollowGrace {
+			f.pendingNav = target
+			continue
+		}
+		f.pendingNav = ""
 		targets = append(targets, followTarget{view: f.view, url: target})
 	}
 	return targets
