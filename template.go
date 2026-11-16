@@ -44,13 +44,17 @@ func renderTemplate(t string, vars map[string]string) (string, []string) {
 }
 
 // cleanTemplateBase normalizes a rendered variant base. It rejects query and
-// fragment components — a path appended after them would land inside the query
-// or fragment instead of the path — and trims trailing slashes so base+path
-// never doubles a slash. ok is false when the base is unusable as a prefix.
+// fragment components — including a bare '#' delimiter, whose empty fragment
+// would otherwise swallow an appended path — and trims trailing slashes so
+// base+path never doubles a slash. The origin is normalized like plain mode
+// (originOf) so case/default-port differences still match browser-reported URLs
+// in mapNavigation, while the template's path prefix is preserved. ok is false
+// when the base is unusable as a prefix.
 func cleanTemplateBase(base string) (string, bool) {
 	u, err := url.Parse(base)
-	if err != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+	if err != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(base, "#") {
 		return "", false
 	}
-	return strings.TrimRight(base, "/"), true
+	path := strings.TrimRight(u.EscapedPath(), "/")
+	return originOf(base) + path, true
 }
