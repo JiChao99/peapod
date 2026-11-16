@@ -290,6 +290,11 @@ func (a *app) templatePreview(cfg *pageConfig) string {
 	if len(missing) > 0 {
 		return a.tr("err.templateShort", strings.Join(missing, ", "))
 	}
+	clean, ok := cleanTemplateBase(base)
+	if !ok {
+		return a.tr("err.templateBaseShort")
+	}
+	base = clean
 	path := strings.TrimSpace(cfg.url)
 	if path == "" {
 		path = "/"

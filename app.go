@@ -259,7 +259,11 @@ func (a *app) buildRequest() (startRequest, error) {
 			if err := a.validateURL(b); err != nil {
 				return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
 			}
-			base = b
+			clean, ok := cleanTemplateBase(b)
+			if !ok {
+				return startRequest{}, fmt.Errorf("%s", a.tr("err.templateBase", a.cfgName(cfg, i)))
+			}
+			base = clean
 			path := strings.TrimSpace(cfg.url)
 			if path == "" {
 				path = "/"
@@ -268,6 +272,9 @@ func (a *app) buildRequest() (startRequest, error) {
 				path = "/" + path
 			}
 			raw = base + path
+			if err := a.validateURL(raw); err != nil {
+				return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
+			}
 		}
 		pages = append(pages, resolvedPage{
 			name: a.cfgName(cfg, i), url: raw, base: base,
