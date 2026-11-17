@@ -554,10 +554,11 @@ func (a *app) renderDesktopStage(c *ui.Context, tk *theme.Tokens, st appState, a
 		if fit <= 0 {
 			fit = 0.05
 		}
-		// Every page stays placed, stacked under the active one and clipped
-		// to its box: WebView2 only renders placed views, and CapturePage
-		// never returns for a hidden one, so batch screenshots must not
-		// depend on which page is active.
+		// Every page stays placed, overlapped at the box origin and clipped to
+		// it: WebView2 only renders placed views, and CapturePage never returns
+		// for a hidden one, so batch screenshots must not depend on which page
+		// is active. Absolute, because column flow would push every page after
+		// the first below the clip box, leaving it unplaced and uncaptureable.
 		ui.Column(c).Width(tw*fit).Height(th*fit).Center().Radius(8).Border(1, tk.Border).Clip().Children(func() {
 			for _, p := range all {
 				if p.id == st.ActiveID {
@@ -574,10 +575,10 @@ func (a *app) renderDesktopStage(c *ui.Context, tk *theme.Tokens, st appState, a
 				if pfit <= 0 {
 					pfit = 0.05
 				}
-				ui.WebView(c, p.view).Width(pw * pfit).Height(ph * pfit)
+				ui.WebView(c, p.view).Absolute().Left(0).Top(0).Width(pw * pfit).Height(ph * pfit)
 				a.applyPageZoom(p.view, p, pfit, zoom)
 			}
-			ui.WebView(c, activeView).Width(tw * fit).Height(th * fit)
+			ui.WebView(c, activeView).Absolute().Left(0).Top(0).Width(tw * fit).Height(th * fit)
 			a.applyPageZoom(activeView, activeRec, fit, zoom)
 		})
 	})
