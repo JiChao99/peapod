@@ -154,6 +154,7 @@ type startIn struct {
 	Template     string    `json:"template,omitempty" jsonschema:"Optional shared URL template with {placeholders}; empty = plain URLs."`
 	ShareStorage bool      `json:"shareStorage,omitempty" jsonschema:"Share cookies & cache across pages."`
 	ViewMode     string    `json:"viewMode,omitempty" jsonschema:"desktop (single) or mobile (side by side); default desktop."`
+	UserAgent    string    `json:"userAgent,omitempty" jsonschema:"Full User-Agent string applied to every page, for device-sniffing tests. Empty = follow viewMode (mobile -> iPhone Safari, desktop -> engine default). Changes the UA only, not the rendering engine."`
 	Diagnostics  bool      `json:"diagnostics,omitempty" jsonschema:"Inject the console/network/error collector at document start (default false). peapod_diagnostics also enables it on demand; this flag captures early page-load activity."`
 }
 
@@ -318,6 +319,12 @@ func (a *app) resolveMCPRequest(in startIn) (startRequest, error) {
 	if mode != "mobile" {
 		mode = "desktop"
 	}
+	// An explicit UA wins; otherwise follow the requested mode, never the
+	// panel's preset, so this goroutine never reads UI-owned fields.
+	ua := strings.TrimSpace(in.UserAgent)
+	if ua == "" {
+		ua = uaForMode(mode)
+	}
 	// Omitted dimensions default by the requested mode, not the panel preset,
 	// so this goroutine never reads UI-owned resW/resH.
 	defW, defH := 1280.0, 800.0
@@ -370,7 +377,7 @@ func (a *app) resolveMCPRequest(in startIn) (startRequest, error) {
 			resW: clampRes(p.ResW, defW), resH: clampRes(p.ResH, defH),
 		})
 	}
-	return startRequest{pages: pages, shareStorage: in.ShareStorage, viewMode: mode, diagnostics: in.Diagnostics}, nil
+	return startRequest{pages: pages, shareStorage: in.ShareStorage, viewMode: mode, userAgent: ua, diagnostics: in.Diagnostics}, nil
 }
 
 func mcpName(p mcpPage, i int) string {
