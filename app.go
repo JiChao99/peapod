@@ -120,6 +120,8 @@ type app struct {
 	viewMode     string // desktop | mobile
 	lastViewMode string
 	resW, resH   float64 // preset seeded by viewMode; each page copies it
+	uaPreset     string  // built-in UA option key (ua.go); UI-owned like viewMode
+	uaCustom     string  // full UA string when uaPreset == uaCustom
 	shareStorage bool
 	syncUI       map[string]*bool
 
@@ -142,6 +144,7 @@ func newApp() *app {
 		lastViewMode: "desktop",
 		resW:         1280,
 		resH:         800,
+		uaPreset:     uaDefault,
 		themeMode:    "system",
 		scalePct:     "100",
 		lang:         "zh",
@@ -179,7 +182,8 @@ type startRequest struct {
 	pages        []resolvedPage
 	shareStorage bool
 	viewMode     string
-	diagnostics  bool // inject the opt-in diagnostics collector at document start
+	userAgent    string // resolved UA applied to every page; empty = engine default
+	diagnostics  bool   // inject the opt-in diagnostics collector at document start
 }
 
 // capturePayload is what a guest page's preload sends.
@@ -312,7 +316,8 @@ func (a *app) buildRequest() (startRequest, error) {
 			resW: clampRes(cfg.resW, a.resW), resH: clampRes(cfg.resH, a.resH),
 		})
 	}
-	return startRequest{pages: pages, shareStorage: a.shareStorage, viewMode: a.viewMode}, nil
+	return startRequest{pages: pages, shareStorage: a.shareStorage, viewMode: a.viewMode,
+		userAgent: resolveUA(a.uaPreset, a.uaCustom, a.viewMode)}, nil
 }
 
 func (a *app) cfgName(cfg *pageConfig, i int) string {
@@ -606,7 +611,6 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 	if req.shareStorage {
 		shared = mygo.NewEphemeralSession()
 	}
-	mobile := req.viewMode == "mobile"
 
 	for i, rp := range req.pages {
 		a.mu.Lock()
@@ -625,9 +629,7 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 			TrustedOrigins:       []string{originOf(rp.url)},
 			BackgroundThrottling: mygo.ThrottlingOff,
 			Session:              session,
-		}
-		if mobile {
-			pageOpts.UserAgent = mobileUA
+			UserAgent:            req.userAgent,
 		}
 		preload := capturePreload(id)
 		if req.diagnostics {

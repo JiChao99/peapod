@@ -128,3 +128,56 @@ func TestUiZoom(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildRequestUserAgent(t *testing.T) {
+	a := newApp()
+	a.configs[0].url = "https://example.com"
+
+	// Default preset follows the view mode.
+	req, err := a.buildRequest()
+	if err != nil {
+		t.Fatalf("desktop default: %v", err)
+	}
+	if req.userAgent != "" {
+		t.Errorf("desktop default userAgent = %q, want engine default", req.userAgent)
+	}
+	a.viewMode = "mobile"
+	req, err = a.buildRequest()
+	if err != nil {
+		t.Fatalf("mobile default: %v", err)
+	}
+	if req.userAgent != mobileUA {
+		t.Errorf("mobile default userAgent = %q, want mobileUA", req.userAgent)
+	}
+
+	// An explicit preset wins over the mode default. The expectation is the
+	// literal UA, not resolveUA's own output, so a bad table entry fails here.
+	a.uaPreset = "android"
+	req, err = a.buildRequest()
+	if err != nil {
+		t.Fatalf("android preset: %v", err)
+	}
+	const androidUA = "Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36"
+	if req.userAgent != androidUA {
+		t.Errorf("android preset userAgent = %q, want %q", req.userAgent, androidUA)
+	}
+
+	// Custom string is trimmed; empty custom falls back to the mode.
+	a.uaPreset = uaCustom
+	a.uaCustom = "  MyUA/1.0  "
+	req, err = a.buildRequest()
+	if err != nil {
+		t.Fatalf("custom: %v", err)
+	}
+	if req.userAgent != "MyUA/1.0" {
+		t.Errorf("custom userAgent = %q, want trimmed MyUA/1.0", req.userAgent)
+	}
+	a.uaCustom = ""
+	req, err = a.buildRequest()
+	if err != nil {
+		t.Fatalf("empty custom: %v", err)
+	}
+	if req.userAgent != mobileUA {
+		t.Errorf("empty custom in mobile mode = %q, want mobileUA fallback", req.userAgent)
+	}
+}

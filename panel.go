@@ -211,6 +211,22 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 	}).AlignSelf(ui.Stretch)
 
 	ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
+		a.fieldLabel(c, tk, a.tr("ui.ua"))
+		opts := make([]field.SelectOption, 0, len(uaPresets))
+		for _, p := range uaPresets {
+			opts = append(opts, field.SelectOption{Value: p.key, Label: a.tr("ui.ua." + p.key), Icon: uaIcon(p.key)})
+		}
+		field.Select(c, &a.uaPreset, field.SelectProps{
+			Options: opts,
+			Variant: field.InputOutlined,
+		}).AlignSelf(ui.Stretch)
+		if a.uaPreset == uaCustom {
+			field.Input(c, &a.uaCustom, field.InputProps{Placeholder: a.tr("ui.ua.custom.placeholder"), Variant: field.InputFilled})
+		}
+		ui.Text(c, a.tr("ui.ua.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
+	})
+
+	ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
 		a.fieldLabel(c, tk, a.tr("ui.template"))
 		field.Input(c, &a.template, field.InputProps{Placeholder: a.tr("ui.template.placeholder"), Variant: field.InputFilled})
 		ui.Text(c, a.tr("ui.template.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
@@ -286,6 +302,24 @@ func (a *app) setupRow(c *ui.Context, tk *theme.Tokens, cfg *pageConfig, i int) 
 }
 
 func (a *app) templateMode() bool { return strings.TrimSpace(a.template) != "" }
+
+// uaIcon maps a UA preset key (ua.go) to its select icon.
+func uaIcon(key string) *ui.SVG {
+	switch key {
+	case "iphone", "android":
+		return lucide.Smartphone()
+	case "ipad", "androidTablet":
+		return lucide.Tablet()
+	case "chrome", "edge", "firefox":
+		return lucide.Monitor()
+	case "safari":
+		return lucide.Laptop()
+	case uaCustom:
+		return lucide.Pencil()
+	default:
+		return lucide.Globe()
+	}
+}
 
 // templatePreview renders a setup row's generated URL so the effect of the
 // template and vars is visible while typing.

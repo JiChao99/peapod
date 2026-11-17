@@ -64,7 +64,7 @@ Because the port/token rotate per launch, either regenerate this config from `mc
 | Tool | Arguments | Effect |
 | --- | --- | --- |
 | `peapod_status` | — | Task status plus every page's `id`, `name`, `url`, `status`, `syncOn`, `isPrimary`, last error. |
-| `peapod_start` | `pages[]` (2–10), optional `template`, `shareStorage`, `viewMode`, `diagnostics` | Open pages and start mirroring. Returns `starting`; poll `peapod_status` until `running` (3 s grace). `diagnostics:true` injects the opt-in collector at document start (see below). |
+| `peapod_start` | `pages[]` (2–10), optional `template`, `shareStorage`, `viewMode`, `userAgent`, `diagnostics` | Open pages and start mirroring. Returns `starting`; poll `peapod_status` until `running` (3 s grace). `diagnostics:true` injects the opt-in collector at document start (see below). |
 | `peapod_stop` | — | Tear down every page and wipe its session data. |
 | `peapod_navigate` | `url`, optional `pageId` (default primary) | Load a URL. A primary move propagates to followers via navigation follow. A fragment-only (same-document) move keeps the page's current status. |
 | `peapod_reload` | optional `pageId` (default primary) | Reload a page; a running follower re-aligns to the primary's current URL and clears a pause. |
@@ -136,6 +136,15 @@ Each page accepts `name`, and either plain-mode `url` or template-mode `vars` + 
 - **Template mode** (`template` set, e.g. `https://{host}/{lang}`): each page supplies `vars` (`host=dev.example.com, lang=en`) and an optional `path` (default `/`). The rendered template becomes the page's variant base used by navigation follow.
 
 `diagnostics` (default `false`) is a task-level opt-in: when `true`, the console/network/error collector is injected into every page at document start, so activity from the very first load is captured. Leave it `false` for ordinary mirroring — `peapod_diagnostics` still works and installs the collector on demand the first time you call it (capturing activity from that point on). The native panel never injects the collector.
+
+### User-Agent
+
+`userAgent` (optional) overrides the User-Agent of every page for device-sniffing tests: servers and `navigator.userAgent` see the chosen device. It changes the UA string only — the rendering engine stays the platform webview (WebView2 / WKWebView / WebKitGTK), so engine-specific behavior cannot be simulated this way.
+
+- Omitted or empty: follows `viewMode` — `mobile` impersonates iPhone Safari, `desktop` keeps the engine's own UA.
+- Set: the exact string is applied to every page, e.g. `"Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/142.0.0.0 Mobile Safari/537.36"`.
+
+The native panel exposes the same choice as built-in presets (iPhone / iPad / Android phone / Android tablet / Windows Chrome / Edge / Firefox / macOS Safari) plus a custom string. Like the MCP parameter, it resolves once at task start; it never reads the panel's preset when a task is started via MCP.
 
 ### `peapod_send_operation` operation
 

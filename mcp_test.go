@@ -424,3 +424,37 @@ func TestWriteDiscovery(t *testing.T) {
 		}
 	}
 }
+
+func TestResolveMCPRequestUserAgent(t *testing.T) {
+	a := newApp()
+	// The panel's preset and view mode must not leak into MCP defaults.
+	a.uaPreset = "firefox"
+	a.uaCustom = "PanelUA/1.0"
+	a.viewMode = "mobile"
+	pages := []mcpPage{{URL: "https://a.com"}, {URL: ""}}
+
+	desktop, err := a.resolveMCPRequest(startIn{Pages: pages})
+	if err != nil {
+		t.Fatalf("desktop: %v", err)
+	}
+	if desktop.userAgent != "" {
+		t.Errorf("desktop default userAgent = %q, want engine default", desktop.userAgent)
+	}
+
+	mobile, err := a.resolveMCPRequest(startIn{ViewMode: "mobile", Pages: pages})
+	if err != nil {
+		t.Fatalf("mobile: %v", err)
+	}
+	if mobile.userAgent != mobileUA {
+		t.Errorf("mobile default userAgent = %q, want mobileUA", mobile.userAgent)
+	}
+
+	// An explicit UA wins over the mode default and is trimmed.
+	explicit, err := a.resolveMCPRequest(startIn{ViewMode: "mobile", UserAgent: "  MyUA/1.0  ", Pages: pages})
+	if err != nil {
+		t.Fatalf("explicit: %v", err)
+	}
+	if explicit.userAgent != "MyUA/1.0" {
+		t.Errorf("explicit userAgent = %q, want trimmed MyUA/1.0", explicit.userAgent)
+	}
+}
