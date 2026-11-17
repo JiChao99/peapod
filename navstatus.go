@@ -106,6 +106,22 @@ func (a *app) markReadyLocked(p *pageRecord) {
 	}
 }
 
+// markNavSucceededLocked records a successfully finished load (NavigationCompleted
+// with IsSuccess=true, i.e. mygo OnDidFinishLoad). A real document supersedes any
+// earlier navigation failure — including a same-URL retry initiated inside the
+// page (error-page Refresh / location.reload), which never passes through
+// resetNavLocked and whose ContentLoading commit carries the same failed URL.
+// Clearing here lets the recovered page become ready again. Error documents
+// finish with IsSuccess=false and never reach this handler, so their recorded
+// failure is retained and still blocks markReadyLocked. The caller holds a.mu.
+func (a *app) markNavSucceededLocked(p *pageRecord) {
+	if p.closed {
+		return
+	}
+	p.navError = nil
+	a.markReadyLocked(p)
+}
+
 // resetNavLocked clears a page's failures and marks it loading for an explicit
 // navigate or reload, which also lifts a pause: a fresh document supersedes the
 // desync that paused it. The caller holds a.mu.

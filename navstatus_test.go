@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/egoist/mygo"
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
@@ -122,6 +123,50 @@ func TestMarkReadySkipsErrorAndPaused(t *testing.T) {
 	}
 }
 
+func TestMarkNavSucceededRecoversSameURLRetry(t *testing.T) {
+	a := newApp()
+	p := &pageRecord{id: "p1", status: "error", url: "https://bad.invalid/",
+		navError: &navFailure{URL: "https://bad.invalid/", Name: "NAME_NOT_RESOLVED"}}
+	a.mu.Lock()
+	// An in-page retry of the same URL (error-page Refresh / location.reload)
+	// commits under the same failed URL, so the commit guard keeps the failure...
+	a.markNavCommittedLocked(p, "https://bad.invalid/")
+	if p.navError == nil {
+		t.Fatal("same-URL commit should keep the failure until the load succeeds")
+	}
+	// ...but the retry's successful finish (IsSuccess=true) supersedes it.
+	a.markNavSucceededLocked(p)
+	a.mu.Unlock()
+	if p.navError != nil || p.status != "ready" {
+		t.Fatalf("recovered retry should be ready, got status=%q navError=%+v", p.status, p.navError)
+	}
+}
+
+func TestMarkNavSucceededKeepsPaused(t *testing.T) {
+	a := newApp()
+	p := &pageRecord{id: "p2", status: "paused", navError: &navFailure{URL: "https://bad.invalid/"}}
+	a.mu.Lock()
+	a.markNavSucceededLocked(p)
+	a.mu.Unlock()
+	if p.status != "paused" {
+		t.Fatalf("paused should stay paused, got %q", p.status)
+	}
+	if p.navError != nil {
+		t.Fatal("a successful load clears navError even on a paused page")
+	}
+}
+
+func TestMarkNavSucceededClosedNoop(t *testing.T) {
+	a := newApp()
+	p := &pageRecord{id: "p1", status: "error", closed: true, navError: &navFailure{URL: "https://bad.invalid/"}}
+	a.mu.Lock()
+	a.markNavSucceededLocked(p)
+	a.mu.Unlock()
+	if p.navError == nil || p.status != "error" {
+		t.Fatalf("closed page mutated: %+v", p)
+	}
+}
+
 func TestResetNavLocked(t *testing.T) {
 	p := &pageRecord{
 		status: "paused", navError: &navFailure{URL: "https://bad.invalid/"},
@@ -130,6 +175,24 @@ func TestResetNavLocked(t *testing.T) {
 	resetNavLocked(p)
 	if p.status != "loading" || p.navError != nil || p.lastError != nil {
 		t.Fatalf("reset left %+v", p)
+	}
+}
+
+func TestNavigatePageClearsDeferredFollow(t *testing.T) {
+	a := newApp()
+	p := &pageRecord{id: "p1", status: "paused", pendingNav: "https://stale.example/", navPendingAt: time.Now()}
+	a.mu.Lock()
+	a.pages = map[string]*pageRecord{"p1": p}
+	a.mu.Unlock()
+	// view is nil in this unit environment, so navigatePage reports unknown page
+	// after performing the lock-held reset; assert that reset discarded the
+	// deferred follow destination which would otherwise undo the explicit move.
+	_ = a.navigatePage("p1", "https://good.example/")
+	if p.pendingNav != "" || !p.navPendingAt.IsZero() {
+		t.Fatalf("explicit navigate must discard deferred follow: pendingNav=%q navPendingAt=%v", p.pendingNav, p.navPendingAt)
+	}
+	if p.status != "loading" {
+		t.Fatalf("explicit navigate lifts pause, got %q", p.status)
 	}
 }
 

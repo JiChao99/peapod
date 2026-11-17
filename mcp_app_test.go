@@ -4,52 +4,85 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	sdk "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-func TestCaptureWithTimeoutSuccess(t *testing.T) {
-	png, err := captureWithTimeout(func() ([]byte, error) { return []byte("png"), nil }, time.Second)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestCaptureFlightSuccessAndError(t *testing.T) {
+	a := newApp()
+	p := &pageRecord{id: "p1"}
+	a.mu.Lock()
+	f := a.capturePageFlight(p, func() ([]byte, error) { return []byte("png"), nil })
+	a.mu.Unlock()
+	png, err := waitCapture(f, time.Second)
+	if err != nil || string(png) != "png" {
+		t.Fatalf("png = %q, err = %v", png, err)
 	}
-	if string(png) != "png" {
-		t.Fatalf("png = %q", png)
-	}
-}
 
-func TestCaptureWithTimeoutError(t *testing.T) {
 	want := errors.New("capture failed")
-	_, err := captureWithTimeout(func() ([]byte, error) { return nil, want }, time.Second)
+	a.mu.Lock()
+	f2 := a.capturePageFlight(p, func() ([]byte, error) { return nil, want })
+	a.mu.Unlock()
+	if f2 == f {
+		t.Fatal("a completed flight should free the slot for a new one")
+	}
+	_, err = waitCapture(f2, time.Second)
 	if !errors.Is(err, want) {
 		t.Fatalf("err = %v, want %v", err, want)
 	}
 }
 
-func TestCaptureWithTimeoutHangs(t *testing.T) {
+func TestCaptureFlightCoalescesAndBounds(t *testing.T) {
+	a := newApp()
+	p := &pageRecord{id: "p1"}
+	var calls int32
 	release := make(chan struct{})
-	done := make(chan struct{})
-	start := time.Now()
-	_, err := captureWithTimeout(func() ([]byte, error) {
+	capture := func() ([]byte, error) {
+		atomic.AddInt32(&calls, 1)
 		<-release // simulate a CapturePreview callback that never fires
-		close(done)
 		return []byte("late"), nil
-	}, 30*time.Millisecond)
+	}
+	a.mu.Lock()
+	f1 := a.capturePageFlight(p, capture)
+	f2 := a.capturePageFlight(p, capture) // a retry while one is outstanding
+	a.mu.Unlock()
+	if f1 != f2 {
+		t.Fatal("retry should coalesce onto the outstanding flight, not spawn a new capture")
+	}
+
+	// Both waiters time out, but only one uncancellable capture was launched.
+	_, err1 := waitCapture(f1, 20*time.Millisecond)
+	_, err2 := waitCapture(f2, 20*time.Millisecond)
 	var to errCaptureTimeout
-	if !errors.As(err, &to) {
-		t.Fatalf("err = %v, want errCaptureTimeout", err)
+	if !errors.As(err1, &to) || !errors.As(err2, &to) {
+		t.Fatalf("want errCaptureTimeout, got %v / %v", err1, err2)
 	}
-	if elapsed := time.Since(start); elapsed < 30*time.Millisecond {
-		t.Fatalf("returned too early: %s", elapsed)
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Fatalf("capture ran %d times, want 1 (bounded per page)", got)
 	}
-	// A late completion must be discarded, not block or panic.
+
+	// A late completion (window restored) delivers to waiters and frees the slot.
 	close(release)
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("capture goroutine never finished after release")
+	png, err := waitCapture(f1, time.Second)
+	if err != nil || string(png) != "late" {
+		t.Fatalf("late png = %q, err = %v", png, err)
+	}
+	a.mu.Lock()
+	slot := p.capture
+	f3 := a.capturePageFlight(p, func() ([]byte, error) { return []byte("next"), nil })
+	a.mu.Unlock()
+	if slot != nil {
+		t.Fatal("flight slot should be cleared after completion")
+	}
+	if f3 == f1 {
+		t.Fatal("a new flight should start after the previous completed")
+	}
+	png3, err3 := waitCapture(f3, time.Second)
+	if err3 != nil || string(png3) != "next" {
+		t.Fatalf("next png = %q, err = %v", png3, err3)
 	}
 }
 

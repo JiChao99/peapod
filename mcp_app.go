@@ -74,6 +74,12 @@ func (a *app) navigatePage(id, url string) error {
 	var view *mygo.WebView
 	if p != nil && !p.closed {
 		resetNavLocked(p)
+		// An explicit navigation supersedes any deferred follow destination,
+		// exactly as reloadPage does: resetNavLocked lifts a pause, and leaving
+		// pendingNav set would let the navigation handler re-apply the stale
+		// destination after this URL commits, undoing the requested move.
+		p.pendingNav = ""
+		p.navPendingAt = time.Time{}
 		view = p.view
 	}
 	a.mu.Unlock()
@@ -109,49 +115,79 @@ func (e errCaptureTimeout) Error() string {
 		"Restore the Peapod window and retry, or make this page active first.", e.timeout)
 }
 
-// captureWithTimeout runs capture in a goroutine and waits up to timeout. The
-// result channel is buffered, so a CapturePreview callback that lands after the
-// deadline is discarded rather than blocking or double-delivering.
-func captureWithTimeout(capture func() ([]byte, error), timeout time.Duration) ([]byte, error) {
+// captureFlight is one outstanding CapturePage for a page. WebView2's
+// CapturePreview cannot be cancelled (mygo exposes no cancel), so a capture of a
+// non-rendering view keeps its goroutine blocked until the callback finally
+// lands. Coalescing concurrent requests onto a single flight bounds that to one
+// goroutine per page: a retry attaches to the outstanding flight instead of
+// spawning more uncancellable work, and every waiter observes the same result
+// once the callback arrives (e.g. after the window is restored).
+type captureFlight struct {
+	done chan struct{} // closed when the capture returns; png/err then valid
+	png  []byte
+	err  error
+}
+
+// capturePageFlight returns the page's outstanding capture flight, starting one
+// (running capture) if none is in progress. The caller holds a.mu and waits on
+// the returned flight's done channel with its own timeout (see waitCapture).
+func (a *app) capturePageFlight(p *pageRecord, capture func() ([]byte, error)) *captureFlight {
+	if p.capture != nil {
+		return p.capture
+	}
+	f := &captureFlight{done: make(chan struct{})}
+	p.capture = f
+	go func() {
+		png, err := capture()
+		// Publish the result and free the slot before closing done, so a waiter
+		// that observes completion can immediately start a fresh flight.
+		a.mu.Lock()
+		f.png, f.err = png, err
+		if p.capture == f {
+			p.capture = nil
+		}
+		a.mu.Unlock()
+		close(f.done)
+	}()
+	return f
+}
+
+// waitCapture waits for a flight up to timeout, returning errCaptureTimeout if
+// the page is still not rendering. On timeout the flight keeps running so other
+// (or later) waiters can still collect the result; it does not leak a new
+// goroutine per retry.
+func waitCapture(f *captureFlight, timeout time.Duration) ([]byte, error) {
 	if timeout <= 0 {
 		timeout = captureTimeout
 	}
-	type result struct {
-		png []byte
-		err error
-	}
-	ch := make(chan result, 1)
-	go func() {
-		png, err := capture()
-		ch <- result{png, err}
-	}()
 	select {
-	case r := <-ch:
-		return r.png, r.err
+	case <-f.done:
+		return f.png, f.err
 	case <-time.After(timeout):
 		return nil, errCaptureTimeout{timeout}
 	}
 }
 
 // capturePNG grabs one page (default primary) as PNG bytes, bounded by timeout
-// so a non-rendering page fails fast instead of hanging the caller.
+// so a non-rendering page fails fast instead of hanging the caller. Concurrent
+// shots of the same page coalesce onto one capture flight.
 func (a *app) capturePNG(id string, timeout time.Duration) (string, []byte, error) {
 	a.mu.Lock()
 	if id == "" {
 		id = a.primaryID
 	}
 	p := a.pages[id]
-	var view *mygo.WebView
+	var f *captureFlight
 	name := ""
 	if p != nil && !p.closed {
-		view = p.view
 		name = p.name
+		f = a.capturePageFlight(p, p.view.CapturePage)
 	}
 	a.mu.Unlock()
-	if view == nil {
+	if f == nil {
 		return "", nil, fmt.Errorf("unknown page %q", id)
 	}
-	png, err := captureWithTimeout(view.CapturePage, timeout)
+	png, err := waitCapture(f, timeout)
 	return name, png, err
 }
 

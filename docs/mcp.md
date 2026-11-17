@@ -98,14 +98,14 @@ Each page's `status` is one of `loading`, `ready`, `error`, `paused`, `closed`:
 
 - `loading` — a navigation committed and the document is still loading.
 - `ready` — the DOM is ready (or the load finished). A page is only `ready` if its current document loaded.
-- `error` — the navigation failed (DNS, TLS, timeout, connection…). `navError` carries the detail; the page is **not** reachable even if it loaded earlier. A new navigation or `peapod_reload` clears it.
+- `error` — the navigation failed (DNS, TLS, timeout, connection…). `navError` carries the detail; the page is **not** reachable even if it loaded earlier. A new navigation, `peapod_reload`, or a successful in-page retry of the same URL clears it.
 - `paused` — a replay failed on this follower (see `error`, the last sync error); `peapod_reload` repairs it.
 
 `navError` (present only on a failed navigation) has `url`, `code` (the raw `COREWEBVIEW2_WEB_ERROR_STATUS`), a stable `name` for automation (`NAME_NOT_RESOLVED`, `SERVER_UNREACHABLE`, `TIMEOUT`, `CANNOT_CONNECT`, `CERT_EXPIRED`, `CONNECTION_RESET`, …), and `description`. `error` remains the last *replay* failure and is independent of `navError`.
 
 ### `peapod_screenshot` timeout
 
-WebView2 cannot capture a page that is not rendering: if the Peapod window is minimized or hidden, or the page is stacked behind the active one in desktop view, `CapturePreview` never completes. The tool therefore bounds every capture by `timeoutMs` (default 10 s) and returns an error result on timeout rather than hanging until the client times out. The error names the page and the likely cause; restore the Peapod window (or make the page active) and retry. The panel's batch screenshot applies the same per-page bound, so one non-rendering page no longer stalls the whole batch.
+WebView2 cannot capture a page that is not rendering: if the Peapod window is minimized or hidden, or the page is stacked behind the active one in desktop view, `CapturePreview` never completes. The tool therefore bounds every capture by `timeoutMs` (default 10 s) and returns an error result on timeout rather than hanging until the client times out. The error names the page and the likely cause; restore the Peapod window (or make the page active) and retry. The panel's batch screenshot applies the same per-page bound, so one non-rendering page no longer stalls the whole batch. Because `CapturePreview` cannot be cancelled, concurrent captures of the same page coalesce onto a single outstanding capture: retries attach to it instead of launching more uncancellable work, and all waiters receive the result once the callback lands (e.g. after the window is restored).
 
 ### `peapod_diagnostics` response
 

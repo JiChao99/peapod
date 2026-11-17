@@ -41,7 +41,8 @@ type pageRecord struct {
 	isPrimary  bool
 	closed     bool
 	lastError  *syncError
-	navError   *navFailure // failed navigation (DNS/TLS/timeout…); guarded by mu
+	navError   *navFailure    // failed navigation (DNS/TLS/timeout…); guarded by mu
+	capture    *captureFlight // outstanding CapturePage coalescing concurrent shots; guarded by mu
 	queue      chan operation
 
 	// navPendingAt is guarded by mu: when an operation that may navigate was
@@ -469,12 +470,12 @@ func (a *app) screenshotAll() {
 	}
 	type shot struct {
 		name string
-		view *mygo.WebView
+		id   string
 	}
 	shots := make([]shot, 0, len(a.order))
 	for _, id := range a.order {
 		if p := a.pages[id]; p != nil && !p.closed {
-			shots = append(shots, shot{name: p.name, view: p.view})
+			shots = append(shots, shot{name: p.name, id: id})
 		}
 	}
 	base := strings.TrimSpace(a.shotName)
@@ -496,7 +497,17 @@ func (a *app) screenshotAll() {
 		used := map[string]bool{}
 		saved, failed := 0, 0
 		for _, s := range shots {
-			png, err := captureWithTimeout(s.view.CapturePage, captureTimeout)
+			a.mu.Lock()
+			var f *captureFlight
+			if p := a.pages[s.id]; p != nil && !p.closed {
+				f = a.capturePageFlight(p, p.view.CapturePage)
+			}
+			a.mu.Unlock()
+			if f == nil {
+				failed++
+				continue
+			}
+			png, err := waitCapture(f, captureTimeout)
 			if err != nil {
 				failed++
 				continue
@@ -672,7 +683,7 @@ func (a *app) attachHandlers(p *pageRecord) {
 	})
 	page.OnDidFinishLoad(func() {
 		a.mu.Lock()
-		a.markReadyLocked(p)
+		a.markNavSucceededLocked(p)
 		a.mu.Unlock()
 		a.pushState()
 	})

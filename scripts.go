@@ -245,7 +245,9 @@ func diagPreload() string {
       const origFetch = window.fetch;
       window.fetch = function (...args) {
         const req = args[0];
-        const url = clip(typeof req === 'string' ? req : (req && req.url) || '');
+        // A fetch target may be a string, a Request (has .url) or a URL (has
+        // .href, not .url); read whichever address field is present.
+        const url = clip(typeof req === 'string' ? req : (req && (req.url || req.href)) || '');
         const method = String((args[1] && args[1].method) || (req && req.method) || 'GET');
         const start = now();
         let p;
@@ -272,9 +274,12 @@ func diagPreload() string {
       proto.send = function (...args) {
         const meta = this.__peapod;
         if (meta) {
+          // One-shot: a reused XMLHttpRequest must not re-record an earlier
+          // request with the latest response's status, and listeners must not
+          // accumulate outside the bounded ring buffer.
           this.addEventListener('loadend', () => {
             try { push(diag.network, { method: meta.method, url: meta.url, status: this.status || 0, ok: this.status >= 200 && this.status < 400, duration: now() - meta.ts, ts: meta.ts }); } catch {}
-          });
+          }, { once: true });
         }
         return origSend.apply(this, args);
       };
