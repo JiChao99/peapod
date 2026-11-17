@@ -391,6 +391,9 @@ func (a *app) pageCard(c *ui.Context, tk *theme.Tokens, ps pageState, activeID s
 		if ps.Error != nil {
 			ui.Text(c, ps.Error.Code+"："+ps.Error.Message).FontSize(12).TextColor(tk.Error).SingleLine()
 		}
+		if ps.NavError != nil {
+			ui.Text(c, ps.NavError.Name+"："+ps.NavError.Description).FontSize(12).TextColor(tk.Error).SingleLine()
+		}
 	})
 }
 
