@@ -1,8 +1,5 @@
 <p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="assets/brand/lockup-white.svg">
-    <img src="assets/brand/lockup.svg" alt="Peapod" width="340">
-  </picture>
+  <img src="assets/brand/lockup.svg" alt="Peapod" width="340">
 </p>
 
 <p align="center">
