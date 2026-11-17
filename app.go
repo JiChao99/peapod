@@ -126,9 +126,12 @@ type app struct {
 	syncUI       map[string]*bool
 
 	themeMode string // system | light | dark
-	scalePct  string // UI zoom percent: 100 | 125 | 150
-	shotName  string // base name for batch screenshots
-	lang      string // zh | en; bound to the panel Select, touched only on the main thread
+	// captionTheme is the theme last given to the native caption buttons, so
+	// syncCaptionTheme only repaints them when the panel theme changes.
+	captionTheme string
+	scalePct     string // UI zoom percent: 100 | 125 | 150
+	shotName     string // base name for batch screenshots
+	lang         string // zh | en; bound to the panel Select, touched only on the main thread
 
 	// langVal publishes lang for off-thread readers (MCP handlers, cleanup and
 	// screenshot goroutines). The panel stores it after each frame; readers load
