@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync/atomic"
@@ -180,5 +181,76 @@ func TestMCPDiagnosticsUnknownPage(t *testing.T) {
 	}
 	if !strings.Contains(resultText(t, res), "unknown page") {
 		t.Fatalf("unexpected error text: %s", resultText(t, res))
+	}
+}
+
+func TestMCPReplayBadInput(t *testing.T) {
+	a := newApp()
+	cs := connectMCP(t, a)
+	path := writeScript(t, 1)
+	for _, args := range []map[string]any{
+		{},                                   // missing scriptPath
+		{"scriptPath": path},                 // valid script, but no running task
+		{"scriptPath": "no-such-file.jsonl"}, // unreadable script
+	} {
+		res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
+			Name:      "peapod_replay",
+			Arguments: args,
+		})
+		if err != nil {
+			t.Fatalf("call: %v", err)
+		}
+		if !res.IsError {
+			t.Fatalf("want error result for %v, got %s", args, resultText(t, res))
+		}
+	}
+}
+
+func TestMCPReplayFlow(t *testing.T) {
+	a := runningFixture(t)
+	cs := connectMCP(t, a)
+	path := writeScript(t, 2)
+	res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
+		Name:      "peapod_replay",
+		Arguments: map[string]any{"scriptPath": path, "delayMs": 0},
+	})
+	if err != nil {
+		t.Fatalf("call: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("replay returned error: %s", resultText(t, res))
+	}
+	var started struct {
+		Status string `json:"status"`
+		Steps  int    `json:"steps"`
+	}
+	if err := json.Unmarshal([]byte(resultText(t, res)), &started); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if started.Status != "replaying" || started.Steps != 2 {
+		t.Fatalf("started = %+v, want replaying/2", started)
+	}
+
+	// Poll peapod_status until the replay reports completion.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		sres, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: "peapod_status"})
+		if err != nil {
+			t.Fatalf("status call: %v", err)
+		}
+		var st appState
+		if err := json.Unmarshal([]byte(resultText(t, sres)), &st); err != nil {
+			t.Fatalf("decode status: %v", err)
+		}
+		if st.Replay != nil && !st.Replay.Active {
+			if st.Replay.Done != 2 || st.Replay.Total != 2 || st.Replay.Error != "" {
+				t.Fatalf("replay state = %+v, want done 2/2 without error", st.Replay)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("replay did not finish within 3s")
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }

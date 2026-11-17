@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestValidateURL(t *testing.T) {
 	a := newApp()
@@ -179,5 +184,55 @@ func TestBuildRequestUserAgent(t *testing.T) {
 	}
 	if req.userAgent != mobileUA {
 		t.Errorf("empty custom in mobile mode = %q, want mobileUA fallback", req.userAgent)
+	}
+}
+
+func TestScreenshotDirUserWritable(t *testing.T) {
+	home := t.TempDir()
+	// os.UserHomeDir reads USERPROFILE on Windows and HOME elsewhere; pin both
+	// so the expectation holds on every platform.
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("HOME", home)
+	dir, err := screenshotDir("batch:1")
+	if err != nil {
+		t.Fatalf("screenshotDir: %v", err)
+	}
+	wantRoot := filepath.Join(home, "Pictures", "Peapod", "screenshots")
+	if !strings.HasPrefix(dir, wantRoot) {
+		t.Fatalf("dir = %q, want it under %q (never next to the executable)", dir, wantRoot)
+	}
+	if !filepath.IsAbs(dir) {
+		t.Fatalf("dir = %q, want absolute", dir)
+	}
+	if !strings.Contains(filepath.Base(dir), "batch_1_") {
+		t.Fatalf("dir base = %q, want sanitized prefix + timestamp", filepath.Base(dir))
+	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		t.Fatalf("batch dir not created: %v", err)
+	}
+}
+
+func TestUserArtifactRootFallback(t *testing.T) {
+	// With neither a home nor a config dir available, artifacts fall back to a
+	// relative folder — still never the executable's (possibly read-only) dir.
+	for _, k := range []string{"HOME", "USERPROFILE", "HOMEDRIVE", "HOMEPATH", "APPDATA", "XDG_CONFIG_HOME"} {
+		t.Setenv(k, "")
+	}
+	if got := userArtifactRoot(); got != "Peapod" {
+		t.Fatalf("userArtifactRoot with no home/config = %q, want relative Peapod", got)
+	}
+}
+
+func TestBatchDirSanitizesAndCreates(t *testing.T) {
+	root := t.TempDir()
+	dir, err := batchDir(root, `a/b:c`)
+	if err != nil {
+		t.Fatalf("batchDir: %v", err)
+	}
+	if !strings.HasPrefix(filepath.Base(dir), "a_b_c_") {
+		t.Fatalf("dir base = %q, want sanitized prefix", filepath.Base(dir))
+	}
+	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
+		t.Fatalf("dir not created: %v", err)
 	}
 }

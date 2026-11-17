@@ -24,6 +24,9 @@ peapod_send_operation to replay a click/input/scroll on followers, peapod_screen
 to see a page, peapod_diagnostics to read a page's HTTP status, text and console/network
 activity (its collector is opt-in: installed on demand, or at document start when
 peapod_start sets diagnostics:true), peapod_set_sync to toggle a follower, peapod_reload and peapod_stop.
+peapod_start with record:true saves every dispatched operation to a replayable script.jsonl
+plus per-step screenshots of all pages (peapod_status reports recording/recordSteps/recordDir);
+peapod_replay re-enacts such a script on every page of a running task — poll peapod_status.replay until done.
 A page whose navigation failed shows status "error" with a navError (e.g. NAME_NOT_RESOLVED);
 it is not reachable even though it once loaded. peapod_screenshot fails with a timeout
 error when a page is not rendering (window minimized/hidden) — restore the window and retry.
@@ -156,6 +159,7 @@ type startIn struct {
 	ViewMode     string    `json:"viewMode,omitempty" jsonschema:"desktop (single) or mobile (side by side); default desktop."`
 	UserAgent    string    `json:"userAgent,omitempty" jsonschema:"Full User-Agent string applied to every page, for device-sniffing tests. Empty = follow viewMode (mobile -> iPhone Safari, desktop -> engine default). Changes the UA only, not the rendering engine."`
 	Diagnostics  bool      `json:"diagnostics,omitempty" jsonschema:"Inject the console/network/error collector at document start (default false). peapod_diagnostics also enables it on demand; this flag captures early page-load activity."`
+	Record       bool      `json:"record,omitempty" jsonschema:"Record every dispatched operation to a replayable script.jsonl and capture all pages after each step settles (default false). Artifacts land in the user's Pictures/Peapod/recordings folder; peapod_status reports recording/recordSteps/recordDir, and peapod_replay can re-enact the script later."`
 }
 
 type pageIDIn struct {
@@ -207,6 +211,11 @@ func (m mcpOperation) toOperation() (operation, error) {
 
 type sendOpIn struct {
 	Operation mcpOperation `json:"operation" jsonschema:"A captured-style operation replayed on every synced follower."`
+}
+
+type replayIn struct {
+	ScriptPath string   `json:"scriptPath" jsonschema:"Path to a recorded script.jsonl (readable by the app user). Every line's operation is validated up front, then replayed in order."`
+	DelayMs    *float64 `json:"delayMs,omitempty" jsonschema:"Pause between operations in ms, 0-5000; default 500. Give navigations time to land; 0 replays as fast as the queues allow."`
 }
 
 func (a *app) registerMCPTools(srv *sdk.Server) {
@@ -277,6 +286,18 @@ func (a *app) registerMCPTools(srv *sdk.Server) {
 				return mcpErr(err), nil, nil
 			}
 			return mcpJSON(map[string]string{"ok": "true"}), nil, nil
+		})
+
+	sdk.AddTool(srv, &sdk.Tool{Name: "peapod_replay", Description: "Replay a recorded script.jsonl onto EVERY page of the running task (including the primary), in order, so the whole task re-enacts a recorded flow. Start the task at the flow's starting URL first; navigation follow keeps pages aligned. Returns immediately with the step count — poll peapod_status.replay until active is false, then check done/total and error. Stopping the task cancels the replay. If the task records, replayed operations are recorded too (source replay)."},
+		func(_ context.Context, _ *sdk.CallToolRequest, in replayIn) (*sdk.CallToolResult, any, error) {
+			if strings.TrimSpace(in.ScriptPath) == "" {
+				return mcpErr(fmt.Errorf("scriptPath is required")), nil, nil
+			}
+			n, err := a.startReplay(in.ScriptPath, replayDelayFromMs(in.DelayMs))
+			if err != nil {
+				return mcpErr(err), nil, nil
+			}
+			return mcpJSON(map[string]any{"status": "replaying", "steps": n}), nil, nil
 		})
 
 	sdk.AddTool(srv, &sdk.Tool{Name: "peapod_screenshot", Description: "Capture one page (default primary) as a PNG image so you can see its current state. Bounded by timeoutMs (default 10s): a page that is not rendering — the Peapod window is minimized/hidden, or the page is stacked behind the active one — fails with a timeout error instead of hanging; restore the window or make the page active, then retry."},
@@ -377,7 +398,7 @@ func (a *app) resolveMCPRequest(in startIn) (startRequest, error) {
 			resW: clampRes(p.ResW, defW), resH: clampRes(p.ResH, defH),
 		})
 	}
-	return startRequest{pages: pages, shareStorage: in.ShareStorage, viewMode: mode, userAgent: ua, diagnostics: in.Diagnostics}, nil
+	return startRequest{pages: pages, shareStorage: in.ShareStorage, viewMode: mode, userAgent: ua, diagnostics: in.Diagnostics, record: in.Record}, nil
 }
 
 func mcpName(p mcpPage, i int) string {

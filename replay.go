@@ -1,0 +1,203 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"time"
+)
+
+// maxScriptBytes bounds a replay script read (~tens of thousands of operations).
+const maxScriptBytes = 10 << 20
+
+// defaultReplayDelay paces replayed operations so navigations and renders can
+// land between steps; callers can override it (0 = as fast as the queues allow).
+const defaultReplayDelay = 500 * time.Millisecond
+
+// loadScript reads a recorded script.jsonl and validates every line up front,
+// so a replay never starts half-parsed. Blank lines are skipped; a malformed
+// line fails the whole load with its line number. The read is bounded so a
+// huge path cannot be pulled into memory before the size check.
+func loadScript(path string) ([]operation, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxScriptBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxScriptBytes {
+		return nil, fmt.Errorf("script exceeds %d bytes", maxScriptBytes)
+	}
+	var ops []operation
+	for i, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var sl scriptLine
+		if err := json.Unmarshal([]byte(line), &sl); err != nil {
+			return nil, fmt.Errorf("script line %d: %w", i+1, err)
+		}
+		op := sl.Operation
+		if err := validateOperation(&op); err != nil {
+			return nil, fmt.Errorf("script line %d: %w", i+1, err)
+		}
+		ops = append(ops, op)
+	}
+	if len(ops) == 0 {
+		return nil, fmt.Errorf("script contains no operations")
+	}
+	return ops, nil
+}
+
+// replayRun is one in-flight peapod_replay. Fields are guarded by a.mu.
+type replayRun struct {
+	taskID  string
+	total   int
+	done    int
+	skipped int
+	active  bool
+	err     string
+	quit    chan struct{}
+}
+
+// replayState is the peapod_status view of a replay run: poll active until it
+// turns false, then read done/total and error. skipped counts page-level
+// exclusions (an operation not enqueued because that page was closed, switched
+// off or paused); done still advances for those operations.
+type replayState struct {
+	Active  bool   `json:"active"`
+	Done    int    `json:"done"`
+	Total   int    `json:"total"`
+	Skipped int    `json:"skipped,omitempty"`
+	Error   string `json:"error,omitempty"`
+}
+
+// replayDelayFromMs clamps a caller-supplied pace into 0–5s; nil = default.
+func replayDelayFromMs(ms *float64) time.Duration {
+	if ms == nil {
+		return defaultReplayDelay
+	}
+	return time.Duration(min(max(*ms, 0), 5000)) * time.Millisecond
+}
+
+// startReplay validates the script, then replays it onto EVERY page of the
+// running task — including the primary, so the whole task re-enacts the flow
+// and navigation follow keeps stragglers aligned. It returns immediately with
+// the step count; progress and the final result appear in peapod_status.replay.
+// Stopping the task cancels the replay.
+func (a *app) startReplay(path string, delay time.Duration) (int, error) {
+	ops, err := loadScript(path)
+	if err != nil {
+		return 0, err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.status != "running" {
+		return 0, fmt.Errorf("%s", a.tr("err.replayNotRunning"))
+	}
+	if a.replay != nil && a.replay.active {
+		return 0, fmt.Errorf("a replay is already running")
+	}
+	rp := &replayRun{taskID: a.taskID, total: len(ops), active: true, quit: make(chan struct{})}
+	a.replay = rp
+	go a.runReplay(rp, ops, delay)
+	return len(ops), nil
+}
+
+func (a *app) runReplay(rp *replayRun, ops []operation, delay time.Duration) {
+	for i, op := range ops {
+		select {
+		case <-rp.quit:
+			a.finishReplayRun(rp, "cancelled")
+			return
+		default:
+		}
+		a.mu.Lock()
+		if a.taskID != rp.taskID || a.status != "running" {
+			a.mu.Unlock()
+			a.finishReplayRun(rp, "task stopped")
+			return
+		}
+		pages := make([]*pageRecord, 0, len(a.order))
+		for _, id := range a.order {
+			if p := a.pages[id]; p != nil {
+				pages = append(pages, p)
+			}
+		}
+		a.mu.Unlock()
+		// Enqueue outside the lock: a full queue is retried, not dropped, so a
+		// paced replay never loses steps silently. Ineligible pages are counted.
+		skipped := 0
+		for _, p := range pages {
+			if !a.enqueueReplayOp(p, op, rp.quit) {
+				skipped++
+			}
+			select {
+			case <-rp.quit:
+				a.finishReplayRun(rp, "cancelled")
+				return
+			default:
+			}
+		}
+		a.mu.Lock()
+		rp.done = i + 1
+		rp.skipped += skipped
+		a.recordOpLocked(op, "replay")
+		a.mu.Unlock()
+		a.pushState()
+		if i < len(ops)-1 && delay > 0 {
+			select {
+			case <-rp.quit:
+				a.finishReplayRun(rp, "cancelled")
+				return
+			case <-time.After(delay):
+			}
+		}
+	}
+	a.finishReplayRun(rp, "")
+}
+
+// enqueueReplayOp queues one replay operation losslessly: while the target's
+// queue is full it retries (the worker drains it) instead of dropping like the
+// capture path does. It returns false when the page is ineligible — closed,
+// sync off or paused — or the run was cancelled; replay counts those skips.
+// Every send happens under a.mu with the closed check, so it can never race
+// cleanup's channel close. The caller must not hold a.mu.
+func (a *app) enqueueReplayOp(p *pageRecord, op operation, quit <-chan struct{}) bool {
+	for {
+		a.mu.Lock()
+		if p.closed || !p.syncOn || p.status == "paused" {
+			a.mu.Unlock()
+			return false
+		}
+		if op.Type != "scroll" {
+			p.navPendingAt = time.Now()
+		}
+		select {
+		case p.queue <- op:
+			a.mu.Unlock()
+			return true
+		default:
+		}
+		a.mu.Unlock()
+		select {
+		case <-quit:
+			return false
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+}
+
+func (a *app) finishReplayRun(rp *replayRun, errMsg string) {
+	a.mu.Lock()
+	rp.active = false
+	rp.err = errMsg
+	a.mu.Unlock()
+	a.pushState()
+}

@@ -260,6 +260,14 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 		choice.Switch(c, &a.shareStorage, choice.SwitchProps{})
 	})
 
+	ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+		ui.Column(c).Grow(1).Gap(2).Children(func() {
+			ui.Text(c, a.tr("ui.record")).FontSize(14).TextColor(tk.Text)
+			ui.Text(c, a.tr("ui.record.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
+		})
+		choice.Switch(c, &a.record, choice.SwitchProps{})
+	})
+
 	ui.Column(c).Gap(2).Children(func() {
 		a.fieldLabel(c, tk, a.tr("ui.pages", len(a.configs)))
 		hint := a.tr("ui.pages.hint")
@@ -382,6 +390,12 @@ func (a *app) runtimeBody(c *ui.Context, tk *theme.Tokens, st appState) {
 		display.Tag(c, a.statusLabel(st.Status), display.TagProps{Color: statusColor(st.Status), Size: theme.Small, Round: true})
 		ui.Text(c, a.tr("ui.runtime.hint", len(st.Pages))).FontSize(12).TextColor(tk.TextTertiary).Grow(1).SingleLine()
 	})
+	if st.Recording {
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			display.Tag(c, a.tr("ui.record.tag", st.RecordSteps), display.TagProps{Color: display.TagError, Size: theme.Small, Round: true})
+			ui.Text(c, st.RecordDir).FontSize(12).TextColor(tk.TextTertiary).Grow(1).MinWidth(0).SingleLine()
+		})
+	}
 	for _, ps := range st.Pages {
 		a.pageCard(c, tk, ps, st.ActiveID)
 	}
@@ -476,7 +490,9 @@ func (a *app) renderStage(c *ui.Context, tk *theme.Tokens, st appState) {
 	ui.Column(c).Grow(1).MinWidth(0).Background(tk.BgLayout).Children(func() {
 		ui.Row(c).Height(toolbarHeight).Padding(0, 16).Gap(10).AlignItems(ui.Center).
 			Background(tk.BgContainer).Children(func() {
-			if mobile && len(all) > 0 {
+			if a.recView.open {
+				ui.Text(c, a.tr("rec.title")).FontSize(15).Bold().TextColor(tk.TextHeading).Grow(1).MinWidth(0).SingleLine()
+			} else if mobile && len(all) > 0 {
 				ui.Text(c, a.tr("ui.mobile.title", len(all))).FontSize(15).Bold().TextColor(tk.TextHeading).Grow(1).MinWidth(0).SingleLine()
 			} else {
 				label := activeName
@@ -488,7 +504,8 @@ func (a *app) renderStage(c *ui.Context, tk *theme.Tokens, st appState) {
 					ui.Text(c, fmt.Sprintf("%.0f × %.0f", activeRec.resW, activeRec.resH)).FontSize(13).TextColor(tk.TextTertiary)
 				}
 			}
-			if activeView != nil {
+			a.recToggleButton(c, tk)
+			if !a.recView.open && activeView != nil {
 				a.iconButton(c, tk, lucide.Camera(), a.tr("ui.shotAll"), func() { a.screenshotAll() })
 				a.iconButton(c, tk, lucide.RefreshCw(), a.tr("ui.reload"), func() { a.reloadPage(st.ActiveID) })
 			}
@@ -496,65 +513,87 @@ func (a *app) renderStage(c *ui.Context, tk *theme.Tokens, st appState) {
 
 		if mobile && len(all) > 0 {
 			a.renderMobileStage(c, tk, all, zoom, barH)
+		} else {
+			a.renderDesktopStage(c, tk, st, all, zoom, barH, activeView, activeRec)
+		}
+		if a.recView.open {
+			a.renderRecordingsOverlay(c, tk, barH)
+		}
+	})
+}
+
+// renderDesktopStage fits the active page into the stage region.
+func (a *app) renderDesktopStage(c *ui.Context, tk *theme.Tokens, st appState, all []*pageRecord, zoom float64, barH float32, activeView *mygo.WebView, activeRec *pageRecord) {
+	ui.Column(c).Grow(1).MinHeight(0).Center().Padding(stagePadding).Children(func() {
+		if activeView == nil {
+			ui.Column(c).Center().Gap(10).Children(func() {
+				ui.Icon(c, lucide.Globe()).FontSize(44).TextColor(tk.TextQuaternary)
+				ui.Text(c, a.tr("ui.stage.empty")).TextColor(tk.TextTertiary)
+			})
 			return
 		}
-
-		ui.Column(c).Grow(1).MinHeight(0).Center().Padding(stagePadding).Children(func() {
-			if activeView == nil {
-				ui.Column(c).Center().Gap(10).Children(func() {
-					ui.Icon(c, lucide.Globe()).FontSize(44).TextColor(tk.TextQuaternary)
-					ui.Text(c, a.tr("ui.stage.empty")).TextColor(tk.TextTertiary)
-				})
-				return
-			}
-			winW, winH := c.Size()
-			regionW := winW - panelWidth - 2*stagePadding
-			regionH := winH - barH - toolbarHeight - 2*stagePadding
-			if regionW < 1 {
-				regionW = 1
-			}
-			if regionH < 1 {
-				regionH = 1
-			}
-			tw, th := float32(activeRec.resW), float32(activeRec.resH)
-			if tw < 1 {
-				tw = 1280
-			}
-			if th < 1 {
-				th = 800
-			}
-			// Fit the target resolution into the region; the page zooms by the
-			// same factor times the UI zoom so its CSS viewport stays tw × th.
-			fit := min(regionW/tw, regionH/th, 1)
-			if fit <= 0 {
-				fit = 0.05
-			}
-			// Every page stays placed, stacked under the active one and clipped
-			// to its box: WebView2 only renders placed views, and CapturePage
-			// never returns for a hidden one, so batch screenshots must not
-			// depend on which page is active.
-			ui.Column(c).Width(tw*fit).Height(th*fit).Center().Radius(8).Border(1, tk.Border).Clip().Children(func() {
-				for _, p := range all {
-					if p.id == st.ActiveID {
-						continue
-					}
-					pw, ph := float32(p.resW), float32(p.resH)
-					if pw < 1 {
-						pw = 1280
-					}
-					if ph < 1 {
-						ph = 800
-					}
-					pfit := min(regionW/pw, regionH/ph, 1)
-					if pfit <= 0 {
-						pfit = 0.05
-					}
-					ui.WebView(c, p.view).Width(pw * pfit).Height(ph * pfit)
-					a.applyPageZoom(p.view, p, pfit, zoom)
+		winW, winH := c.Size()
+		regionW := winW - panelWidth - 2*stagePadding
+		regionH := winH - barH - toolbarHeight - 2*stagePadding
+		if regionW < 1 {
+			regionW = 1
+		}
+		if regionH < 1 {
+			regionH = 1
+		}
+		tw, th := float32(activeRec.resW), float32(activeRec.resH)
+		if tw < 1 {
+			tw = 1280
+		}
+		if th < 1 {
+			th = 800
+		}
+		// Fit the target resolution into the region; the page zooms by the
+		// same factor times the UI zoom so its CSS viewport stays tw × th.
+		fit := min(regionW/tw, regionH/th, 1)
+		if fit <= 0 {
+			fit = 0.05
+		}
+		// Every page stays placed, stacked under the active one and clipped
+		// to its box: WebView2 only renders placed views, and CapturePage
+		// never returns for a hidden one, so batch screenshots must not
+		// depend on which page is active.
+		ui.Column(c).Width(tw*fit).Height(th*fit).Center().Radius(8).Border(1, tk.Border).Clip().Children(func() {
+			for _, p := range all {
+				if p.id == st.ActiveID {
+					continue
 				}
-				ui.WebView(c, activeView).Width(tw * fit).Height(th * fit)
-				a.applyPageZoom(activeView, activeRec, fit, zoom)
-			})
+				pw, ph := float32(p.resW), float32(p.resH)
+				if pw < 1 {
+					pw = 1280
+				}
+				if ph < 1 {
+					ph = 800
+				}
+				pfit := min(regionW/pw, regionH/ph, 1)
+				if pfit <= 0 {
+					pfit = 0.05
+				}
+				ui.WebView(c, p.view).Width(pw * pfit).Height(ph * pfit)
+				a.applyPageZoom(p.view, p, pfit, zoom)
+			}
+			ui.WebView(c, activeView).Width(tw * fit).Height(th * fit)
+			a.applyPageZoom(activeView, activeRec, fit, zoom)
+		})
+	})
+}
+
+// renderRecordingsOverlay paints the browser above the stage region while the
+// page stack stays built and placed underneath: removing the stage would hide
+// every WebView, and CapturePage never returns for an unplaced view, so live
+// recording and batch screenshots would stall while browsing.
+func (a *app) renderRecordingsOverlay(c *ui.Context, tk *theme.Tokens, barH float32) {
+	winW, winH := c.Size()
+	ui.Overlay(c, func() {
+		ui.Column(c).Absolute().Left(panelWidth).Top(barH + toolbarHeight).
+			Width(winW - panelWidth).Height(winH - barH - toolbarHeight).
+			Background(tk.BgLayout).Children(func() {
+			a.renderRecordings(c, tk)
 		})
 	})
 }
