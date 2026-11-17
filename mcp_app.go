@@ -19,6 +19,7 @@ func (a *app) hostCapture(op operation) error {
 	if err := validateOperation(&op); err != nil {
 		return err
 	}
+	a.recordOpLocked(op, "host")
 	for _, id := range a.order {
 		if id == a.primaryID {
 			continue

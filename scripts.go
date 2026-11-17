@@ -118,8 +118,19 @@ func capturePreload(pageID string) string {
     return operation;
   }
 
+  // The same scroll event reaches both the document and the window capture
+  // listener (scroll is registered on each). Remember handled events so one
+  // user scroll is captured — and mirrored — exactly once.
+  const seenEvents = new WeakSet();
   const capture = (event) => {
+    if (seenEvents.has(event)) return;
+    seenEvents.add(event);
     if (window.__syncReplaying) return;
+    // A replayed scroll fires its scroll event in a queued task AFTER the
+    // replay eval returned (and __syncReplaying was reset), and the event is
+    // isTrusted even though the scroll was programmatic. Suppress captures
+    // until that event has landed, or the replay echoes back as a guest op.
+    if (event.type === 'scroll' && window.__syncReplayScrollUntil && Date.now() < window.__syncReplayScrollUntil) return;
     const operation = captureOperation(event);
     if (operation && window.mygo && typeof window.mygo.call === 'function') {
       window.mygo.call('Sync.Capture', { pageId: PAGE_ID, operation }).catch(() => {});
@@ -177,6 +188,9 @@ func replayScript(operationJSON string) string {
         dispatch('change');
         if (operation.type === 'select') dispatch('select');
       } else if (operation.type === 'scroll') {
+        // Keep suppressing scroll capture past this eval: the scroll event is
+        // dispatched by the UA in a later task, still isTrusted (see capture).
+        window.__syncReplayScrollUntil = Date.now() + 500;
         target.scrollTo({
           left: typeof operation.scrollX === 'number' ? operation.scrollX : target.scrollLeft,
           top: typeof operation.scrollY === 'number' ? operation.scrollY : target.scrollTop,

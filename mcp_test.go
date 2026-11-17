@@ -171,7 +171,7 @@ func TestStateJSONContract(t *testing.T) {
 	if err := json.Unmarshal(raw, &top); err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	for _, k := range []string{"status", "pages", "activeId", "errors", "message", "notice"} {
+	for _, k := range []string{"status", "pages", "activeId", "errors", "message", "notice", "recording"} {
 		if _, ok := top[k]; !ok {
 			t.Fatalf("missing documented key %q in %s", k, raw)
 		}
@@ -305,7 +305,7 @@ func TestMCPToolsListed(t *testing.T) {
 	want := map[string]bool{
 		"peapod_status": false, "peapod_start": false, "peapod_stop": false,
 		"peapod_navigate": false, "peapod_reload": false, "peapod_set_sync": false,
-		"peapod_send_operation": false, "peapod_screenshot": false, "peapod_diagnostics": false,
+		"peapod_send_operation": false, "peapod_replay": false, "peapod_screenshot": false, "peapod_diagnostics": false,
 	}
 	for _, tool := range res.Tools {
 		if _, ok := want[tool.Name]; ok {
@@ -379,6 +379,27 @@ func TestResolveMCPRequestDiagnostics(t *testing.T) {
 	}
 	if !on.diagnostics {
 		t.Errorf("diagnostics:true should propagate to startRequest")
+	}
+}
+
+func TestResolveMCPRequestRecord(t *testing.T) {
+	a := newApp()
+	pages := []mcpPage{{URL: "https://a.com"}, {URL: ""}}
+
+	off, err := a.resolveMCPRequest(startIn{Pages: pages})
+	if err != nil {
+		t.Fatalf("off: %v", err)
+	}
+	if off.record {
+		t.Errorf("record should default to false")
+	}
+
+	on, err := a.resolveMCPRequest(startIn{Pages: pages, Record: true})
+	if err != nil {
+		t.Fatalf("on: %v", err)
+	}
+	if !on.record {
+		t.Errorf("record:true should propagate to startRequest")
 	}
 }
 

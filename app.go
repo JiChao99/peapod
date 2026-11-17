@@ -88,6 +88,14 @@ type appState struct {
 	Errors   []syncError `json:"errors"`
 	Message  string      `json:"message"`
 	Notice   string      `json:"notice"`
+
+	// Recording/replay evidence surface (docs/mcp.md). Recording is true while
+	// a recorder is attached; Replay appears once a peapod_replay has started
+	// and keeps its final result until the task stops or a new replay begins.
+	Recording   bool         `json:"recording"`
+	RecordSteps int          `json:"recordSteps,omitempty"`
+	RecordDir   string       `json:"recordDir,omitempty"`
+	Replay      *replayState `json:"replay,omitempty"`
 }
 
 // app holds the task state. mu guards the task/page fields, which services and
@@ -109,6 +117,12 @@ type app struct {
 	cancel    chan struct{}
 	seq       int
 
+	// rec is the running task's operation recorder (record.go), nil when the
+	// task does not record. replay is the latest peapod_replay run (replay.go).
+	// Both are guarded by mu.
+	rec    *recorder
+	replay *replayRun
+
 	// taskViewMode is the resolved view mode of the running task, guarded by mu.
 	// The stage renders from it, not the setup form's viewMode, so an MCP-started
 	// task lays out by the mode it actually requested.
@@ -123,6 +137,7 @@ type app struct {
 	uaPreset     string  // built-in UA option key (ua.go); UI-owned like viewMode
 	uaCustom     string  // full UA string when uaPreset == uaCustom
 	shareStorage bool
+	record       bool // record operations + per-step screenshots; UI-owned like shareStorage
 	syncUI       map[string]*bool
 
 	themeMode string // system | light | dark
@@ -137,6 +152,10 @@ type app struct {
 	// screenshot goroutines). The panel stores it after each frame; readers load
 	// it through currentLang so they never race the Select's write to lang.
 	langVal atomic.Value
+
+	// recView is the in-app recordings browser (recordview.go), UI-owned like
+	// the setup form: touched only on the main thread in view().
+	recView recBrowser
 }
 
 func newApp() *app {
@@ -187,6 +206,7 @@ type startRequest struct {
 	viewMode     string
 	userAgent    string // resolved UA applied to every page; empty = engine default
 	diagnostics  bool   // inject the opt-in diagnostics collector at document start
+	record       bool   // record dispatched operations + per-step screenshots
 }
 
 // capturePayload is what a guest page's preload sends.
@@ -220,6 +240,7 @@ func (s *SyncService) Capture(ctx context.Context, payload capturePayload) error
 	if err := validateOperation(&op); err != nil {
 		return err
 	}
+	a.recordOpLocked(op, "guest")
 	for _, id := range a.order {
 		if id == a.primaryID {
 			continue
@@ -320,7 +341,7 @@ func (a *app) buildRequest() (startRequest, error) {
 		})
 	}
 	return startRequest{pages: pages, shareStorage: a.shareStorage, viewMode: a.viewMode,
-		userAgent: resolveUA(a.uaPreset, a.uaCustom, a.viewMode)}, nil
+		userAgent: resolveUA(a.uaPreset, a.uaCustom, a.viewMode), record: a.record}, nil
 }
 
 func (a *app) cfgName(cfg *pageConfig, i int) string {
@@ -377,7 +398,7 @@ func (a *app) launch(req startRequest) error {
 	taskID := a.taskID
 	lang := a.currentLang()
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 	go a.runCountdown(taskID, cancel, req, lang)
 	return nil
 }
@@ -390,7 +411,7 @@ func (a *app) cancelStart() {
 		a.cancel = nil
 	}
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 }
 
 // stopTask tears down every page and clears its session data. cleanup-error is
@@ -418,7 +439,7 @@ func (a *app) stopTask() error {
 		}
 	}
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 	go a.cleanup(pages, a.currentLang())
 	return nil
 }
@@ -430,7 +451,7 @@ func (a *app) setActive(id string) {
 		a.activeID = id
 	}
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 }
 
 // reloadPage reloads a page and clears its paused state. A running follower
@@ -462,11 +483,12 @@ func (a *app) reloadPage(id string) {
 			view.Page().Reload()
 		}
 	}
-	a.win.Invalidate()
+	a.invalidate()
 }
 
 // screenshotAll captures every running page to a PNG named
-// {base}_{pageName}.png inside a per-batch folder next to the executable.
+// {base}_{pageName}.png inside a per-batch folder under the user's
+// Pictures/Peapod screenshots root.
 // The stage keeps every page placed (stacked under the active one), so each
 // view renders without being brought to the front; CapturePage is
 // goroutine-safe.
@@ -560,16 +582,34 @@ func (a *app) setNotice(msg string) {
 	a.mu.Lock()
 	a.notice = msg
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.pushState()
 }
 
-// screenshotDir creates a per-batch folder next to the executable so repeated
-// captures never overwrite earlier ones, and returns its absolute path.
-func screenshotDir(base string) (string, error) {
-	root := "screenshots"
-	if exe, err := os.Executable(); err == nil {
-		root = filepath.Join(filepath.Dir(exe), "screenshots")
+// userArtifactRoot is the user-writable root for saved artifacts (screenshots,
+// recordings): Pictures/Peapod under the user's home, falling back to the
+// config dir and then a relative folder. It is never the executable's own
+// directory — an installed app lives somewhere read-only (e.g. Program Files),
+// which is exactly where captures used to fail.
+func userArtifactRoot() string {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		return filepath.Join(home, "Pictures", "Peapod")
 	}
+	if cfg, err := os.UserConfigDir(); err == nil && cfg != "" {
+		return filepath.Join(cfg, "Peapod")
+	}
+	return "Peapod"
+}
+
+// screenshotDir creates a per-batch folder under the user's Pictures/Peapod
+// screenshots root so repeated captures never overwrite earlier ones, and
+// returns its absolute path.
+func screenshotDir(base string) (string, error) {
+	return batchDir(filepath.Join(userArtifactRoot(), "screenshots"), base)
+}
+
+// batchDir creates root/{base}_{timestamp} and returns its absolute path. The
+// timestamp keeps repeated batches apart; base is sanitized for the filesystem.
+func batchDir(root, base string) (string, error) {
 	dir := filepath.Join(root, fmt.Sprintf("%s_%s", sanitizeFileName(base), time.Now().Format("20060102-150405")))
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
@@ -600,7 +640,7 @@ func (a *app) runCountdown(taskID string, cancel chan struct{}, req startRequest
 			a.status = "idle"
 		}
 		a.mu.Unlock()
-		a.win.Invalidate()
+		a.invalidate()
 		return
 	case <-time.After(3 * time.Second):
 	}
@@ -678,8 +718,16 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 		go a.replayWorker(p)
 	}
 
+	// Attach the recorder while still starting: once status flips to running,
+	// operations can dispatch, and none may fall into a recording gap.
+	if req.record {
+		a.startRecording(taskID, req, lang)
+	}
 	a.mu.Lock()
 	if a.taskID != taskID || a.status != "starting" {
+		if a.rec != nil && a.rec.taskID == taskID {
+			a.stopRecordingLocked()
+		}
 		a.mu.Unlock()
 		return
 	}
@@ -687,7 +735,7 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 	a.activeID = a.primaryID
 	a.taskViewMode = req.viewMode
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 }
 
 // attachHandlers locks the page down (no popups, no permissions) and tracks
@@ -774,6 +822,16 @@ func (a *app) cleanup(pages []*pageRecord, lang string) {
 		}
 	}
 	a.mu.Lock()
+	// Detach the recorder (its goroutine flushes the script and writes the
+	// summary asynchronously) and cancel any in-flight replay before the page
+	// map is cleared.
+	a.stopRecordingLocked()
+	if rp := a.replay; rp != nil {
+		if rp.active {
+			close(rp.quit)
+		}
+		a.replay = nil
+	}
 	a.pages = map[string]*pageRecord{}
 	a.order = nil
 	a.activeID = ""
@@ -788,7 +846,7 @@ func (a *app) cleanup(pages []*pageRecord, lang string) {
 		a.message = ""
 	}
 	a.mu.Unlock()
-	a.win.Invalidate()
+	a.invalidate()
 }
 
 // snapshot builds the panel state under the lock.
@@ -816,12 +874,25 @@ func (a *app) snapshot() appState {
 			st.Errors = append(st.Errors, *p.lastError)
 		}
 	}
+	if r := a.rec; r != nil {
+		st.Recording = true
+		st.RecordSteps = r.seq
+		st.RecordDir = r.dir
+	}
+	if rp := a.replay; rp != nil {
+		st.Replay = &replayState{Active: rp.active, Done: rp.done, Total: rp.total, Skipped: rp.skipped, Error: rp.err}
+	}
 	return st
 }
 
 // pushState redraws the native panel. Page handlers call it off the main
 // thread; Invalidate is safe from any goroutine.
 func (a *app) pushState() {
+	a.invalidate()
+}
+
+// invalidate redraws the window when one exists (tests run without a window).
+func (a *app) invalidate() {
 	if a.win != nil {
 		a.win.Invalidate()
 	}

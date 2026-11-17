@@ -64,12 +64,13 @@ Because the port/token rotate per launch, either regenerate this config from `mc
 | Tool | Arguments | Effect |
 | --- | --- | --- |
 | `peapod_status` | — | Task status plus every page's `id`, `name`, `url`, `status`, `syncOn`, `isPrimary`, last error. |
-| `peapod_start` | `pages[]` (2–10), optional `template`, `shareStorage`, `viewMode`, `userAgent`, `diagnostics` | Open pages and start mirroring. Returns `starting`; poll `peapod_status` until `running` (3 s grace). `diagnostics:true` injects the opt-in collector at document start (see below). |
+| `peapod_start` | `pages[]` (2–10), optional `template`, `shareStorage`, `viewMode`, `userAgent`, `diagnostics`, `record` | Open pages and start mirroring. Returns `starting`; poll `peapod_status` until `running` (3 s grace). `diagnostics:true` injects the opt-in collector at document start (see below). `record:true` saves a replayable script plus per-step screenshots (see [Recording & replay](#recording--replay)). |
 | `peapod_stop` | — | Tear down every page and wipe its session data. |
 | `peapod_navigate` | `url`, optional `pageId` (default primary) | Load a URL. A primary move propagates to followers via navigation follow. A fragment-only (same-document) move keeps the page's current status. |
 | `peapod_reload` | optional `pageId` (default primary) | Reload a page; a running follower re-aligns to the primary's current URL and clears a pause. |
 | `peapod_set_sync` | `pageId`, `on` | Enable/disable replay onto one follower. |
 | `peapod_send_operation` | `operation` | Replay a host-trusted operation on every synced follower. |
+| `peapod_replay` | `scriptPath`, optional `delayMs` (0–5000, default 500) | Re-enact a recorded `script.jsonl` on **every** page of the running task, including the primary. Returns `{"status":"replaying","steps":n}` immediately; poll `peapod_status.replay` until `active` is `false` (see [Recording & replay](#recording--replay)). |
 | `peapod_screenshot` | optional `pageId` (default primary), `timeoutMs` (1000–60000, default 10000) | Capture one page as a PNG image. Bounded by a timeout: a page that is not rendering fails with an error instead of hanging (see below). |
 | `peapod_diagnostics` | optional `pageId` (default primary) | Read a page's acceptance diagnostics: `status`/`navError`, plus URL/title/readyState, the main document's HTTP status, bounded body text, and recent console/network/error activity. Installs the opt-in collector on demand (idempotent) if it was not injected at start. |
 
@@ -88,11 +89,21 @@ Keys are lower camelCase, matching `peapod_start` / `peapod_stop`:
   ],
   "errors": [],
   "message": "",
-  "notice": ""
+  "notice": "",
+  "recording": false
 }
 ```
 
 `status` is one of `idle`, `starting`, `running`, `stopping`, `cleanup-error`. After a failed data wipe the task stays in `cleanup-error`: `peapod_start` and `peapod_stop` both report the lockout until the app is restarted, so a new task can never run on un-wiped session data.
+
+`recording` is always present (`true` while an opt-in recording is active). When recording, `recordSteps` (operations dispatched so far) and `recordDir` (the session folder) are added. While a `peapod_replay` run exists, `replay` reports its progress:
+
+```json
+{ "recording": true, "recordSteps": 12, "recordDir": "C:\\Users\\me\\Pictures\\Peapod\\recordings\\recording_20261117-101500",
+  "replay": { "active": true, "done": 5, "total": 12 } }
+```
+
+Poll `replay.active` until it turns `false`, then read `done`/`total` and `skipped` (page-level exclusions); a non-empty `replay.error` means the run ended early (`cancelled` or `task stopped`).
 
 Each page's `status` is one of `loading`, `ready`, `error`, `paused`, `closed`:
 
@@ -160,10 +171,75 @@ The native panel exposes the same choice as built-in presets (iPhone / iPad / An
 - `anchor.selector` is a **full CSS selector** (`#note`, `[name="q"]`, `div > button`); `anchor.type` (`id`/`name`/`css`) is only a hint. It must match exactly one element on the target or the page pauses with `NOT_FOUND` / `AMBIGUOUS`.
 - `value`: string/number/bool for `input`/`change`/`select`. `checked` for checkbox/radio. `scrollX`/`scrollY` for `scroll`.
 
+## Recording & replay
+
+Recording is opt-in: the panel's **Record operations** switch, or `peapod_start` with `record:true`. It turns a task into an evidence chain — a replayable script of every dispatched operation plus per-step screenshots of all pages — and never interferes with the task itself: a recording failure (unwritable folder, full queue, non-rendering page) is counted and reported, not fatal.
+
+### Artifacts
+
+Each recorded task gets one session folder under the user's recordings root (never next to the executable):
+
+| Platform | Root |
+| --- | --- |
+| Windows | `%USERPROFILE%\Pictures\Peapod\recordings\` |
+| macOS | `~/Pictures/Peapod/recordings/` |
+| Linux | `~/Pictures/Peapod/recordings/` |
+
+If no home directory is available the root falls back to the user config dir (`…/Peapod/recordings`), then to a relative `Peapod/recordings`. Batch screenshots use the same root under `screenshots/`.
+
+```
+recording_20261117-101500/
+  session.json      # task setup: pages/variants, resolutions, viewMode, userAgent, shareStorage, diagnostics
+  script.jsonl      # every dispatched operation, in order — the replayable script
+  steps/0001/       # one PNG per running page after step 1 settled
+    Primary.png
+    Page 2.png
+  steps/0004/…
+  summary.json      # counts and errors, written when recording ends (task stop)
+```
+
+Each `script.jsonl` line is one operation plus its evidence context:
+
+```json
+{"seq":1,"at":"2026-11-17T10:15:04.1234567Z","source":"guest","url":"https://dev.example.com/cart","operation":{"type":"input","anchor":{"type":"id","selector":"#note"},"value":"hello"}}
+```
+
+- `source` is `guest` (captured on the primary page), `host` (`peapod_send_operation`) or `replay` (`peapod_replay`).
+- `url` is the primary's URL at dispatch time; `operation` has exactly the `peapod_send_operation` shape.
+- Password and file inputs are never captured, so they never appear in a script. Other typed text **does** — treat recordings as sensitive local artifacts. Unlike ephemeral session data (wiped on stop), recordings are deliberately kept.
+
+### Capture semantics (honest evidence)
+
+Every dispatched operation gets a JSONL line. Screenshots are taken only after the task **settles** — no page loading, every synced page's replay queue drained — so a step's shots show that step's result, not a half-replayed state. Operations that pile up during a capture are coalesced: each still gets its line, but only the burst's **latest** step is captured (a mid-burst shot would show later operations under an earlier step's label). The settle wait is bounded (8 s, then a best-effort capture), and each page's capture reuses the batch path's 10 s timeout and coalesced capture flights.
+
+Scrolls the page produces itself — load animations, scroll anchoring after a resize, its own scripts — are trusted events too, so they are mirrored and recorded exactly like user scrolls; a burst of them coalesces into one step. Each scroll event is captured once even though the listener is registered on both `document` and `window`.
+
+`summary.json` makes the gaps explicit:
+
+```json
+{ "endedAt": "…", "operations": 12, "dispatched": 12, "stepsCaptured": 5,
+  "shotsSaved": 10, "shotsFailed": 0, "superseded": 7, "dropped": 0 }
+```
+
+- `operations` — JSONL lines persisted; `dispatched` — operations handed to the recorder (differs when steps were dropped by a full queue, or on a write error reported as `writeError`).
+- `stepsCaptured` — step folders captured; `superseded` — steps absorbed into a later step's capture; `dropped` — steps lost to a full queue (1024-step buffer; recording never blocks the sync path).
+- `shotsSaved` / `shotsFailed` — per-page PNG outcomes. A minimized/hidden window — or one fully covered by another window — makes WebView2 stop rendering, so captures time out; those shots are counted as failed and the recording continues. While occluded, the layout viewport can also drift, so replayed scrolls may no-op. Restore the window to keep the visual evidence complete.
+
+### `peapod_replay`
+
+`peapod_replay` re-enacts a recorded script on a **running** task. Start the task at the flow's starting URL/state first — the script contains operations only, no navigations; navigation follow keeps followers aligned as the primary moves.
+
+- `scriptPath` must be readable by the app user. The whole file (≤10 MiB) is validated up front — a malformed or invalid line fails the call with its line number, so a replay never starts half-parsed.
+- Unlike `peapod_send_operation` (followers only), replay drives **every page including the primary**, so the whole task re-enacts the flow.
+- `delayMs` (0–5000, default 500) paces operations so navigations and renders can land between steps; `0` replays as fast as the queues allow.
+- The call returns `{"status":"replaying","steps":n}` immediately. Poll `peapod_status.replay` until `active` is `false`; `done == total` with no `error` means every operation was dispatched to every eligible page. A full replay queue is retried, never dropped; `skipped` counts page-level exclusions (a page closed, sync-off or paused when the operation was dispatched). Dispatch is not verification — use `peapod_diagnostics` / `peapod_screenshot` to assert outcomes, and check per-page `error` for replay failures (`NOT_FOUND`, `AMBIGUOUS`, `SENSITIVE`, …).
+- Only one replay runs at a time; stopping the task cancels it (`replay.error` = `cancelled` / `task stopped`).
+- Replayed operations are themselves recorded with `source:"replay"` when recording is on, and the same guards apply: password/file targets are refused (`SENSITIVE`), and a follower that fails to replay pauses with its error rather than desyncing silently.
+
 ## Example agent workflow
 
-1. `peapod_start` with a template and two pages (dev + prod).
+1. `peapod_start` with a template and two pages (dev + prod); add `record:true` to keep a replayable script and per-step screenshots.
 2. Poll `peapod_status` until both pages are `ready`. A page stuck in `error` with a `navError` (e.g. `NAME_NOT_RESOLVED`) is unreachable — fix the URL/host rather than waiting.
 3. `peapod_navigate` the primary to a route; followers follow on their own host.
 4. `peapod_send_operation` to type into a field; `peapod_screenshot` each page to compare, and `peapod_diagnostics` to assert HTTP status, text and console/network errors.
-5. `peapod_stop` to clean up.
+5. `peapod_stop` to clean up. With recording on, the session folder now holds `script.jsonl` + step shots + `summary.json`; later, start a fresh task at the same entry URL and `peapod_replay` the script to re-enact the flow.
