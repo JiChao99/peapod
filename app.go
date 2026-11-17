@@ -41,6 +41,7 @@ type pageRecord struct {
 	isPrimary  bool
 	closed     bool
 	lastError  *syncError
+	navError   *navFailure // failed navigation (DNS/TLS/timeout…); guarded by mu
 	queue      chan operation
 
 	// navPendingAt is guarded by mu: when an operation that may navigate was
@@ -67,13 +68,14 @@ type pageRecord struct {
 // pageState is the panel's read-only view of one page. The json tags are the
 // MCP peapod_status contract (docs/mcp.md); the panel reads the Go fields.
 type pageState struct {
-	ID        string     `json:"id"`
-	Name      string     `json:"name"`
-	URL       string     `json:"url"`
-	Status    string     `json:"status"`
-	SyncOn    bool       `json:"syncOn"`
-	IsPrimary bool       `json:"isPrimary"`
-	Error     *syncError `json:"error"`
+	ID        string      `json:"id"`
+	Name      string      `json:"name"`
+	URL       string      `json:"url"`
+	Status    string      `json:"status"`
+	SyncOn    bool        `json:"syncOn"`
+	IsPrimary bool        `json:"isPrimary"`
+	Error     *syncError  `json:"error"`
+	NavError  *navFailure `json:"navError,omitempty"`
 }
 
 // appState is everything the native panel renders, and the peapod_status payload.
@@ -175,6 +177,7 @@ type startRequest struct {
 	pages        []resolvedPage
 	shareStorage bool
 	viewMode     string
+	diagnostics  bool // inject the opt-in diagnostics collector at document start
 }
 
 // capturePayload is what a guest page's preload sends.
@@ -429,8 +432,7 @@ func (a *app) reloadPage(id string) {
 	var view *mygo.WebView
 	resync := ""
 	if p != nil && !p.closed {
-		p.status = "loading"
-		p.lastError = nil
+		resetNavLocked(p)
 		// An explicit reload/resync supersedes any deferred follow destination;
 		// leaving it would let the navigation handler undo the repair.
 		p.pendingNav = ""
@@ -494,7 +496,7 @@ func (a *app) screenshotAll() {
 		used := map[string]bool{}
 		saved, failed := 0, 0
 		for _, s := range shots {
-			png, err := s.view.CapturePage()
+			png, err := captureWithTimeout(s.view.CapturePage, captureTimeout)
 			if err != nil {
 				failed++
 				continue
@@ -593,7 +595,6 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 			session = mygo.NewEphemeralSession()
 		}
 		pageOpts := mygo.PageOptions{
-			PreloadScript:        capturePreload(id),
 			TrustedOrigins:       []string{originOf(rp.url)},
 			BackgroundThrottling: mygo.ThrottlingOff,
 			Session:              session,
@@ -601,6 +602,11 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 		if mobile {
 			pageOpts.UserAgent = mobileUA
 		}
+		preload := capturePreload(id)
+		if req.diagnostics {
+			preload += "\n" + diagPreload()
+		}
+		pageOpts.PreloadScript = preload
 		view, err := a.win.NewWebView(mygo.WebViewOptions{URL: rp.url, Page: pageOpts})
 		if err != nil {
 			a.mu.Lock()
@@ -660,9 +666,19 @@ func (a *app) attachHandlers(p *pageRecord) {
 	page.SetPermissionHandler(func(mygo.PermissionRequest) bool { return false })
 	page.OnDOMReady(func() {
 		a.mu.Lock()
-		if !p.closed && p.status != "paused" {
-			p.status = "ready"
-		}
+		a.markReadyLocked(p)
+		a.mu.Unlock()
+		a.pushState()
+	})
+	page.OnDidFinishLoad(func() {
+		a.mu.Lock()
+		a.markReadyLocked(p)
+		a.mu.Unlock()
+		a.pushState()
+	})
+	page.OnDidFailLoad(func(e *mygo.LoadError) {
+		a.mu.Lock()
+		a.markNavFailedLocked(p, e)
 		a.mu.Unlock()
 		a.pushState()
 	})
@@ -673,6 +689,7 @@ func (a *app) attachHandlers(p *pageRecord) {
 		view := p.view
 		if !p.closed {
 			p.url = u
+			a.markNavCommittedLocked(p, u)
 			select {
 			case p.navSignal <- struct{}{}:
 			default:
@@ -761,7 +778,7 @@ func (a *app) snapshot() appState {
 		}
 		st.Pages = append(st.Pages, pageState{
 			ID: p.id, Name: p.name, URL: p.url, Status: p.status,
-			SyncOn: p.syncOn, IsPrimary: p.isPrimary, Error: p.lastError,
+			SyncOn: p.syncOn, IsPrimary: p.isPrimary, Error: p.lastError, NavError: p.navError,
 		})
 		if p.lastError != nil {
 			st.Errors = append(st.Errors, *p.lastError)

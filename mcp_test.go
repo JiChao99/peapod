@@ -305,7 +305,7 @@ func TestMCPToolsListed(t *testing.T) {
 	want := map[string]bool{
 		"peapod_status": false, "peapod_start": false, "peapod_stop": false,
 		"peapod_navigate": false, "peapod_reload": false, "peapod_set_sync": false,
-		"peapod_send_operation": false, "peapod_screenshot": false,
+		"peapod_send_operation": false, "peapod_screenshot": false, "peapod_diagnostics": false,
 	}
 	for _, tool := range res.Tools {
 		if _, ok := want[tool.Name]; ok {
@@ -357,6 +357,28 @@ func TestResolveMCPRequestViewportDefaults(t *testing.T) {
 	}
 	if custom.pages[1].resW != 3840 || custom.pages[1].resH != 200 {
 		t.Errorf("clamped = %vx%v, want 3840x200", custom.pages[1].resW, custom.pages[1].resH)
+	}
+}
+
+func TestResolveMCPRequestDiagnostics(t *testing.T) {
+	a := newApp()
+	pages := []mcpPage{{URL: "https://a.com"}, {URL: ""}}
+
+	// Default off: the invasive collector must not be injected unless asked.
+	off, err := a.resolveMCPRequest(startIn{Pages: pages})
+	if err != nil {
+		t.Fatalf("off: %v", err)
+	}
+	if off.diagnostics {
+		t.Errorf("diagnostics should default to false")
+	}
+
+	on, err := a.resolveMCPRequest(startIn{Pages: pages, Diagnostics: true})
+	if err != nil {
+		t.Fatalf("on: %v", err)
+	}
+	if !on.diagnostics {
+		t.Errorf("diagnostics:true should propagate to startRequest")
 	}
 }
 

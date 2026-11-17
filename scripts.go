@@ -195,3 +195,148 @@ func replayScript(operationJSON string) string {
     }
   })();`
 }
+
+// diagPreload installs a lightweight, on-demand diagnostics collector in the
+// page's main world. It keeps bounded ring buffers of console output, uncaught
+// errors and network activity (fetch/XHR pass-through hooks plus resource
+// timing), readable later through window.__peapodDiag. It sends nothing to Go on
+// its own — peapod_diagnostics reads it via Eval — so the capture/replay path is
+// untouched. Every hook is defensive: it passes the original call through
+// unchanged and never throws into the page.
+//
+// The hooks are opt-in: they are injected at document start only when a task is
+// started with diagnostics=true, or lazily by the first peapod_diagnostics call.
+// The guard makes re-injection idempotent — it never double-wraps a page's
+// console/fetch/XHR or resets the buffers already collected.
+func diagPreload() string {
+	return `(() => {
+  try {
+    if (window.__peapodDiag) return;
+    const MAX = 200;
+    const diag = { console: [], network: [], errors: [] };
+    window.__peapodDiag = diag;
+    const now = () => Date.now();
+    const push = (arr, item) => { arr.push(item); if (arr.length > MAX) arr.shift(); };
+    const clip = (s) => String(s).slice(0, 2000);
+
+    for (const level of ['log', 'info', 'warn', 'error', 'debug']) {
+      const orig = typeof console[level] === 'function' ? console[level].bind(console) : null;
+      if (!orig) continue;
+      console[level] = (...args) => {
+        try {
+          const text = args.map((a) => {
+            if (typeof a === 'string') return a;
+            try { return JSON.stringify(a); } catch { return String(a); }
+          }).join(' ');
+          push(diag.console, { level, text: clip(text), ts: now() });
+        } catch {}
+        return orig(...args);
+      };
+    }
+
+    window.addEventListener('error', (e) => {
+      try { push(diag.errors, { message: clip(e.message || (e.error && e.error.message) || 'error'), source: e.filename || '', line: e.lineno || 0, ts: now() }); } catch {}
+    });
+    window.addEventListener('unhandledrejection', (e) => {
+      try { const r = e.reason; push(diag.errors, { message: clip(r && r.message ? r.message : r), rejection: true, ts: now() }); } catch {}
+    });
+
+    if (typeof window.fetch === 'function') {
+      const origFetch = window.fetch;
+      window.fetch = function (...args) {
+        const req = args[0];
+        const url = clip(typeof req === 'string' ? req : (req && req.url) || '');
+        const method = String((args[1] && args[1].method) || (req && req.method) || 'GET');
+        const start = now();
+        let p;
+        try { p = origFetch.apply(this, args); }
+        catch (err) { push(diag.network, { method, url, status: 0, error: clip(err), ts: start }); throw err; }
+        return p.then((resp) => {
+          try { push(diag.network, { method, url, status: resp.status, ok: resp.ok, duration: now() - start, ts: start }); } catch {}
+          return resp;
+        }, (err) => {
+          try { push(diag.network, { method, url, status: 0, error: clip(err), duration: now() - start, ts: start }); } catch {}
+          throw err;
+        });
+      };
+    }
+
+    if (typeof window.XMLHttpRequest === 'function') {
+      const proto = window.XMLHttpRequest.prototype;
+      const origOpen = proto.open;
+      const origSend = proto.send;
+      proto.open = function (method, url, ...rest) {
+        this.__peapod = { method: String(method || 'GET'), url: clip(url || ''), ts: now() };
+        return origOpen.call(this, method, url, ...rest);
+      };
+      proto.send = function (...args) {
+        const meta = this.__peapod;
+        if (meta) {
+          this.addEventListener('loadend', () => {
+            try { push(diag.network, { method: meta.method, url: meta.url, status: this.status || 0, ok: this.status >= 200 && this.status < 400, duration: now() - meta.ts, ts: meta.ts }); } catch {}
+          });
+        }
+        return origSend.apply(this, args);
+      };
+    }
+
+    try {
+      if (typeof PerformanceObserver === 'function') {
+        const seen = new Set();
+        const po = new PerformanceObserver((list) => {
+          for (const e of list.getEntries()) {
+            try {
+              // fetch/XHR are already recorded by the hooks above.
+              if (e.initiatorType === 'fetch' || e.initiatorType === 'xmlhttprequest') continue;
+              if (seen.has(e.name)) continue;
+              if (seen.size > 1000) seen.clear();
+              seen.add(e.name);
+              push(diag.network, { method: 'GET', url: clip(e.name), status: e.responseStatus || 0, resource: e.initiatorType || '', duration: Math.round(e.duration), ts: now() });
+            } catch {}
+          }
+        });
+        po.observe({ type: 'resource', buffered: true });
+      }
+    } catch {}
+  } catch {}
+})();`
+}
+
+// diagScript reads the collector plus the page's own state in one Eval. The
+// navigation entry's responseStatus gives the main document's HTTP status without
+// a DevTools protocol round-trip; body text is bounded for acceptance assertions.
+func diagScript() string {
+	return `(() => {
+    const d = window.__peapodDiag || { console: [], network: [], errors: [] };
+    let httpStatus = 0;
+    try {
+      const nav = performance.getEntriesByType('navigation')[0];
+      if (nav && typeof nav.responseStatus === 'number') httpStatus = nav.responseStatus;
+    } catch {}
+    let text = '';
+    try { text = ((document.body && document.body.innerText) || '').slice(0, 4000); } catch {}
+    return {
+      href: location.href,
+      title: document.title,
+      readyState: document.readyState,
+      httpStatus,
+      text,
+      console: d.console.slice(-100),
+      network: d.network.slice(-100),
+      errors: d.errors.slice(-50),
+    };
+  })();`
+}
+
+// diagOnDemand installs the collector if it is absent (the diagPreload guard makes
+// re-injection idempotent) and then reads it, all in one Eval. Both helpers are
+// self-invoking expressions; nesting them in a single outer IIFE gives the Eval
+// one completion value (the read result), matching diagScript/replayScript. This
+// is the lazy path used by peapod_diagnostics when a task was not started with
+// diagnostics:true — it captures activity from the moment of the first call.
+func diagOnDemand() string {
+	return `(() => {
+  ` + diagPreload() + `
+  return ` + diagScript() + `
+})();`
+}
