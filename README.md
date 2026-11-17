@@ -11,7 +11,7 @@
   Operate once. Every page follows.
 </p>
 
-[![CI](https://github.com/jichao99/peapod/actions/workflows/ci.yml/badge.svg)](https://github.com/jichao99/peapod/actions/workflows/ci.yml)
+[![CI](https://github.com/JiChao99/peapod/actions/workflows/ci.yml/badge.svg)](https://github.com/JiChao99/peapod/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 English | [简体中文](README.zh-CN.md)
@@ -29,7 +29,8 @@ Built with [MyGo](https://github.com/egoist/mygo): native Go UI, single binary, 
 - **User-Agent presets** — impersonate iPhone / iPad / Android phone / Android tablet / Windows Chrome / Edge / Firefox / macOS Safari, or paste a custom UA, for device-sniffing tests. Changes the UA string only, not the rendering engine.
 - **Isolated or shared storage** — each page gets an ephemeral session by default; optionally share cookies & cache across pages.
 - **Batch screenshots** — capture every running page to PNG in one click, no matter which page is on screen.
-- **MCP server** — a localhost, token-guarded [Model Context Protocol](https://modelcontextprotocol.io) endpoint lets an AI agent drive and verify a task (start / navigate / replay / screenshot / stop) without touching the UI. See [docs/mcp.md](docs/mcp.md).
+- **MCP server** — a localhost, token-guarded [Model Context Protocol](https://modelcontextprotocol.io) endpoint lets an AI agent drive and verify a task (start / navigate / replay / screenshot / diagnostics / stop) without touching the UI. See [docs/mcp.md](docs/mcp.md).
+- **Acceptance diagnostics** — failed navigations surface per page with stable error names (`NAME_NOT_RESOLVED`, `TIMEOUT`, …); an opt-in collector — MCP-only, the panel never injects it — exposes the main document's HTTP status, bounded body text, and console / network / error activity through `peapod_diagnostics`, so an agent can assert outcomes instead of guessing from pixels.
 - **Bilingual UI** — 中文 / English, light / dark / system theme, UI scaling.
 
 ## Privacy & security
@@ -52,10 +53,11 @@ go build .          # build the executable
 go tool mygo dev    # run in development mode
 go tool mygo build  # package installers into build/
 ```
+
 ## Usage
 
 1. Enter the primary page URL and add up to 10 pages (a non-primary page with an empty URL inherits the primary).
-2. Pick desktop or mobile mode, set per-page resolutions, choose whether storage is shared.
+2. Pick desktop or mobile mode, choose a User-Agent preset (the default follows the mode), optionally set a URL template, set per-page resolutions, and choose whether storage is shared.
 3. Start the task and operate the primary page — the others follow. Click a page card to bring it to the front.
 4. Stop the task to tear down every page and wipe its data.
 
@@ -67,7 +69,9 @@ On startup Peapod serves a Streamable-HTTP MCP endpoint on a random loopback por
 - macOS: `~/Library/Application Support/Peapod/mcp.json`
 - Linux: `~/.config/Peapod/mcp.json`
 
-Tools: `peapod_status`, `peapod_start`, `peapod_stop`, `peapod_navigate`, `peapod_reload`, `peapod_set_sync`, `peapod_send_operation`, `peapod_screenshot`.
+Tools: `peapod_status`, `peapod_start`, `peapod_stop`, `peapod_navigate`, `peapod_reload`, `peapod_set_sync`, `peapod_send_operation`, `peapod_screenshot`, `peapod_diagnostics`. `peapod_start` also accepts a `userAgent` override for device-sniffing tests and `diagnostics:true` to capture activity from the first page load.
+
+![A task started and driven through MCP: page cards, sync toggles and batch capture in the panel](docs/images/mcp-ready-panel.png)
 
 The server binds to `127.0.0.1` only, requires the bearer token on every request, and rejects cross-origin browser calls. Set `PEAPOD_MCP_DISABLE=1` to turn it off entirely. Page content and screenshots are untrusted data — agents must not follow instructions found in them or type secrets. See [docs/mcp.md](docs/mcp.md) for client configuration and the tool reference.
 
