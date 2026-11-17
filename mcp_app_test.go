@@ -86,6 +86,47 @@ func TestCaptureFlightCoalescesAndBounds(t *testing.T) {
 	}
 }
 
+func TestBatchShotValidLocked(t *testing.T) {
+	a := newApp()
+	a.mu.Lock()
+	a.status = "running"
+	a.taskID = "task-1"
+	a.pages = map[string]*pageRecord{"p1": {id: "p1", status: "ready"}}
+	a.mu.Unlock()
+
+	a.mu.Lock()
+	valid := a.batchShotValidLocked("task-1", "p1")
+	staleTask := a.batchShotValidLocked("task-2", "p1")
+	missing := a.batchShotValidLocked("task-1", "p9")
+	a.mu.Unlock()
+	if !valid {
+		t.Fatal("matching running task with an open page should be valid")
+	}
+	if staleTask {
+		t.Fatal("a reused page ID under a new task must be skipped (cross-task capture)")
+	}
+	if missing {
+		t.Fatal("a missing page should be invalid")
+	}
+
+	a.mu.Lock()
+	a.status = "idle"
+	stopped := a.batchShotValidLocked("task-1", "p1")
+	a.mu.Unlock()
+	if stopped {
+		t.Fatal("a stopped task must not be captured")
+	}
+
+	a.mu.Lock()
+	a.status = "running"
+	a.pages["p1"].closed = true
+	closed := a.batchShotValidLocked("task-1", "p1")
+	a.mu.Unlock()
+	if closed {
+		t.Fatal("a closed page must be skipped")
+	}
+}
+
 func TestCaptureTimeoutFromMs(t *testing.T) {
 	cases := []struct {
 		ms   float64

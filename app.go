@@ -479,6 +479,7 @@ func (a *app) screenshotAll() {
 		}
 	}
 	base := strings.TrimSpace(a.shotName)
+	taskID := a.taskID
 	a.mu.Unlock()
 	if len(shots) == 0 {
 		a.setNotice(a.tr("err.noPages"))
@@ -499,7 +500,8 @@ func (a *app) screenshotAll() {
 		for _, s := range shots {
 			a.mu.Lock()
 			var f *captureFlight
-			if p := a.pages[s.id]; p != nil && !p.closed {
+			if a.batchShotValidLocked(taskID, s.id) {
+				p := a.pages[s.id]
 				f = a.capturePageFlight(p, p.view.CapturePage)
 			}
 			a.mu.Unlock()
@@ -530,6 +532,19 @@ func (a *app) screenshotAll() {
 		}
 		a.setNotice(trLang(lang, "notice.shotDone", saved, dir))
 	}()
+}
+
+// batchShotValidLocked reports whether a batch screenshot shot still belongs to
+// the originating, running task. Page IDs (p1, p2, …) are reused across tasks, so
+// a batch goroutine that outlives its task — e.g. while waiting on a capture
+// timeout — must not capture a newly started task's pages under the old batch's
+// names. The caller holds mu.
+func (a *app) batchShotValidLocked(taskID, id string) bool {
+	if a.taskID != taskID || a.status != "running" {
+		return false
+	}
+	p := a.pages[id]
+	return p != nil && !p.closed
 }
 
 func (a *app) setNotice(msg string) {

@@ -226,6 +226,11 @@ func diagPreload() string {
         try {
           const text = args.map((a) => {
             if (typeof a === 'string') return a;
+            // Error props are non-enumerable, so JSON.stringify(err) is '{}'.
+            // Keep the message/stack a caught console.error(err) would lose.
+            if (a instanceof Error || (a && typeof a.message === 'string' && typeof a.stack === 'string')) {
+              return a.stack || String(a);
+            }
             try { return JSON.stringify(a); } catch { return String(a); }
           }).join(' ');
           push(diag.console, { level, text: clip(text), ts: now() });
@@ -246,9 +251,15 @@ func diagPreload() string {
       window.fetch = function (...args) {
         const req = args[0];
         // A fetch target may be a string, a Request (has .url) or a URL (has
-        // .href, not .url); read whichever address field is present.
-        const url = clip(typeof req === 'string' ? req : (req && (req.url || req.href)) || '');
-        const method = String((args[1] && args[1].method) || (req && req.method) || 'GET');
+        // .href, not .url); read whichever address field is present. Extraction
+        // is best-effort: a target with a throwing .url getter works with native
+        // fetch, so inspecting it here must never break the original call.
+        let url = '';
+        let method = 'GET';
+        try {
+          url = clip(typeof req === 'string' ? req : (req && (req.url || req.href)) || '');
+          method = String((args[1] && args[1].method) || (req && req.method) || 'GET');
+        } catch {}
         const start = now();
         let p;
         try { p = origFetch.apply(this, args); }
@@ -293,9 +304,11 @@ func diagPreload() string {
             try {
               // fetch/XHR are already recorded by the hooks above.
               if (e.initiatorType === 'fetch' || e.initiatorType === 'xmlhttprequest') continue;
-              if (seen.has(e.name)) continue;
+              // Dedup by entry identity, not URL: distinct requests to the same
+              // asset (an image that reloads with a 404) must each be retained.
+              if (seen.has(e)) continue;
               if (seen.size > 1000) seen.clear();
-              seen.add(e.name);
+              seen.add(e);
               push(diag.network, { method: 'GET', url: clip(e.name), status: e.responseStatus || 0, resource: e.initiatorType || '', duration: Math.round(e.duration), ts: now() });
             } catch {}
           }
