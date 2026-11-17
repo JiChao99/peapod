@@ -46,6 +46,7 @@ func (a *app) view(c *ui.Context) {
 	default:
 		theme.Apply(c)
 	}
+	a.syncCaptionTheme()
 	c.SetZoom(float32(a.uiZoom()))
 	tk := theme.TokensOf(c)
 
@@ -110,6 +111,25 @@ func (a *app) view(c *ui.Context) {
 	// Publish the language the Select may have just changed so off-thread
 	// readers (MCP, cleanup, screenshots) see it without racing the binding.
 	a.langVal.Store(a.lang)
+}
+
+// syncCaptionTheme draws the native minimize, maximize and close buttons for
+// the panel's theme. They follow the system appearance otherwise, which in a
+// system-dark setup leaves light glyphs over a light title bar (and their
+// hover backplates invisible) after switching the panel to light.
+func (a *app) syncCaptionTheme() {
+	want := mygo.ThemeSystem
+	switch a.themeMode {
+	case "light":
+		want = mygo.ThemeLight
+	case "dark":
+		want = mygo.ThemeDark
+	}
+	if a.win == nil || a.captionTheme == string(want) {
+		return
+	}
+	a.captionTheme = string(want)
+	a.win.SetWindowButtonsTheme(want)
 }
 
 // uiZoom is the whole-interface scale chosen in the panel, 1 for 100%.
