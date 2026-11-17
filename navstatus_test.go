@@ -35,8 +35,11 @@ func TestMarkNavFailedSetsError(t *testing.T) {
 	if p.status != "error" {
 		t.Fatalf("status = %q, want error", p.status)
 	}
-	if p.navError == nil || p.navError.Name != "NAME_NOT_RESOLVED" || p.navError.Code != 13 {
+	if p.navError == nil || p.navError.Name != navErrorName(13) || p.navError.Code != 13 {
 		t.Fatalf("navError = %+v", p.navError)
+	}
+	if !p.navFailed {
+		t.Fatal("a failed attempt must set navFailed so a Linux finish-after-fail keeps the error")
 	}
 }
 
@@ -167,13 +170,127 @@ func TestMarkNavSucceededClosedNoop(t *testing.T) {
 	}
 }
 
+func TestMarkNavSucceededKeepsFailedAttemptError(t *testing.T) {
+	a := newApp()
+	p := &pageRecord{id: "p1", status: "loading", url: "https://bad.invalid/"}
+	a.mu.Lock()
+	// Linux/WebKitGTK: a failed attempt commits, fails, then still emits
+	// WEBKIT_LOAD_FINISHED. The finish of a failed attempt must NOT clear it.
+	a.markNavCommittedLocked(p, "https://bad.invalid/")
+	a.markNavFailedLocked(p, &mygo.LoadError{URL: "https://bad.invalid/", Code: 13})
+	a.markNavSucceededLocked(p)
+	a.mu.Unlock()
+	if p.navError == nil || p.status != "error" {
+		t.Fatalf("finish of a failed attempt must keep the error: status=%q navError=%+v", p.status, p.navError)
+	}
+}
+
+func TestMarkNavCommittedResetsFailedFlag(t *testing.T) {
+	a := newApp()
+	p := &pageRecord{id: "p1", status: "error", url: "https://bad.invalid/",
+		navFailed: true, navError: &navFailure{URL: "https://bad.invalid/", Name: "NAME_NOT_RESOLVED"}}
+	a.mu.Lock()
+	// A same-URL commit early-returns (keeps navError) but must still reset
+	// navFailed so the retry's successful finish can recover the page.
+	a.markNavCommittedLocked(p, "https://bad.invalid/")
+	a.mu.Unlock()
+	if p.navFailed {
+		t.Fatal("a new commit must reset navFailed even on the same-URL early return")
+	}
+	if p.navError == nil {
+		t.Fatal("same-URL commit keeps the recorded failure until the load succeeds")
+	}
+	a.mu.Lock()
+	a.markNavSucceededLocked(p)
+	a.mu.Unlock()
+	if p.navError != nil || p.status != "ready" {
+		t.Fatalf("retry after reset should recover: status=%q navError=%+v", p.status, p.navError)
+	}
+}
+
+func TestNavigatePageFragmentOnlyPreservesState(t *testing.T) {
+	a := newApp()
+	p := &pageRecord{id: "p1", status: "ready", url: "https://x.example/page", pendingNav: "https://stale.example/", navPendingAt: time.Now()}
+	a.mu.Lock()
+	a.pages = map[string]*pageRecord{"p1": p}
+	a.mu.Unlock()
+	// view is nil in this unit environment; navigatePage reports unknown page
+	// after the lock-held state update. A fragment-only move must not reset a
+	// ready page to loading (no new-document callbacks restore it).
+	_ = a.navigatePage("p1", "https://x.example/page#section")
+	if p.status != "ready" {
+		t.Fatalf("fragment-only move must preserve ready, got %q", p.status)
+	}
+	if p.pendingNav != "" || !p.navPendingAt.IsZero() {
+		t.Fatalf("explicit move still discards deferred follow: pendingNav=%q", p.pendingNav)
+	}
+	// A different-document move does reset to loading.
+	_ = a.navigatePage("p1", "https://x.example/other")
+	if p.status != "loading" {
+		t.Fatalf("new-document move should reset to loading, got %q", p.status)
+	}
+}
+
+func TestNSErrName(t *testing.T) {
+	cases := map[int]string{
+		-1003: "NAME_NOT_RESOLVED",
+		-1006: "NAME_NOT_RESOLVED",
+		-1001: "TIMEOUT",
+		-1004: "CANNOT_CONNECT",
+		-1200: "CERT_INVALID",
+		-1202: "CERT_INVALID",
+		-999:  "OPERATION_CANCELED",
+		-4242: "NS_ERROR_-4242",
+	}
+	for code, want := range cases {
+		if got := nsErrorName(code); got != want {
+			t.Errorf("nsErrorName(%d) = %q, want %q", code, got, want)
+		}
+	}
+}
+
+func TestWebkitErrorName(t *testing.T) {
+	cases := map[int]string{
+		300:  "LOAD_FAILED",
+		301:  "CONNECTION_ABORTED",
+		303:  "OPERATION_CANCELED",
+		102:  "CANNOT_SHOW_URI",
+		9999: "WEBKIT_ERROR_9999",
+	}
+	for code, want := range cases {
+		if got := webkitErrorName(code); got != want {
+			t.Errorf("webkitErrorName(%d) = %q, want %q", code, got, want)
+		}
+	}
+}
+
+func TestSameDocumentURL(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"https://x.example/page", "https://x.example/page#sec", true},
+		{"https://x.example/page#a", "https://x.example/page#b", true},
+		{"https://x.example/page", "https://x.example/page", true},
+		{"https://x.example/page", "https://x.example/other#sec", false},
+		{"https://x.example/page", "https://y.example/page#sec", false},
+		{"https://x.example/page?q=1", "https://x.example/page?q=2#sec", false},
+		{"", "https://x.example/page", false},
+	}
+	for _, c := range cases {
+		if got := sameDocumentURL(c.a, c.b); got != c.want {
+			t.Errorf("sameDocumentURL(%q,%q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
 func TestResetNavLocked(t *testing.T) {
 	p := &pageRecord{
 		status: "paused", navError: &navFailure{URL: "https://bad.invalid/"},
-		lastError: &syncError{Code: "NOT_FOUND"},
+		navFailed: true, lastError: &syncError{Code: "NOT_FOUND"},
 	}
 	resetNavLocked(p)
-	if p.status != "loading" || p.navError != nil || p.lastError != nil {
+	if p.status != "loading" || p.navError != nil || p.navFailed || p.lastError != nil {
 		t.Fatalf("reset left %+v", p)
 	}
 }

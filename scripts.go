@@ -248,27 +248,31 @@ func diagPreload() string {
 
     if (typeof window.fetch === 'function') {
       const origFetch = window.fetch;
-      window.fetch = function (...args) {
-        const req = args[0];
-        // A fetch target may be a string, a Request (has .url) or a URL (has
-        // .href, not .url); read whichever address field is present. Extraction
-        // is best-effort: a target with a throwing .url getter works with native
-        // fetch, so inspecting it here must never break the original call.
-        let url = '';
-        let method = 'GET';
+      // Best-effort metadata. A fetch target may be a string, a Request (.url) or
+      // a URL (.href); init.method may be a caller accessor. Read defensively so
+      // an inspection failure never throws into the page.
+      const fetchMeta = (args) => {
         try {
-          url = clip(typeof req === 'string' ? req : (req && (req.url || req.href)) || '');
-          method = String((args[1] && args[1].method) || (req && req.method) || 'GET');
-        } catch {}
+          const req = args[0];
+          const url = clip(typeof req === 'string' ? req : (req && (req.url || req.href)) || '');
+          const method = String((args[1] && args[1].method) || (req && req.method) || 'GET');
+          return { url, method };
+        } catch { return { url: '', method: 'GET' }; }
+      };
+      window.fetch = function (...args) {
         const start = now();
         let p;
         try { p = origFetch.apply(this, args); }
-        catch (err) { push(diag.network, { method, url, status: 0, error: clip(err), ts: start }); throw err; }
+        catch (err) { const m = fetchMeta(args); push(diag.network, { method: m.method, url: m.url, status: 0, error: clip(err), ts: start }); throw err; }
+        // Call native fetch FIRST, then inspect args: a stateful .url/.method
+        // getter is consumed by fetch before the collector reads it, so enabling
+        // diagnostics cannot alter the request (reading before could).
+        const m = fetchMeta(args);
         return p.then((resp) => {
-          try { push(diag.network, { method, url, status: resp.status, ok: resp.ok, duration: now() - start, ts: start }); } catch {}
+          try { push(diag.network, { method: m.method, url: m.url, status: resp.status, ok: resp.ok, duration: now() - start, ts: start }); } catch {}
           return resp;
         }, (err) => {
-          try { push(diag.network, { method, url, status: 0, error: clip(err), duration: now() - start, ts: start }); } catch {}
+          try { push(diag.network, { method: m.method, url: m.url, status: 0, error: clip(err), duration: now() - start, ts: start }); } catch {}
           throw err;
         });
       };
@@ -279,8 +283,18 @@ func diagPreload() string {
       const origOpen = proto.open;
       const origSend = proto.send;
       proto.open = function (method, url, ...rest) {
-        this.__peapod = { method: String(method || 'GET'), url: clip(url || ''), ts: now() };
-        return origOpen.call(this, method, url, ...rest);
+        // Call native open() FIRST so it converts method/url once. Record them
+        // only when they are plain strings: re-converting a caller-owned object
+        // with a stateful toString() here could alter the endpoint or throw.
+        const ret = origOpen.call(this, method, url, ...rest);
+        try {
+          this.__peapod = {
+            method: typeof method === 'string' ? method : 'GET',
+            url: typeof url === 'string' ? clip(url) : '',
+            ts: now(),
+          };
+        } catch {}
+        return ret;
       };
       proto.send = function (...args) {
         const meta = this.__peapod;

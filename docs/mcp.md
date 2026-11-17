@@ -66,7 +66,7 @@ Because the port/token rotate per launch, either regenerate this config from `mc
 | `peapod_status` | — | Task status plus every page's `id`, `name`, `url`, `status`, `syncOn`, `isPrimary`, last error. |
 | `peapod_start` | `pages[]` (2–10), optional `template`, `shareStorage`, `viewMode`, `diagnostics` | Open pages and start mirroring. Returns `starting`; poll `peapod_status` until `running` (3 s grace). `diagnostics:true` injects the opt-in collector at document start (see below). |
 | `peapod_stop` | — | Tear down every page and wipe its session data. |
-| `peapod_navigate` | `url`, optional `pageId` (default primary) | Load a URL. A primary move propagates to followers via navigation follow. |
+| `peapod_navigate` | `url`, optional `pageId` (default primary) | Load a URL. A primary move propagates to followers via navigation follow. A fragment-only (same-document) move keeps the page's current status. |
 | `peapod_reload` | optional `pageId` (default primary) | Reload a page; a running follower re-aligns to the primary's current URL and clears a pause. |
 | `peapod_set_sync` | `pageId`, `on` | Enable/disable replay onto one follower. |
 | `peapod_send_operation` | `operation` | Replay a host-trusted operation on every synced follower. |
@@ -101,7 +101,7 @@ Each page's `status` is one of `loading`, `ready`, `error`, `paused`, `closed`:
 - `error` — the navigation failed (DNS, TLS, timeout, connection…). `navError` carries the detail; the page is **not** reachable even if it loaded earlier. A new navigation, `peapod_reload`, or a successful in-page retry of the same URL clears it.
 - `paused` — a replay failed on this follower (see `error`, the last sync error); `peapod_reload` repairs it.
 
-`navError` (present only on a failed navigation) has `url`, `code` (the raw `COREWEBVIEW2_WEB_ERROR_STATUS`), a stable `name` for automation (`NAME_NOT_RESOLVED`, `SERVER_UNREACHABLE`, `TIMEOUT`, `CANNOT_CONNECT`, `CERT_EXPIRED`, `CONNECTION_RESET`, …), and `description`. `error` remains the last *replay* failure and is independent of `navError`.
+`navError` (present only on a failed navigation) has `url`, `code`, a stable `name` for automation (`NAME_NOT_RESOLVED`, `SERVER_UNREACHABLE`, `TIMEOUT`, `CANNOT_CONNECT`, `CERT_EXPIRED`, `CONNECTION_RESET`, …), and `description`. `code` is the raw platform-native load-error code — `COREWEBVIEW2_WEB_ERROR_STATUS` on Windows, `NSError.code` (`NSURLErrorDomain`) on macOS, a WebKit `GError.code` on Linux — and `name` is normalized per platform. On Linux, WebKitGTK reports a generic `LOAD_FAILED` for DNS/connection/TLS errors alike, so use `code` + `description` there for the precise cause. `error` remains the last *replay* failure and is independent of `navError`.
 
 ### `peapod_screenshot` timeout
 

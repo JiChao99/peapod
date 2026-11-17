@@ -73,7 +73,13 @@ func (a *app) navigatePage(id, url string) error {
 	p := a.pages[id]
 	var view *mygo.WebView
 	if p != nil && !p.closed {
-		resetNavLocked(p)
+		// A fragment-only (same-document) move does not reload the document and
+		// emits no new-document load callbacks on some platforms, so preserve the
+		// page's current state instead of resetting it to loading, which would
+		// otherwise stick (e.g. /page -> /page#section on a ready page).
+		if !sameDocumentURL(p.url, url) {
+			resetNavLocked(p)
+		}
 		// An explicit navigation supersedes any deferred follow destination,
 		// exactly as reloadPage does: resetNavLocked lifts a pause, and leaving
 		// pendingNav set would let the navigation handler re-apply the stale

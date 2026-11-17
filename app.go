@@ -42,6 +42,7 @@ type pageRecord struct {
 	closed     bool
 	lastError  *syncError
 	navError   *navFailure    // failed navigation (DNS/TLS/timeout…); guarded by mu
+	navFailed  bool           // current load attempt failed; gates Linux finish-after-fail; guarded by mu
 	capture    *captureFlight // outstanding CapturePage coalescing concurrent shots; guarded by mu
 	queue      chan operation
 
