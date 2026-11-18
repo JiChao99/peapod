@@ -334,9 +334,6 @@ func (a *app) registerMCPTools(srv *sdk.Server) {
 				idB = a.primaryID
 			}
 			a.mu.Unlock()
-			if idA == idB {
-				return mcpErr(fmt.Errorf("%s", a.tr("err.diffSame"))), nil, nil
-			}
 			d, err := a.diffPair(idA, idB, clampTolerance(in.Tolerance), captureTimeoutFromMs(in.TimeoutMs),
 				func(p *pageRecord) ([]byte, error) { return p.view.CapturePage() })
 			if err != nil {

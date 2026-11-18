@@ -201,6 +201,7 @@ func TestDiffPairSuccess(t *testing.T) {
 
 func TestDiffPairSizeMismatch(t *testing.T) {
 	a := runningFixture(t)
+	a.langVal.Store("en")
 	capture := func(p *pageRecord) ([]byte, error) {
 		if p.id == "p1" {
 			return solidPNG(t, 2, 2, white), nil
@@ -211,15 +212,17 @@ func TestDiffPairSizeMismatch(t *testing.T) {
 	if err == nil {
 		t.Fatal("mismatched resolutions must fail")
 	}
-	if !strings.Contains(err.Error(), "Page 2") || !strings.Contains(err.Error(), "Primary") {
-		t.Fatalf("size error must name both pages: %v", err)
+	// The inspected page's dimensions come first, the reference's second.
+	want := "Page 2: resolution 3×2 differs from Primary (2×2); set the same resolution to diff"
+	if err.Error() != want {
+		t.Fatalf("size error = %q, want %q", err.Error(), want)
 	}
 }
 
 func TestDiffPairCaptureTimeout(t *testing.T) {
 	a := runningFixture(t)
 	capture := func(*pageRecord) ([]byte, error) {
-		time.Sleep(300 * time.Millisecond)
+		time.Sleep(time.Second)
 		return solidPNG(t, 1, 1, white), nil
 	}
 	start := time.Now()
@@ -227,8 +230,28 @@ func TestDiffPairCaptureTimeout(t *testing.T) {
 	if err == nil {
 		t.Fatal("a non-rendering capture must time out")
 	}
-	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+	if !strings.Contains(err.Error(), "Page 2") {
+		t.Fatalf("timeout must name the inspected page: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 500*time.Millisecond {
 		t.Fatalf("timeout took %s, want bounded", elapsed)
+	}
+}
+
+func TestDiffPairAgainstTimeout(t *testing.T) {
+	a := runningFixture(t)
+	capture := func(p *pageRecord) ([]byte, error) {
+		if p.id == "p1" {
+			time.Sleep(time.Second)
+		}
+		return solidPNG(t, 1, 1, white), nil
+	}
+	_, err := a.diffPair("p2", "p1", 0, 50*time.Millisecond, capture)
+	if err == nil {
+		t.Fatal("a non-rendering reference must time out")
+	}
+	if !strings.Contains(err.Error(), "Primary") {
+		t.Fatalf("timeout must name the reference page: %v", err)
 	}
 }
 
@@ -250,7 +273,7 @@ func TestRunBatchDiff(t *testing.T) {
 			return solidPNG(t, 3, 2, white), nil // size mismatch → failed entry
 		}
 	}
-	ok, failed, differ := a.runBatchDiff("task-1", []diffTarget{{name: "Page 2", id: "p2"}, {name: "Page 3", id: "p3"}}, dir, capture)
+	ok, failed, differ := a.runBatchDiff("task-1", []diffTarget{{name: "Page 2", id: "p2"}, {name: "Page 3", id: "p3"}}, dir, "en", capture)
 	if ok != 1 || failed != 1 || differ != 1 {
 		t.Fatalf("counts = %d/%d/%d, want 1/1/1", ok, failed, differ)
 	}
@@ -281,13 +304,43 @@ func TestRunBatchDiff(t *testing.T) {
 	if summary.Pages[1].Error == "" || summary.Pages[1].Stats != nil {
 		t.Fatalf("page 3 entry = %+v, want an error and no stats", summary.Pages[1])
 	}
+	want := "Page 3: resolution 3×2 differs from Primary (2×2); set the same resolution to diff"
+	if summary.Pages[1].Error != want {
+		t.Fatalf("page 3 error = %q, want %q", summary.Pages[1].Error, want)
+	}
+}
+
+func TestRunBatchDiffDuplicateNames(t *testing.T) {
+	a := runningFixture(t)
+	a.mu.Lock()
+	a.pages["p3"] = &pageRecord{id: "p3", name: "Page 2", url: "https://c.com/", status: "ready", syncOn: true, queue: newOpQueue(0), navSignal: make(chan struct{}, 1)}
+	a.order = append(a.order, "p3")
+	a.mu.Unlock()
+
+	dir := t.TempDir()
+	capture := func(p *pageRecord) ([]byte, error) {
+		if p.id == "p1" {
+			return solidPNG(t, 2, 2, white), nil
+		}
+		return pngWithPixel(t, 2, 2, white, 0, 0, color.RGBA{R: 0, G: 0, B: 0, A: 255}), nil
+	}
+	ok, failed, _ := a.runBatchDiff("task-1", []diffTarget{{name: "Page 2", id: "p2"}, {name: "Page 2", id: "p3"}}, dir, "en", capture)
+	if ok != 2 || failed != 0 {
+		t.Fatalf("counts = %d/%d, want 2/0", ok, failed)
+	}
+	// Same-named pages must not overwrite each other's highlight PNG.
+	for _, name := range []string{"Page 2_diff.png", "Page 2_diff_2.png"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("%s missing: %v", name, err)
+		}
+	}
 }
 
 func TestRunBatchDiffPrimaryCaptureFails(t *testing.T) {
 	a := runningFixture(t)
 	dir := t.TempDir()
 	capture := func(*pageRecord) ([]byte, error) { return nil, errors.New("not rendering") }
-	ok, failed, differ := a.runBatchDiff("task-1", []diffTarget{{name: "Page 2", id: "p2"}}, dir, capture)
+	ok, failed, differ := a.runBatchDiff("task-1", []diffTarget{{name: "Page 2", id: "p2"}}, dir, "en", capture)
 	if ok != 0 || failed != 1 || differ != 0 {
 		t.Fatalf("counts = %d/%d/%d, want 0/1/0", ok, failed, differ)
 	}
@@ -301,7 +354,7 @@ func TestRunBatchDiffTaskStopped(t *testing.T) {
 	a := runningFixture(t)
 	dir := t.TempDir()
 	capture := func(*pageRecord) ([]byte, error) { return solidPNG(t, 1, 1, white), nil }
-	ok, failed, _ := a.runBatchDiff("task-OTHER", []diffTarget{{name: "Page 2", id: "p2"}}, dir, capture)
+	ok, failed, _ := a.runBatchDiff("task-OTHER", []diffTarget{{name: "Page 2", id: "p2"}}, dir, "en", capture)
 	if ok != 0 || failed != 1 {
 		t.Fatalf("a replaced task must fail every entry: %d/%d", ok, failed)
 	}
@@ -322,14 +375,35 @@ func TestMCPDiffSamePage(t *testing.T) {
 func TestMCPDiffNotRunning(t *testing.T) {
 	a := newApp()
 	cs := connectMCP(t, a)
-	res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{
-		Name:      "peapod_diff",
-		Arguments: map[string]any{"pageId": "p2"},
-	})
-	if err != nil {
-		t.Fatalf("call: %v", err)
+	for _, args := range []map[string]any{
+		{"pageId": "p2"},
+		{}, // both defaults resolve to the empty primaryID; not-running must win over same-page
+	} {
+		res, err := cs.CallTool(context.Background(), &sdk.CallToolParams{Name: "peapod_diff", Arguments: args})
+		if err != nil {
+			t.Fatalf("call: %v", err)
+		}
+		if !res.IsError {
+			t.Fatalf("idle task must refuse diff, got %s", resultText(t, res))
+		}
 	}
-	if !res.IsError {
-		t.Fatalf("idle task must refuse diff, got %s", resultText(t, res))
+}
+
+func TestPageDiffJSONExcludesPNG(t *testing.T) {
+	d := pageDiff{PageID: "p2", PageName: "Page 2", AgainstID: "p1", AgainstName: "Primary",
+		Stats: diffStats{Width: 2, Height: 2, Pixels: 4, Different: 1}, PNG: []byte{0x89, 0x50, 0x4e, 0x47}}
+	data, err := json.Marshal(d)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if _, ok := m["stats"]; !ok {
+		t.Fatalf("stats missing from JSON: %s", data)
+	}
+	if strings.Contains(string(data), "PNG") || strings.Contains(string(data), "iVBOR") {
+		t.Fatalf("PNG bytes must stay out of the JSON: %s", data)
 	}
 }

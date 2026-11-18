@@ -133,6 +133,10 @@ func (a *app) diffPair(idA, idB string, tolerance int, timeout time.Duration, ca
 		a.mu.Unlock()
 		return pageDiff{}, fmt.Errorf("%s", a.tr("err.notRunning"))
 	}
+	if idA == idB {
+		a.mu.Unlock()
+		return pageDiff{}, fmt.Errorf("%s", a.tr("err.diffSame"))
+	}
 	pa, pb := a.pages[idA], a.pages[idB]
 	if pa == nil || pa.closed {
 		a.mu.Unlock()
@@ -157,18 +161,19 @@ func (a *app) diffPair(idA, idB string, tolerance int, timeout time.Duration, ca
 	}
 	st, diff, err := diffPNG(pngB, pngA, tolerance)
 	if err != nil {
-		return d, a.diffError(d.PageName, d.AgainstName, err)
+		return d, diffError(a.currentLang(), d.PageName, d.AgainstName, err)
 	}
 	d.Stats, d.PNG = st, diff
 	return d, nil
 }
 
 // diffError localizes a size mismatch with both page names; other errors
-// (decode, capture) pass through unchanged.
-func (a *app) diffError(pageName, againstName string, err error) error {
+// (decode, capture) pass through unchanged. lang is explicit so batch work
+// keeps the language captured when it was launched.
+func diffError(lang, pageName, againstName string, err error) error {
 	var sz errDiffSize
 	if errors.As(err, &sz) {
-		return fmt.Errorf("%s", a.tr("err.diffSize", pageName, sz.page.X, sz.page.Y, againstName, sz.ref.X, sz.ref.Y))
+		return fmt.Errorf("%s", trLang(lang, "err.diffSize", pageName, sz.page.X, sz.page.Y, againstName, sz.ref.X, sz.ref.Y))
 	}
 	return err
 }
@@ -216,7 +221,7 @@ func (a *app) diffAll() {
 			a.setNotice(trLang(lang, "err.diffDir", err.Error()))
 			return
 		}
-		ok, failed, differ := a.runBatchDiff(taskID, targets, dir, func(p *pageRecord) ([]byte, error) {
+		ok, failed, differ := a.runBatchDiff(taskID, targets, dir, lang, func(p *pageRecord) ([]byte, error) {
 			return p.view.CapturePage()
 		})
 		if failed > 0 {
@@ -230,8 +235,9 @@ func (a *app) diffAll() {
 // runBatchDiff captures the primary once, then diffs each target against it,
 // writing {page}_diff.png per success and a diff.json summary. It returns
 // ok/failed/differ counts for the notice. capture is injectable for tests.
-func (a *app) runBatchDiff(taskID string, targets []diffTarget, dir string, capture func(*pageRecord) ([]byte, error)) (ok, failed, differ int) {
+func (a *app) runBatchDiff(taskID string, targets []diffTarget, dir, lang string, capture func(*pageRecord) ([]byte, error)) (ok, failed, differ int) {
 	entries := make([]batchDiffEntry, 0, len(targets))
+	used := map[string]bool{}
 	writeSummary := func(primaryName, primaryErr string) {
 		summary := map[string]any{
 			"generatedAt": time.Now().Format(time.RFC3339Nano),
@@ -293,11 +299,17 @@ func (a *app) runBatchDiff(taskID string, targets []diffTarget, dir string, capt
 		}
 		st, diff, err := diffPNG(refPNG, png, 0)
 		if err != nil {
-			entries = append(entries, batchDiffEntry{Name: t.name, PageID: t.id, Error: a.diffError(t.name, primaryName, err).Error()})
+			entries = append(entries, batchDiffEntry{Name: t.name, PageID: t.id, Error: diffError(lang, t.name, primaryName, err).Error()})
 			failed++
 			continue
 		}
-		if err := os.WriteFile(filepath.Join(dir, sanitizeFileName(t.name)+"_diff.png"), diff, 0o644); err != nil {
+		stem := sanitizeFileName(t.name) + "_diff"
+		fname := stem + ".png"
+		for i := 2; used[fname]; i++ {
+			fname = fmt.Sprintf("%s_%d.png", stem, i)
+		}
+		used[fname] = true
+		if err := os.WriteFile(filepath.Join(dir, fname), diff, 0o644); err != nil {
 			entries = append(entries, batchDiffEntry{Name: t.name, PageID: t.id, Error: err.Error()})
 			failed++
 			continue
