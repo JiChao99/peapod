@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 )
@@ -212,7 +213,7 @@ func TestOpQueuePacesScroll(t *testing.T) {
 // TestOpQueueDiscreteNotPaced: clicks and barriers pop immediately even right
 // after a paced stream op, and do not reset the stream pace clock.
 func TestOpQueueDiscreteNotPaced(t *testing.T) {
-	const delay = 200 * time.Millisecond
+	const delay = 500 * time.Millisecond
 	q := newOpQueue(delay)
 	q.push(inputOp("note", "a"))
 	q.pop()
@@ -225,7 +226,9 @@ func TestOpQueueDiscreteNotPaced(t *testing.T) {
 	if op, _ := q.pop(); op.Type != navBarrier {
 		t.Fatalf("popped %q, want barrier", op.Type)
 	}
-	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+	// Generous upper bound: a paced pop would wait ~delay, discrete ones must
+	// not; the margin keeps CI scheduling jitter from flaking the assertion.
+	if elapsed := time.Since(start); elapsed > delay/2 {
 		t.Errorf("discrete ops waited %s, want immediate", elapsed)
 	}
 	// The input pace clock is untouched by the discrete pops: a new input
@@ -235,6 +238,55 @@ func TestOpQueueDiscreteNotPaced(t *testing.T) {
 	q.pop()
 	if elapsed := time.Since(start); elapsed < delay-100*time.Millisecond {
 		t.Errorf("input after discrete ops waited %s, want the stream pace kept", elapsed)
+	}
+}
+
+// TestOpQueueCoalescesDuringPaceWait: a push landing mid-pace-wait replaces the
+// pending head, so the pop returns the newest value, not the one queued first.
+func TestOpQueueCoalescesDuringPaceWait(t *testing.T) {
+	const delay = 150 * time.Millisecond
+	q := newOpQueue(delay)
+	q.push(inputOp("note", "h"))
+	q.pop()
+	q.push(inputOp("note", "he"))
+	got := make(chan operation, 1)
+	go func() {
+		op, _ := q.pop()
+		got <- op
+	}()
+	time.Sleep(delay / 3)
+	q.push(inputOp("note", "hel"))
+	select {
+	case op := <-got:
+		if string(op.Value) != `"hel"` {
+			t.Errorf("paced value = %s, want the mid-wait replacement", op.Value)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("paced pop did not return")
+	}
+}
+
+// TestOpQueueClosedSkipsPacing: closing the queue drains remaining continuous
+// ops instantly (the old channel-range semantics), not one pace interval each.
+func TestOpQueueClosedSkipsPacing(t *testing.T) {
+	q := newOpQueue(2 * time.Second)
+	q.push(inputOp("note", "a"))
+	q.pop() // starts the pace clock
+	q.push(inputOp("note", "ab"))
+	q.push(inputOp("other", "x"))
+	q.close()
+	start := time.Now()
+	if op, ok := q.pop(); !ok || string(op.Value) != `"ab"` {
+		t.Fatalf("first drain pop = %s (ok=%v), want ab", op.Value, ok)
+	}
+	if _, ok := q.pop(); !ok {
+		t.Fatal("second drain pop failed")
+	}
+	if _, ok := q.pop(); ok {
+		t.Fatal("drained queue must report false")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Errorf("closed drain took %s, want instant", elapsed)
 	}
 }
 
@@ -248,6 +300,8 @@ func TestSyncDelayFromMs(t *testing.T) {
 		{ptr(-5), 0},
 		{ptr(250), 250 * time.Millisecond},
 		{ptr(99999), 2 * time.Second},
+		{ptr(math.NaN()), defaultSyncDelay},
+		{ptr(math.Inf(1)), defaultSyncDelay},
 	}
 	for _, c := range cases {
 		if got := syncDelayFromMs(c.ms); got != c.want {

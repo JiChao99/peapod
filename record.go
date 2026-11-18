@@ -400,7 +400,7 @@ func writeSessionJSON(dir, taskID string, req startRequest) error {
 		"userAgent":    req.userAgent,
 		"shareStorage": req.shareStorage,
 		"diagnostics":  req.diagnostics,
-		"syncDelayMs":  req.syncDelay.Milliseconds(),
+		"syncDelayMs":  float64(req.syncDelay) / float64(time.Millisecond),
 		"pages":        pages,
 	}, "", "  ")
 	if err != nil {

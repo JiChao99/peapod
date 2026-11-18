@@ -882,7 +882,7 @@ func (a *app) snapshot() appState {
 		Notice:      a.notice,
 		Pages:       make([]pageState, 0, len(a.order)),
 		Errors:      []syncError{},
-		SyncDelayMs: float64(a.taskSyncDelay.Milliseconds()),
+		SyncDelayMs: float64(a.taskSyncDelay) / float64(time.Millisecond),
 	}
 	for _, id := range a.order {
 		p := a.pages[id]

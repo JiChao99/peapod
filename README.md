@@ -49,6 +49,7 @@ It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with it
 ### Sync
 - **Live action sync.** Clicks, input, change, select, scroll and submit events on the primary page are replayed on every synced page. Each page has its own sync toggle. If a page can't replay a step, it pauses and shows the error instead of falling silently out of sync.
 - **Navigation follow.** Redirects, JS navigations and history moves on the primary page are mapped to each follower's own host, so every variant stays on the same step. Links that leave the primary's host don't move the followers, and reloading a follower brings it back in line.
+- **Sync pace.** Continuous input and scroll mirror instantly or coalesce at a 100/250/500 ms interval that keeps only the latest value or position. Clicks and other discrete actions always replay immediately.
 
 ### Variants and devices
 - **URL variant templates.** One template, with different variables and an optional path per page. Navigation follow maps paths between the rendered prefixes.

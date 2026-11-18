@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math"
 	"strconv"
 	"sync"
 	"time"
@@ -19,7 +20,7 @@ var syncDelayOptions = []string{"0", "100", "250", "500"}
 
 // syncDelayFromMs clamps a caller-supplied pace into 0–2s; nil = default.
 func syncDelayFromMs(ms *float64) time.Duration {
-	if ms == nil {
+	if ms == nil || math.IsNaN(*ms) || math.IsInf(*ms, 0) {
 		return defaultSyncDelay
 	}
 	return time.Duration(min(max(*ms, 0), 2000)) * time.Millisecond
@@ -99,7 +100,8 @@ func (q *opQueue) pop() (operation, bool) {
 		}
 		op := q.ops[0]
 		var wait time.Duration
-		if q.delay > 0 && (op.Type == "input" || op.Type == "scroll") {
+		// A closed queue drains instantly, like the old channel range did.
+		if q.delay > 0 && !q.closed && (op.Type == "input" || op.Type == "scroll") {
 			wait = q.delay - time.Since(q.lastStream)
 		}
 		if wait > 0 {

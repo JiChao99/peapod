@@ -309,6 +309,36 @@ func TestReplayCancelWhileQueueFull(t *testing.T) {
 	}
 }
 
+// TestReplayCoalescesAtCap: a full queue whose tail is a same-anchor scroll
+// accepts the replay op via coalescing replace — no capacity drop, no growth,
+// and the tail carries the replayed position.
+func TestReplayCoalescesAtCap(t *testing.T) {
+	a := runningFixture(t)
+	p := a.pages["p2"]
+	a.mu.Lock()
+	for i := 0; i < opQueueCap-1; i++ {
+		p.queue.push(operation{Type: "click", Anchor: anchor{Type: "id", Selector: fmt.Sprintf("#fill%d", i)}})
+	}
+	p.queue.push(scrollOp("html", 10))
+	a.mu.Unlock()
+
+	y := 900.0
+	if !a.enqueueReplayOp(p, scrollOp("html", y), nil) {
+		t.Fatal("coalescing replay push at cap must succeed")
+	}
+	if got := p.queue.len(); got != opQueueCap {
+		t.Fatalf("len = %d, want cap %d (replace must not grow the queue)", got, opQueueCap)
+	}
+	// Drain to the tail: the last op is the replayed scroll position.
+	var last operation
+	for i := 0; i < opQueueCap; i++ {
+		last, _ = p.queue.pop()
+	}
+	if last.Type != "scroll" || last.ScrollY == nil || *last.ScrollY != y {
+		t.Fatalf("tail = %+v, want the replayed scroll to 900", last)
+	}
+}
+
 // TestReplayScriptScrollSuppression locks in the M1 regression guard: a
 // replayed scroll fires its (trusted) scroll event in a later task, so the
 // replay must arm a suppression window that the capture listener honors.
