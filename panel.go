@@ -464,6 +464,16 @@ func (a *app) runtimeBody(c *ui.Context, tk *theme.Tokens, st appState) {
 		ui.Text(c, a.tr("ui.shot.hint")).FontSize(12).TextColor(tk.TextTertiary)
 	})
 
+	ui.Column(c).Gap(8).Padding(12).Radius(tk.BorderRadiusLG).AlignItems(ui.Stretch).
+		Background(tk.BgContainerSecondary).Border(1, tk.BorderSecondary).Children(func() {
+		a.fieldLabel(c, tk, a.tr("ui.diff"))
+		if action.Button(c, a.tr("ui.diff.button"), action.ButtonProps{Variant: action.Default}).
+			AlignSelf(ui.Stretch).Clicked() {
+			a.diffAll()
+		}
+		ui.Text(c, a.tr("ui.diff.hint")).FontSize(12).TextColor(tk.TextTertiary)
+	})
+
 	if len(st.Errors) > 0 {
 		ui.Column(c).Gap(6).Padding(12).Radius(tk.BorderRadiusLG).Background(tk.ErrorFillTertiary).Children(func() {
 			ui.Text(c, a.tr("ui.syncErrors")).FontSize(13).Bold().TextColor(tk.Error)

@@ -60,11 +60,12 @@ It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with it
 
 ### Evidence
 - **Batch screenshots.** One click saves a PNG of every running page, including pages that aren't currently on screen.
+- **Variant diff.** One click compares every page against the primary pixel by pixel, saving a red-highlight diff PNG per page plus a `diff.json` stats summary under `Pictures/Peapod/diffs`. Pages must share the primary's resolution; a per-channel tolerance absorbs anti-aliasing noise.
 - **Operation recording.** When turned on, every operation goes into a replayable `script.jsonl`, and all pages are screenshotted once the task settles.
 - **Recordings browser.** Lists past sessions with a step-by-step timeline and per-page thumbnails. You can replay a session on a running task or export a self-contained HTML report.
 
 ### Automation
-- **MCP server.** A local [Model Context Protocol](https://modelcontextprotocol.io) endpoint, protected by a token, lets an AI agent start, navigate, operate, replay, screenshot, diagnose and stop tasks without using the UI.
+- **MCP server.** A local [Model Context Protocol](https://modelcontextprotocol.io) endpoint, protected by a token, lets an AI agent start, navigate, operate, replay, screenshot, diff, diagnose and stop tasks without using the UI.
 - **Acceptance diagnostics.** Failed navigations report stable error names (`NAME_NOT_RESOLVED`, `TIMEOUT`, …). An opt-in, MCP-only collector also reports the main document's HTTP status, the page text and console, network and error activity, so an agent can check actual outcomes rather than judge from screenshots.
 
 ### Everyday
@@ -98,7 +99,7 @@ When Peapod starts, it serves a Streamable-HTTP MCP endpoint on a random `127.0.
 | macOS | `~/Library/Application Support/Peapod/mcp.json` |
 | Linux | `~/.config/Peapod/mcp.json` |
 
-Tools: `peapod_status`, `peapod_start`, `peapod_stop`, `peapod_navigate`, `peapod_reload`, `peapod_set_sync`, `peapod_send_operation`, `peapod_replay`, `peapod_screenshot`, `peapod_diagnostics`.
+Tools: `peapod_status`, `peapod_start`, `peapod_stop`, `peapod_navigate`, `peapod_reload`, `peapod_set_sync`, `peapod_send_operation`, `peapod_replay`, `peapod_screenshot`, `peapod_diff`, `peapod_diagnostics`.
 
 Client configuration, the full tool reference, the recording format and an example agent workflow are in **[docs/mcp.md](docs/mcp.md)**. Set `PEAPOD_MCP_DISABLE=1` to turn the server off.
 

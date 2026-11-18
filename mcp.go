@@ -21,7 +21,8 @@ const mcpInstructions = `Peapod mirrors one primary web page onto 2-10 follower 
 Use peapod_status to inspect the task and pages, peapod_start to open pages,
 peapod_navigate to move the primary (followers follow via navigation follow),
 peapod_send_operation to replay a click/input/scroll on followers, peapod_screenshot
-to see a page, peapod_diagnostics to read a page's HTTP status, text and console/network
+to see a page, peapod_diff to compare two pages' screenshots (same resolution) and get
+stats plus a red-highlight diff PNG, peapod_diagnostics to read a page's HTTP status, text and console/network
 activity (its collector is opt-in: installed on demand, or at document start when
 peapod_start sets diagnostics:true), peapod_set_sync to toggle a follower, peapod_reload and peapod_stop.
 peapod_start with record:true saves every dispatched operation to a replayable script.jsonl
@@ -221,6 +222,13 @@ type replayIn struct {
 	DelayMs    *float64 `json:"delayMs,omitempty" jsonschema:"Pause between operations in ms, 0-5000; default 500. Give navigations time to land; 0 replays as fast as the queues allow."`
 }
 
+type diffIn struct {
+	PageID    string  `json:"pageId,omitempty" jsonschema:"Page to inspect; default primary."`
+	AgainstID string  `json:"againstId,omitempty" jsonschema:"Reference page to compare against; default primary. Must differ from pageId."`
+	Tolerance float64 `json:"tolerance,omitempty" jsonschema:"Per-channel difference (0-255) still counted as equal; default 0 = exact. Small values ignore anti-aliasing noise."`
+	TimeoutMs float64 `json:"timeoutMs,omitempty" jsonschema:"Capture timeout per page in ms, 1000-60000; default 10000. A non-rendering page fails with a timeout error."`
+}
+
 func (a *app) registerMCPTools(srv *sdk.Server) {
 	sdk.AddTool(srv, &sdk.Tool{Name: "peapod_status", Description: "Current task status and every page's id, name, url, status, sync flag and last error."},
 		func(_ context.Context, _ *sdk.CallToolRequest, _ struct{}) (*sdk.CallToolResult, any, error) {
@@ -312,6 +320,35 @@ func (a *app) registerMCPTools(srv *sdk.Server) {
 			return &sdk.CallToolResult{Content: []sdk.Content{
 				&sdk.TextContent{Text: name},
 				&sdk.ImageContent{Data: png, MIMEType: "image/png"},
+			}}, nil, nil
+		})
+
+	sdk.AddTool(srv, &sdk.Tool{Name: "peapod_diff", Description: "Compare one page's screenshot against another's (both default to the primary, so pass at least one other pageId). Returns per-channel diff stats (different-pixel fraction, max/mean delta) plus a highlight PNG: the inspected page dimmed to grayscale with differing pixels in red. Pages must have the same resolution; a mismatch fails with an actionable error. tolerance (0-255, default 0) ignores small per-channel differences such as anti-aliasing noise. Captures are bounded by timeoutMs like peapod_screenshot."},
+		func(_ context.Context, _ *sdk.CallToolRequest, in diffIn) (*sdk.CallToolResult, any, error) {
+			a.mu.Lock()
+			idA, idB := in.PageID, in.AgainstID
+			if idA == "" {
+				idA = a.primaryID
+			}
+			if idB == "" {
+				idB = a.primaryID
+			}
+			a.mu.Unlock()
+			if idA == idB {
+				return mcpErr(fmt.Errorf("%s", a.tr("err.diffSame"))), nil, nil
+			}
+			d, err := a.diffPair(idA, idB, clampTolerance(in.Tolerance), captureTimeoutFromMs(in.TimeoutMs),
+				func(p *pageRecord) ([]byte, error) { return p.view.CapturePage() })
+			if err != nil {
+				return mcpErr(err), nil, nil
+			}
+			data, err := json.Marshal(d)
+			if err != nil {
+				return mcpErr(err), nil, nil
+			}
+			return &sdk.CallToolResult{Content: []sdk.Content{
+				&sdk.TextContent{Text: string(data)},
+				&sdk.ImageContent{Data: d.PNG, MIMEType: "image/png"},
 			}}, nil, nil
 		})
 
