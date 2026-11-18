@@ -298,6 +298,19 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 		choice.Switch(c, &a.record, choice.SwitchProps{})
 	})
 
+	ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
+		a.fieldLabel(c, tk, a.tr("ui.syncDelay"))
+		opts := make([]field.SelectOption, 0, len(syncDelayOptions))
+		for _, v := range syncDelayOptions {
+			opts = append(opts, field.SelectOption{Value: v, Label: a.tr("ui.syncDelay." + v)})
+		}
+		field.Select(c, &a.syncDelay, field.SelectProps{
+			Options: opts,
+			Variant: field.InputOutlined,
+		}).AlignSelf(ui.Stretch)
+		ui.Text(c, a.tr("ui.syncDelay.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
+	})
+
 	ui.Column(c).Gap(2).Children(func() {
 		a.fieldLabel(c, tk, a.tr("ui.pages", len(a.configs)))
 		hint := a.tr("ui.pages.hint")

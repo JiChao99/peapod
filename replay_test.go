@@ -122,7 +122,7 @@ func startFakeWorkers(t *testing.T, a *app) {
 		for _, p := range pages {
 			if !p.closed {
 				p.closed = true
-				close(p.queue)
+				p.queue.close()
 			}
 		}
 		a.mu.Unlock()
@@ -147,7 +147,7 @@ func TestReplayDispatchesEveryPage(t *testing.T) {
 	// Unlike peapod_send_operation, replay drives the primary too.
 	for _, id := range []string{"p1", "p2"} {
 		a.mu.Lock()
-		queued := len(a.pages[id].queue)
+		queued := a.pages[id].queue.len()
 		a.mu.Unlock()
 		if queued != 2 {
 			t.Fatalf("page %s queued %d ops, want 2", id, queued)
@@ -268,7 +268,7 @@ func TestReplaySkipsIneligiblePages(t *testing.T) {
 				t.Fatalf("replay state = %+v, want done 2/2 skipped 2", st.Replay)
 			}
 			a.mu.Lock()
-			q1, q2 := len(a.pages["p1"].queue), len(a.pages["p2"].queue)
+			q1, q2 := a.pages["p1"].queue.len(), a.pages["p2"].queue.len()
 			a.mu.Unlock()
 			if q1 != 2 || q2 != 0 {
 				t.Fatalf("queues = %d/%d, want 2/0 (ineligible page untouched)", q1, q2)
@@ -283,8 +283,9 @@ func TestReplayCancelWhileQueueFull(t *testing.T) {
 	a := runningFixture(t)
 	a.mu.Lock()
 	for _, id := range a.order {
-		for i := 0; i < cap(a.pages[id].queue); i++ {
-			a.pages[id].queue <- operation{Type: "scroll", Anchor: anchor{Type: "css", Selector: "html"}}
+		// Distinct anchors: same-anchor scrolls would coalesce into one op.
+		for i := 0; i < opQueueCap; i++ {
+			a.pages[id].queue.push(operation{Type: "click", Anchor: anchor{Type: "id", Selector: fmt.Sprintf("#fill%d", i)}})
 		}
 	}
 	a.mu.Unlock()

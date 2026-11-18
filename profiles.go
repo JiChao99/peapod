@@ -31,6 +31,7 @@ type profileData struct {
 	UACustom     string        `json:"uaCustom"`
 	ShareStorage bool          `json:"shareStorage"`
 	Record       bool          `json:"record"`
+	SyncDelay    string        `json:"syncDelay"`
 	Pages        []profilePage `json:"pages"`
 }
 
@@ -100,6 +101,7 @@ func (a *app) currentProfile() profileData {
 		UACustom:     a.uaCustom,
 		ShareStorage: a.shareStorage,
 		Record:       a.record,
+		SyncDelay:    a.syncDelay,
 		Pages:        pages,
 	}
 }
@@ -142,6 +144,14 @@ func (a *app) applyProfile(p profileData) error {
 	a.uaCustom = p.UACustom
 	a.shareStorage = p.ShareStorage
 	a.record = p.Record
+	syncDelay := "100"
+	for _, v := range syncDelayOptions {
+		if v == p.SyncDelay {
+			syncDelay = v
+			break
+		}
+	}
+	a.syncDelay = syncDelay
 	a.invalidate()
 	return nil
 }

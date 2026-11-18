@@ -72,18 +72,20 @@ func (a *app) enqueueOp(p *pageRecord, op operation) {
 	if op.Type != "scroll" {
 		p.navPendingAt = time.Now()
 	}
-	select {
-	case p.queue <- op:
-	default:
-		// Queue full: drop rather than block the capture path.
-	}
+	// Full queue: drop rather than block the capture path. Consecutive
+	// input/scroll on one anchor coalesces inside the queue instead.
+	p.queue.push(op)
 }
 
 // replayWorker drains a page's queue in order, one operation at a time, so
 // replays on a target keep the sequence the primary page produced. A navigation
 // barrier is applied (and waited on) before the actions queued behind it.
 func (a *app) replayWorker(p *pageRecord) {
-	for op := range p.queue {
+	for {
+		op, ok := p.queue.pop()
+		if !ok {
+			return
+		}
 		if op.Type == navBarrier {
 			a.applyNavBarrier(p)
 			continue
@@ -157,7 +159,7 @@ func (a *app) finishReplay(p *pageRecord, op operation) {
 // auto-navigated. navigating is true when the last replay may commit its own
 // navigation (anything but a scroll), matching enqueueOp's classification.
 func (a *app) reconcileNavLocked(p *pageRecord, navigating bool) string {
-	if p.closed || !p.syncOn || p.status == "paused" || p.replaying || len(p.queue) > 0 {
+	if p.closed || !p.syncOn || p.status == "paused" || p.replaying || p.queue.len() > 0 {
 		return ""
 	}
 	if p.pendingNav == "" || p.pendingNav == p.url {

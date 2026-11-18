@@ -27,6 +27,8 @@ peapod_start sets diagnostics:true), peapod_set_sync to toggle a follower, peapo
 peapod_start with record:true saves every dispatched operation to a replayable script.jsonl
 plus per-step screenshots of all pages (peapod_status reports recording/recordSteps/recordDir);
 peapod_replay re-enacts such a script on every page of a running task — poll peapod_status.replay until done.
+peapod_start's syncDelayMs (default 100) paces input/scroll mirroring: bursts coalesce to the
+latest value/position; clicks stay instant. 0 mirrors every event as it arrives.
 A page whose navigation failed shows status "error" with a navError (e.g. NAME_NOT_RESOLVED);
 it is not reachable even though it once loaded. peapod_screenshot fails with a timeout
 error when a page is not rendering (window minimized/hidden) — restore the window and retry.
@@ -160,6 +162,7 @@ type startIn struct {
 	UserAgent    string    `json:"userAgent,omitempty" jsonschema:"Full User-Agent string applied to every page, for device-sniffing tests. Empty = follow viewMode (mobile -> iPhone Safari, desktop -> engine default). Changes the UA only, not the rendering engine."`
 	Diagnostics  bool      `json:"diagnostics,omitempty" jsonschema:"Inject the console/network/error collector at document start (default false). peapod_diagnostics also enables it on demand; this flag captures early page-load activity."`
 	Record       bool      `json:"record,omitempty" jsonschema:"Record every dispatched operation to a replayable script.jsonl and capture all pages after each step settles (default false). Artifacts land in the user's Pictures/Peapod/recordings folder; peapod_status reports recording/recordSteps/recordDir, and peapod_replay can re-enact the script later."`
+	SyncDelayMs  *float64  `json:"syncDelayMs,omitempty" jsonschema:"Minimum gap in ms between continuous operations (input/scroll) replayed on followers, 0-2000; default 100. Bursts coalesce to the latest value/position; clicks and other discrete actions stay instant. 0 replays every event as it arrives."`
 }
 
 type pageIDIn struct {
@@ -398,7 +401,7 @@ func (a *app) resolveMCPRequest(in startIn) (startRequest, error) {
 			resW: clampRes(p.ResW, defW), resH: clampRes(p.ResH, defH),
 		})
 	}
-	return startRequest{pages: pages, shareStorage: in.ShareStorage, viewMode: mode, userAgent: ua, diagnostics: in.Diagnostics, record: in.Record}, nil
+	return startRequest{pages: pages, shareStorage: in.ShareStorage, viewMode: mode, userAgent: ua, diagnostics: in.Diagnostics, record: in.Record, syncDelay: syncDelayFromMs(in.SyncDelayMs)}, nil
 }
 
 func mcpName(p mcpPage, i int) string {

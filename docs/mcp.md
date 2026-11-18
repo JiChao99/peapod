@@ -64,7 +64,7 @@ Because the port/token rotate per launch, either regenerate this config from `mc
 | Tool | Arguments | Effect |
 | --- | --- | --- |
 | `peapod_status` | — | Task status plus every page's `id`, `name`, `url`, `status`, `syncOn`, `isPrimary`, last error. |
-| `peapod_start` | `pages[]` (2–10), optional `template`, `shareStorage`, `viewMode`, `userAgent`, `diagnostics`, `record` | Open pages and start mirroring. Returns `starting`; poll `peapod_status` until `running` (3 s grace). `diagnostics:true` injects the opt-in collector at document start (see below). `record:true` saves a replayable script plus per-step screenshots (see [Recording & replay](#recording--replay)). |
+| `peapod_start` | `pages[]` (2–10), optional `template`, `shareStorage`, `viewMode`, `userAgent`, `diagnostics`, `record`, `syncDelayMs` | Open pages and start mirroring. Returns `starting`; poll `peapod_status` until `running` (3 s grace). `diagnostics:true` injects the opt-in collector at document start (see below). `record:true` saves a replayable script plus per-step screenshots (see [Recording & replay](#recording--replay)). `syncDelayMs` paces input/scroll mirroring (see [Sync pace](#sync-pace)). |
 | `peapod_stop` | — | Tear down every page and wipe its session data. |
 | `peapod_navigate` | `url`, optional `pageId` (default primary) | Load a URL. A primary move propagates to followers via navigation follow. A fragment-only (same-document) move keeps the page's current status. |
 | `peapod_reload` | optional `pageId` (default primary) | Reload a page; a running follower re-aligns to the primary's current URL and clears a pause. |
@@ -90,13 +90,14 @@ Keys are lower camelCase, matching `peapod_start` / `peapod_stop`:
   "errors": [],
   "message": "",
   "notice": "",
-  "recording": false
+  "recording": false,
+  "syncDelayMs": 100
 }
 ```
 
 `status` is one of `idle`, `starting`, `running`, `stopping`, `cleanup-error`. After a failed data wipe the task stays in `cleanup-error`: `peapod_start` and `peapod_stop` both report the lockout until the app is restarted, so a new task can never run on un-wiped session data.
 
-`recording` is always present (`true` while an opt-in recording is active). When recording, `recordSteps` (operations dispatched so far) and `recordDir` (the session folder) are added. While a `peapod_replay` run exists, `replay` reports its progress:
+`recording` is always present (`true` while an opt-in recording is active). When recording, `recordSteps` (operations dispatched so far) and `recordDir` (the session folder) are added. `syncDelayMs` reports the running task's input/scroll pace (0 when idle or instant). While a `peapod_replay` run exists, `replay` reports its progress:
 
 ```json
 { "recording": true, "recordSteps": 12, "recordDir": "C:\\Users\\me\\Pictures\\Peapod\\recordings\\recording_20261117-101500",
@@ -148,6 +149,12 @@ Each page accepts `name`, and either plain-mode `url` or template-mode `vars` + 
 
 `diagnostics` (default `false`) is a task-level opt-in: when `true`, the console/network/error collector is injected into every page at document start, so activity from the very first load is captured. Leave it `false` for ordinary mirroring — `peapod_diagnostics` still works and installs the collector on demand the first time you call it (capturing activity from that point on). The native panel never injects the collector.
 
+### Sync pace
+
+`syncDelayMs` (optional, 0–2000, default 100) is the minimum gap between **continuous** operations — `input` and `scroll` — replayed on each follower. While a burst arrives faster than the pace, same-anchor operations coalesce into the latest one, so followers replay a throttled stream that ends at the final typed value / scroll position instead of one eval per keystroke or scroll tick. Discrete operations (`click`, `change`, `select`, `submit`) always replay immediately and never wait on the pace. `0` replays every event as it arrives (still coalescing whatever piles up while a replay is in flight).
+
+The native panel exposes the same setting as **Sync pace** (Instant / 100 / 250 / 500 ms), saved with setup profiles. Recording is unaffected: every dispatched operation keeps its own JSONL line even when followers coalesce it.
+
 ### User-Agent
 
 `userAgent` (optional) overrides the User-Agent of every page for device-sniffing tests: servers and `navigator.userAgent` see the chosen device. It changes the UA string only — the rendering engine stays the platform webview (WebView2 / WKWebView / WebKitGTK), so engine-specific behavior cannot be simulated this way.
@@ -189,7 +196,7 @@ If no home directory is available the root falls back to the user config dir (`�
 
 ```
 recording_20261117-101500/
-  session.json      # task setup: pages/variants, resolutions, viewMode, userAgent, shareStorage, diagnostics
+  session.json      # task setup: pages/variants, resolutions, viewMode, userAgent, shareStorage, diagnostics, syncDelayMs
   script.jsonl      # every dispatched operation, in order — the replayable script
   steps/0001/       # one PNG per running page after step 1 settled
     Primary.png

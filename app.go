@@ -44,7 +44,7 @@ type pageRecord struct {
 	navError   *navFailure    // failed navigation (DNS/TLS/timeout…); guarded by mu
 	navFailed  bool           // current load attempt failed; gates Linux finish-after-fail; guarded by mu
 	capture    *captureFlight // outstanding CapturePage coalescing concurrent shots; guarded by mu
-	queue      chan operation
+	queue      *opQueue
 
 	// navPendingAt is guarded by mu: when an operation that may navigate was
 	// enqueued, so navigation follow lets the replay navigate this page itself.
@@ -96,6 +96,10 @@ type appState struct {
 	RecordSteps int          `json:"recordSteps,omitempty"`
 	RecordDir   string       `json:"recordDir,omitempty"`
 	Replay      *replayState `json:"replay,omitempty"`
+
+	// SyncDelayMs is the running task's pace for continuous operations
+	// (input/scroll); 0 replays them instantly.
+	SyncDelayMs float64 `json:"syncDelayMs"`
 }
 
 // app holds the task state. mu guards the task/page fields, which services and
@@ -128,6 +132,10 @@ type app struct {
 	// task lays out by the mode it actually requested.
 	taskViewMode string
 
+	// taskSyncDelay is the running task's continuous-operation pace, guarded by
+	// mu; each page's opQueue carries its own copy.
+	taskSyncDelay time.Duration
+
 	configs      []*pageConfig
 	configSeq    int
 	template     string // optional URL template with {placeholders}; empty = plain URLs
@@ -137,7 +145,8 @@ type app struct {
 	uaPreset     string  // built-in UA option key (ua.go); UI-owned like viewMode
 	uaCustom     string  // full UA string when uaPreset == uaCustom
 	shareStorage bool
-	record       bool // record operations + per-step screenshots; UI-owned like shareStorage
+	record       bool   // record operations + per-step screenshots; UI-owned like shareStorage
+	syncDelay    string // continuous-operation pace in ms ("0" = instant); UI-owned like shareStorage
 	syncUI       map[string]*bool
 
 	// Setup profiles (profiles.go): profileName is the save-as input, profileSel
@@ -176,6 +185,7 @@ func newApp() *app {
 		uaPreset:     uaDefault,
 		themeMode:    "system",
 		scalePct:     "100",
+		syncDelay:    "100",
 		lang:         "zh",
 		syncUI:       map[string]*bool{},
 		configs: []*pageConfig{
@@ -212,9 +222,10 @@ type startRequest struct {
 	pages        []resolvedPage
 	shareStorage bool
 	viewMode     string
-	userAgent    string // resolved UA applied to every page; empty = engine default
-	diagnostics  bool   // inject the opt-in diagnostics collector at document start
-	record       bool   // record dispatched operations + per-step screenshots
+	userAgent    string        // resolved UA applied to every page; empty = engine default
+	diagnostics  bool          // inject the opt-in diagnostics collector at document start
+	record       bool          // record dispatched operations + per-step screenshots
+	syncDelay    time.Duration // pace between continuous (input/scroll) replays; 0 = instant
 }
 
 // capturePayload is what a guest page's preload sends.
@@ -349,7 +360,8 @@ func (a *app) buildRequest() (startRequest, error) {
 		})
 	}
 	return startRequest{pages: pages, shareStorage: a.shareStorage, viewMode: a.viewMode,
-		userAgent: resolveUA(a.uaPreset, a.uaCustom, a.viewMode), record: a.record}, nil
+		userAgent: resolveUA(a.uaPreset, a.uaCustom, a.viewMode), record: a.record,
+		syncDelay: formSyncDelay(a.syncDelay)}, nil
 }
 
 func (a *app) cfgName(cfg *pageConfig, i int) string {
@@ -706,7 +718,7 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 			status:    "loading",
 			syncOn:    true,
 			isPrimary: i == 0,
-			queue:     make(chan operation, 256),
+			queue:     newOpQueue(req.syncDelay),
 			navSignal: make(chan struct{}, 1),
 		}
 		a.attachHandlers(p)
@@ -742,6 +754,7 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 	a.status = "running"
 	a.activeID = a.primaryID
 	a.taskViewMode = req.viewMode
+	a.taskSyncDelay = req.syncDelay
 	a.mu.Unlock()
 	a.invalidate()
 }
@@ -814,7 +827,7 @@ func (a *app) cleanup(pages []*pageRecord, lang string) {
 		a.mu.Lock()
 		if !p.closed {
 			p.closed = true
-			close(p.queue)
+			p.queue.close()
 		}
 		session := p.session
 		view := p.view
@@ -846,6 +859,7 @@ func (a *app) cleanup(pages []*pageRecord, lang string) {
 	a.primaryID = ""
 	a.cancel = nil
 	a.taskViewMode = ""
+	a.taskSyncDelay = 0
 	if failed {
 		a.status = "cleanup-error"
 		a.message = trLang(lang, "err.cleanupFailed")
@@ -862,12 +876,13 @@ func (a *app) snapshot() appState {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	st := appState{
-		Status:   a.status,
-		ActiveID: a.activeID,
-		Message:  a.message,
-		Notice:   a.notice,
-		Pages:    make([]pageState, 0, len(a.order)),
-		Errors:   []syncError{},
+		Status:      a.status,
+		ActiveID:    a.activeID,
+		Message:     a.message,
+		Notice:      a.notice,
+		Pages:       make([]pageState, 0, len(a.order)),
+		Errors:      []syncError{},
+		SyncDelayMs: float64(a.taskSyncDelay.Milliseconds()),
 	}
 	for _, id := range a.order {
 		p := a.pages[id]
