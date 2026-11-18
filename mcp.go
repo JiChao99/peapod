@@ -57,7 +57,7 @@ func (a *app) startMCP() error {
 	}
 	token := hex.EncodeToString(buf)
 
-	srv := sdk.NewServer(&sdk.Implementation{Name: "peapod", Title: "Peapod", Version: "0.1.0"},
+	srv := sdk.NewServer(&sdk.Implementation{Name: "peapod", Title: "Peapod", Version: "0.2.0"},
 		&sdk.ServerOptions{Instructions: mcpInstructions})
 	a.registerMCPTools(srv)
 
