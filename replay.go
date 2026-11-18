@@ -132,7 +132,9 @@ func (a *app) runReplay(rp *replayRun, ops []operation, delay time.Duration) {
 		}
 		a.mu.Unlock()
 		// Enqueue outside the lock: a full queue is retried, not dropped, so a
-		// paced replay never loses steps silently. Ineligible pages are counted.
+		// paced replay never loses steps to capacity. Same-anchor input/scroll
+		// ops still coalesce to the latest value/position (see opQueue).
+		// Ineligible pages are counted.
 		skipped := 0
 		for _, p := range pages {
 			if !a.enqueueReplayOp(p, op, rp.quit) {
@@ -163,12 +165,15 @@ func (a *app) runReplay(rp *replayRun, ops []operation, delay time.Duration) {
 	a.finishReplayRun(rp, "")
 }
 
-// enqueueReplayOp queues one replay operation losslessly: while the target's
-// queue is full it retries (the worker drains it) instead of dropping like the
-// capture path does. It returns false when the page is ineligible — closed,
-// sync off or paused — or the run was cancelled; replay counts those skips.
-// Every send happens under a.mu with the closed check, so it can never race
-// cleanup's channel close. The caller must not hold a.mu.
+// enqueueReplayOp queues one replay operation without capacity drops: while
+// the target's queue is full it retries (the worker drains it) instead of
+// dropping like the capture path does. Same-anchor input/scroll ops still
+// coalesce to the latest, so a burst converges to its final state rather than
+// replaying every intermediate value. It returns false when the page is
+// ineligible — closed, sync off or paused — or the run was cancelled; replay
+// counts those skips.
+// Every push happens under a.mu with the closed check, so it can never race
+// cleanup's queue close. The caller must not hold a.mu.
 func (a *app) enqueueReplayOp(p *pageRecord, op operation, quit <-chan struct{}) bool {
 	for {
 		a.mu.Lock()
@@ -179,11 +184,9 @@ func (a *app) enqueueReplayOp(p *pageRecord, op operation, quit <-chan struct{})
 		if op.Type != "scroll" {
 			p.navPendingAt = time.Now()
 		}
-		select {
-		case p.queue <- op:
+		if p.queue.push(op) {
 			a.mu.Unlock()
 			return true
-		default:
 		}
 		a.mu.Unlock()
 		select {

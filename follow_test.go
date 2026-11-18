@@ -36,8 +36,8 @@ func followFixture() (*app, *pageRecord) {
 	a := newApp()
 	a.status = "running"
 	primary := &pageRecord{id: "p1", base: "https://a.com", url: "https://a.com/step2", isPrimary: true}
-	f1 := &pageRecord{id: "p2", base: "https://b.com", url: "https://b.com/step1", syncOn: true, status: "ready", queue: make(chan operation, 8)}
-	f2 := &pageRecord{id: "p3", base: "https://c.com", url: "https://c.com/step1", syncOn: true, status: "ready", queue: make(chan operation, 8)}
+	f1 := &pageRecord{id: "p2", base: "https://b.com", url: "https://b.com/step1", syncOn: true, status: "ready", queue: newOpQueue(0)}
+	f2 := &pageRecord{id: "p3", base: "https://c.com", url: "https://c.com/step1", syncOn: true, status: "ready", queue: newOpQueue(0)}
 	a.pages = map[string]*pageRecord{"p1": primary, "p2": f1, "p3": f2}
 	a.order = []string{"p1", "p2", "p3"}
 	a.primaryID = "p1"
@@ -69,8 +69,8 @@ func TestFollowTargetsSkips(t *testing.T) {
 			a.pages["p3"].url = "https://c.com/step2"
 		}},
 		{"replay queued", func(a *app) {
-			a.pages["p2"].queue <- operation{Type: "click"}
-			a.pages["p3"].queue <- operation{Type: "click"}
+			a.pages["p2"].queue.push(operation{Type: "click"})
+			a.pages["p3"].queue.push(operation{Type: "click"})
 		}},
 		{"replay may navigate", func(a *app) {
 			a.pages["p2"].navPendingAt = time.Now()
@@ -108,7 +108,7 @@ func TestFollowTargetsMixed(t *testing.T) {
 
 func TestEnqueueOpMarksNavPending(t *testing.T) {
 	a := newApp()
-	p := &pageRecord{id: "p2", syncOn: true, status: "ready", queue: make(chan operation, 8)}
+	p := &pageRecord{id: "p2", syncOn: true, status: "ready", queue: newOpQueue(0)}
 	a.enqueueOp(p, operation{Type: "scroll", Anchor: anchor{Type: "css", Selector: "body"}})
 	if !p.navPendingAt.IsZero() {
 		t.Error("scroll must not mark nav pending")
@@ -241,13 +241,8 @@ func TestFollowTargetsEnqueuesNavBarrier(t *testing.T) {
 	if f.pendingNav != "https://b.com/step2" {
 		t.Fatalf("pendingNav = %q, want remembered destination", f.pendingNav)
 	}
-	select {
-	case op := <-f.queue:
-		if op.Type != navBarrier {
-			t.Errorf("queued op = %q, want navBarrier", op.Type)
-		}
-	default:
-		t.Error("expected a navigation barrier queued behind the busy replay")
+	if op, ok := f.queue.pop(); !ok || op.Type != navBarrier {
+		t.Errorf("queued op = %q (ok=%v), want navBarrier", op.Type, ok)
 	}
 }
 
@@ -279,11 +274,11 @@ func TestReconcileNavLockedEligibility(t *testing.T) {
 		t.Errorf("paused follower must not auto-navigate, got %q", nav)
 	}
 	f.status = "ready"
-	f.queue <- operation{Type: "click"}
+	f.queue.push(operation{Type: "click"})
 	if nav := a.reconcileNavLocked(f, false); nav != "" {
 		t.Errorf("busy queue must defer reconciliation, got %q", nav)
 	}
-	<-f.queue
+	f.queue.pop()
 	if nav := a.reconcileNavLocked(f, false); nav != "https://b.com/step2" {
 		t.Errorf("eligible follower should reconcile, got %q", nav)
 	}
@@ -308,9 +303,9 @@ func TestReplayWorkerAppliesBarrierBeforeOps(t *testing.T) {
 	f := a.pages["p2"]
 	f.pendingNav = "https://b.com/step2"
 	f.navPendingAt = time.Now().Add(-2 * navFollowGrace)
-	f.queue <- operation{Type: navBarrier}
-	f.queue <- operation{Type: "input", Anchor: anchor{Type: "id", Selector: "x"}}
-	close(f.queue)
+	f.queue.push(operation{Type: navBarrier})
+	f.queue.push(operation{Type: "input", Anchor: anchor{Type: "id", Selector: "x"}})
+	f.queue.close()
 	a.replayWorker(f)
 	if f.pendingNav != "" {
 		t.Errorf("barrier must reconcile before queued ops, pendingNav = %q", f.pendingNav)

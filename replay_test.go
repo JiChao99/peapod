@@ -122,7 +122,7 @@ func startFakeWorkers(t *testing.T, a *app) {
 		for _, p := range pages {
 			if !p.closed {
 				p.closed = true
-				close(p.queue)
+				p.queue.close()
 			}
 		}
 		a.mu.Unlock()
@@ -147,7 +147,7 @@ func TestReplayDispatchesEveryPage(t *testing.T) {
 	// Unlike peapod_send_operation, replay drives the primary too.
 	for _, id := range []string{"p1", "p2"} {
 		a.mu.Lock()
-		queued := len(a.pages[id].queue)
+		queued := a.pages[id].queue.len()
 		a.mu.Unlock()
 		if queued != 2 {
 			t.Fatalf("page %s queued %d ops, want 2", id, queued)
@@ -268,7 +268,7 @@ func TestReplaySkipsIneligiblePages(t *testing.T) {
 				t.Fatalf("replay state = %+v, want done 2/2 skipped 2", st.Replay)
 			}
 			a.mu.Lock()
-			q1, q2 := len(a.pages["p1"].queue), len(a.pages["p2"].queue)
+			q1, q2 := a.pages["p1"].queue.len(), a.pages["p2"].queue.len()
 			a.mu.Unlock()
 			if q1 != 2 || q2 != 0 {
 				t.Fatalf("queues = %d/%d, want 2/0 (ineligible page untouched)", q1, q2)
@@ -277,14 +277,15 @@ func TestReplaySkipsIneligiblePages(t *testing.T) {
 	}
 }
 
-// TestReplayCancelWhileQueueFull parks the lossless enqueue on full queues
+// TestReplayCancelWhileQueueFull parks the retrying enqueue on full queues
 // (no workers) and proves stopping the task unblocks it promptly.
 func TestReplayCancelWhileQueueFull(t *testing.T) {
 	a := runningFixture(t)
 	a.mu.Lock()
 	for _, id := range a.order {
-		for i := 0; i < cap(a.pages[id].queue); i++ {
-			a.pages[id].queue <- operation{Type: "scroll", Anchor: anchor{Type: "css", Selector: "html"}}
+		// Distinct anchors: same-anchor scrolls would coalesce into one op.
+		for i := 0; i < opQueueCap; i++ {
+			a.pages[id].queue.push(operation{Type: "click", Anchor: anchor{Type: "id", Selector: fmt.Sprintf("#fill%d", i)}})
 		}
 	}
 	a.mu.Unlock()
@@ -305,6 +306,36 @@ func TestReplayCancelWhileQueueFull(t *testing.T) {
 	})
 	if rp.err != "cancelled" && rp.err != "task stopped" {
 		t.Fatalf("replay err = %q, want cancelled/task stopped", rp.err)
+	}
+}
+
+// TestReplayCoalescesAtCap: a full queue whose tail is a same-anchor scroll
+// accepts the replay op via coalescing replace — no capacity drop, no growth,
+// and the tail carries the replayed position.
+func TestReplayCoalescesAtCap(t *testing.T) {
+	a := runningFixture(t)
+	p := a.pages["p2"]
+	a.mu.Lock()
+	for i := 0; i < opQueueCap-1; i++ {
+		p.queue.push(operation{Type: "click", Anchor: anchor{Type: "id", Selector: fmt.Sprintf("#fill%d", i)}})
+	}
+	p.queue.push(scrollOp("html", 10))
+	a.mu.Unlock()
+
+	y := 900.0
+	if !a.enqueueReplayOp(p, scrollOp("html", y), nil) {
+		t.Fatal("coalescing replay push at cap must succeed")
+	}
+	if got := p.queue.len(); got != opQueueCap {
+		t.Fatalf("len = %d, want cap %d (replace must not grow the queue)", got, opQueueCap)
+	}
+	// Drain to the tail: the last op is the replayed scroll position.
+	var last operation
+	for i := 0; i < opQueueCap; i++ {
+		last, _ = p.queue.pop()
+	}
+	if last.Type != "scroll" || last.ScrollY == nil || *last.ScrollY != y {
+		t.Fatalf("tail = %+v, want the replayed scroll to 900", last)
 	}
 }
 

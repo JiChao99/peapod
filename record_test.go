@@ -39,8 +39,8 @@ func runningFixture(t *testing.T) *app {
 	a.primaryID = "p1"
 	a.order = []string{"p1", "p2"}
 	a.pages = map[string]*pageRecord{
-		"p1": {id: "p1", name: "Primary", url: "https://a.com/", status: "ready", syncOn: true, isPrimary: true, queue: make(chan operation, 8), navSignal: make(chan struct{}, 1)},
-		"p2": {id: "p2", name: "Page 2", url: "https://b.com/", status: "ready", syncOn: true, queue: make(chan operation, 8), navSignal: make(chan struct{}, 1)},
+		"p1": {id: "p1", name: "Primary", url: "https://a.com/", status: "ready", syncOn: true, isPrimary: true, queue: newOpQueue(0), navSignal: make(chan struct{}, 1)},
+		"p2": {id: "p2", name: "Page 2", url: "https://b.com/", status: "ready", syncOn: true, queue: newOpQueue(0), navSignal: make(chan struct{}, 1)},
 	}
 	a.mu.Unlock()
 	return a
@@ -189,7 +189,7 @@ func TestRecorderCoalescesBurst(t *testing.T) {
 	a, r := recordFixture(t)
 	// A busy follower keeps the burst from settling.
 	a.mu.Lock()
-	a.pages["p2"].queue <- operation{Type: "scroll", Anchor: anchor{Type: "css", Selector: "html"}}
+	a.pages["p2"].queue.push(operation{Type: "scroll", Anchor: anchor{Type: "css", Selector: "html"}})
 	a.mu.Unlock()
 
 	for i := 0; i < 3; i++ {
@@ -207,7 +207,7 @@ func TestRecorderCoalescesBurst(t *testing.T) {
 	}
 
 	// Drain the follower: the burst settles and captures under the LAST step.
-	<-a.pages["p2"].queue
+	a.pages["p2"].queue.pop()
 	waitForFile(t, filepath.Join(r.dir, "steps", "0003", "Primary.png"))
 	stopRecorder(t, a, r)
 

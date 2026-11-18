@@ -264,7 +264,7 @@ func (r *recorder) settled() bool {
 		if p.status == "loading" {
 			return false
 		}
-		if p.syncOn && (len(p.queue) > 0 || p.replaying) {
+		if p.syncOn && (p.queue.len() > 0 || p.replaying) {
 			return false
 		}
 	}
@@ -400,6 +400,7 @@ func writeSessionJSON(dir, taskID string, req startRequest) error {
 		"userAgent":    req.userAgent,
 		"shareStorage": req.shareStorage,
 		"diagnostics":  req.diagnostics,
+		"syncDelayMs":  float64(req.syncDelay) / float64(time.Millisecond),
 		"pages":        pages,
 	}, "", "  ")
 	if err != nil {

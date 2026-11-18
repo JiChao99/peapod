@@ -68,12 +68,9 @@ func (a *app) followTargets(primary *pageRecord, raw string) []followTarget {
 		// destination even when it matches the current URL — a replay still in
 		// flight may commit a different URL, and the saved target reconciles it.
 		// A queued navigation barrier makes new-document actions wait for it.
-		if len(f.queue) > 0 || f.replaying || time.Since(f.navPendingAt) < navFollowGrace {
+		if f.queue.len() > 0 || f.replaying || time.Since(f.navPendingAt) < navFollowGrace {
 			f.pendingNav = target
-			select {
-			case f.queue <- operation{Type: navBarrier}:
-			default:
-			}
+			f.queue.push(operation{Type: navBarrier})
 			continue
 		}
 		if target == f.url {
