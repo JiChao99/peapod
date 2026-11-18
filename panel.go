@@ -221,6 +221,36 @@ func (a *app) panelAction(c *ui.Context, tk *theme.Tokens, st appState) {
 }
 
 func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
+	ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
+		a.fieldLabel(c, tk, a.tr("ui.profiles"))
+		opts := make([]field.SelectOption, 0, len(a.profiles)+1)
+		opts = append(opts, field.SelectOption{Value: "", Label: a.tr("ui.profiles.none")})
+		for _, n := range a.profiles {
+			opts = append(opts, field.SelectOption{Value: n, Label: n, Icon: lucide.Bookmark()})
+		}
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Column(c).Grow(1).AlignItems(ui.Stretch).Children(func() {
+				field.Select(c, &a.profileSel, field.SelectProps{
+					Options: opts,
+					Variant: field.InputOutlined,
+				}).AlignSelf(ui.Stretch)
+			})
+			if action.Button(c, a.tr("ui.profiles.load"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).Clicked() {
+				a.loadProfileIntoForm()
+			}
+			a.iconButton(c, tk, lucide.Trash2(), a.tr("ui.profiles.remove"), a.deleteProfile)
+		})
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Column(c).Grow(1).AlignItems(ui.Stretch).Children(func() {
+				field.Input(c, &a.profileName, field.InputProps{Placeholder: a.tr("ui.profiles.placeholder"), Variant: field.InputFilled})
+			})
+			if action.Button(c, a.tr("ui.profiles.save"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).Clicked() {
+				a.saveProfile(a.profileName)
+			}
+		})
+		ui.Text(c, a.tr("ui.profiles.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
+	})
+
 	a.fieldLabel(c, tk, a.tr("ui.viewMode"))
 	field.Select(c, &a.viewMode, field.SelectProps{
 		Options: []field.SelectOption{

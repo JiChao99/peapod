@@ -55,6 +55,7 @@ It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with it
 - **Desktop and mobile layouts.** Per-page resolutions from 200 to 3840 px.
 - **User-Agent presets.** iPhone, iPad, Android phone and tablet, Windows Chrome, Edge and Firefox, and macOS Safari, or paste a custom string.
 - **Isolated or shared storage.** Each page gets its own ephemeral session by default. You can also share cookies and cache across pages.
+- **Setup profiles.** Save the whole setup — pages, template, resolutions, UA and toggles — under a name, reload it later in one click. Profiles live in `Pictures/Peapod/profiles`.
 
 ### Evidence
 - **Batch screenshots.** One click saves a PNG of every running page, including pages that aren't currently on screen.

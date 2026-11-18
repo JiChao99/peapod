@@ -140,6 +140,13 @@ type app struct {
 	record       bool // record operations + per-step screenshots; UI-owned like shareStorage
 	syncUI       map[string]*bool
 
+	// Setup profiles (profiles.go): profileName is the save-as input, profileSel
+	// the picked existing profile, profiles the cached list refreshed on
+	// startup/save/delete. All UI-owned like the fields above.
+	profileName string
+	profileSel  string
+	profiles    []string
+
 	themeMode string // system | light | dark
 	// captionTheme is the theme last given to the native caption buttons, so
 	// syncCaptionTheme only repaints them when the panel theme changes.
@@ -179,6 +186,7 @@ func newApp() *app {
 		configSeq: 3,
 	}
 	a.langVal.Store(a.lang)
+	a.profiles = listProfiles()
 	return a
 }
 
