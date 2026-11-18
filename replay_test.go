@@ -277,7 +277,7 @@ func TestReplaySkipsIneligiblePages(t *testing.T) {
 	}
 }
 
-// TestReplayCancelWhileQueueFull parks the lossless enqueue on full queues
+// TestReplayCancelWhileQueueFull parks the retrying enqueue on full queues
 // (no workers) and proves stopping the task unblocks it promptly.
 func TestReplayCancelWhileQueueFull(t *testing.T) {
 	a := runningFixture(t)

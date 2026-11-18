@@ -8,7 +8,7 @@ import (
 )
 
 // opQueueCap bounds one page's pending operations; overflow is dropped on the
-// capture path (and retried on the lossless replay path).
+// capture path (and retried on the replay path).
 const opQueueCap = 256
 
 // defaultSyncDelay paces continuous operations (input/scroll) so a typing or
