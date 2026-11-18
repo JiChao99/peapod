@@ -305,7 +305,7 @@ func TestMCPToolsListed(t *testing.T) {
 	want := map[string]bool{
 		"peapod_status": false, "peapod_start": false, "peapod_stop": false,
 		"peapod_navigate": false, "peapod_reload": false, "peapod_set_sync": false,
-		"peapod_send_operation": false, "peapod_replay": false, "peapod_screenshot": false, "peapod_diagnostics": false,
+		"peapod_send_operation": false, "peapod_replay": false, "peapod_screenshot": false, "peapod_diff": false, "peapod_diagnostics": false,
 	}
 	for _, tool := range res.Tools {
 		if _, ok := want[tool.Name]; ok {

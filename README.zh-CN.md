@@ -60,11 +60,12 @@ Peapod 在一个窗口里同时打开 2–10 个页面。你在**主页面**上�
 
 ### 留证
 - **批量截图**：一键把每个运行中的页面保存为 PNG，当前不在屏幕上显示的页面也能截到。
+- **变体 Diff**：一键把每个页面与主页面逐像素对比，每页保存一张红色高亮的 diff 图和 `diff.json` 统计摘要，位于 `Pictures/Peapod/diffs`。各页分辨率需与主页面一致；可设置逐通道容差来忽略抗锯齿噪声。
 - **操作录制**：开启后，每个操作都会写入可回放的 `script.jsonl`，每当任务稳定下来，还会给所有页面截图。
 - **录制记录浏览器**：列出历史录制，可查看逐步时间线和每页缩略图；可以在运行中的任务上回放，也可以导出独立的 HTML 报告。
 
 ### 自动化
-- **MCP 服务器**：本机 [Model Context Protocol](https://modelcontextprotocol.io) 端点，由 token 保护。AI agent 无需操作界面，就能启动任务、导航、执行操作、回放、截图、诊断和停止任务。
+- **MCP 服务器**：本机 [Model Context Protocol](https://modelcontextprotocol.io) 端点，由 token 保护。AI agent 无需操作界面，就能启动任务、导航、执行操作、回放、截图、diff 对比、诊断和停止任务。
 - **验收诊断**：导航失败时会给出固定的错误名（`NAME_NOT_RESOLVED`、`TIMEOUT` 等）。另有一个仅限 MCP、需主动开启的采集器，可提供主文档 HTTP 状态、页面文本，以及 console、network 和 error 记录，让 agent 依据实际结果做判断，而不是只看截图。
 
 ### 日常体验
@@ -98,7 +99,7 @@ Peapod 启动后，会在 `127.0.0.1` 的随机端口上提供 Streamable-HTTP M
 | macOS | `~/Library/Application Support/Peapod/mcp.json` |
 | Linux | `~/.config/Peapod/mcp.json` |
 
-工具：`peapod_status`、`peapod_start`、`peapod_stop`、`peapod_navigate`、`peapod_reload`、`peapod_set_sync`、`peapod_send_operation`、`peapod_replay`、`peapod_screenshot`、`peapod_diagnostics`。
+工具：`peapod_status`、`peapod_start`、`peapod_stop`、`peapod_navigate`、`peapod_reload`、`peapod_set_sync`、`peapod_send_operation`、`peapod_replay`、`peapod_screenshot`、`peapod_diff`、`peapod_diagnostics`。
 
 客户端配置、完整的工具说明、录制格式和 agent 使用示例见 **[docs/mcp.md](docs/mcp.md)**。设置 `PEAPOD_MCP_DISABLE=1` 可以关闭该服务。
 

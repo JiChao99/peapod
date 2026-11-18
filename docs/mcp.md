@@ -72,6 +72,7 @@ Because the port/token rotate per launch, either regenerate this config from `mc
 | `peapod_send_operation` | `operation` | Replay a host-trusted operation on every synced follower. |
 | `peapod_replay` | `scriptPath`, optional `delayMs` (0–5000, default 500) | Re-enact a recorded `script.jsonl` on **every** page of the running task, including the primary. Returns `{"status":"replaying","steps":n}` immediately; poll `peapod_status.replay` until `active` is `false` (see [Recording & replay](#recording--replay)). |
 | `peapod_screenshot` | optional `pageId` (default primary), `timeoutMs` (1000–60000, default 10000) | Capture one page as a PNG image. Bounded by a timeout: a page that is not rendering fails with an error instead of hanging (see below). |
+| `peapod_diff` | optional `pageId` / `againstId` (default primary, must differ), `tolerance` (0–255, default 0), `timeoutMs` (1000–60000, default 10000) | Compare two pages' screenshots pixel by pixel (equal resolutions required). Returns diff stats as JSON plus a red-highlight diff PNG (see below). |
 | `peapod_diagnostics` | optional `pageId` (default primary) | Read a page's acceptance diagnostics: `status`/`navError`, plus URL/title/readyState, the main document's HTTP status, bounded body text, and recent console/network/error activity. Installs the opt-in collector on demand (idempotent) if it was not injected at start. |
 
 ### `peapod_status` response
@@ -118,6 +119,26 @@ Each page's `status` is one of `loading`, `ready`, `error`, `paused`, `closed`:
 ### `peapod_screenshot` timeout
 
 WebView2 cannot capture a page that is not rendering: if the Peapod window is minimized or hidden, or the page is stacked behind the active one in desktop view, `CapturePreview` never completes. The tool therefore bounds every capture by `timeoutMs` (default 10 s) and returns an error result on timeout rather than hanging until the client times out. The error names the page and the likely cause; restore the Peapod window (or make the page active) and retry. The panel's batch screenshot applies the same per-page bound, so one non-rendering page no longer stalls the whole batch. Because `CapturePreview` cannot be cancelled, concurrent captures of the same page coalesce onto a single outstanding capture: retries attach to it instead of launching more uncancellable work, and all waiters receive the result once the callback lands (e.g. after the window is restored).
+
+### `peapod_diff` response
+
+Captures both pages (reusing the coalesced, timeout-bounded capture path), then compares them channel by channel. The result carries two content blocks: a JSON stats object and the highlight PNG.
+
+```json
+{
+  "pageId": "p2", "pageName": "Page 2", "againstId": "p1", "againstName": "Primary",
+  "stats": { "width": 1280, "height": 800, "pixels": 1024000, "different": 4210,
+             "fraction": 0.0041, "maxDelta": 255, "meanDelta": 0.31, "tolerance": 0 }
+}
+```
+
+- `different` / `fraction` — pixels where **any** RGBA channel differs by more than `tolerance`, and their share of all pixels. `maxDelta` is the largest per-channel difference (0–255); `meanDelta` averages all four channels' differences over every pixel, so small changes across a large area still register.
+- `tolerance` (0–255, default 0 = exact) absorbs anti-aliasing / font-rendering noise: a channel difference ≤ tolerance counts as equal.
+- The highlight PNG dims the inspected page to 35% grayscale and paints differing pixels solid red — a reviewer sees exactly where the variants diverge.
+- **Equal resolutions are required.** Mismatched sizes fail with an actionable error naming both pages and their dimensions instead of silently cropping or scaling; set the pages to the same `resW`/`resH` first.
+- Captures are bounded by `timeoutMs` per page like `peapod_screenshot`; a non-rendering (minimized/occluded) page fails fast.
+
+The native panel's **Variant diff** button runs the same comparison for every follower against the primary (tolerance 0), saving `{page}_diff.png` plus a `diff.json` summary (per-page stats or failure reason, `primaryError` if the reference capture failed) under `Pictures/Peapod/diffs/`.
 
 ### `peapod_diagnostics` response
 
@@ -248,5 +269,5 @@ Scrolls the page produces itself — load animations, scroll anchoring after a r
 1. `peapod_start` with a template and two pages (dev + prod); add `record:true` to keep a replayable script and per-step screenshots.
 2. Poll `peapod_status` until both pages are `ready`. A page stuck in `error` with a `navError` (e.g. `NAME_NOT_RESOLVED`) is unreachable — fix the URL/host rather than waiting.
 3. `peapod_navigate` the primary to a route; followers follow on their own host.
-4. `peapod_send_operation` to type into a field; `peapod_screenshot` each page to compare, and `peapod_diagnostics` to assert HTTP status, text and console/network errors.
+4. `peapod_send_operation` to type into a field; `peapod_diff` to compare variants pixel by pixel (stats + red-highlight PNG), or `peapod_screenshot` each page and `peapod_diagnostics` to assert HTTP status, text and console/network errors.
 5. `peapod_stop` to clean up. With recording on, the session folder now holds `script.jsonl` + step shots + `summary.json`; later, start a fresh task at the same entry URL and `peapod_replay` the script to re-enact the flow.
