@@ -98,7 +98,9 @@ func (a *app) replayWorker(p *pageRecord) {
 // A failure pauses that page until the user reloads it.
 func (a *app) replayOnce(p *pageRecord, op operation) {
 	a.mu.Lock()
-	paused := p.status == "paused" || !p.syncOn || p.closed
+	// A loading page is mid-navigation (reload / back-to-variant-home); replaying
+	// a queued op now would hit the old document, so drop it like a paused page.
+	paused := p.status == "paused" || p.status == "loading" || !p.syncOn || p.closed
 	view := p.view
 	if !paused && view != nil {
 		p.replaying = true

@@ -648,6 +648,47 @@ func (a *app) reloadPage(id string) {
 	a.invalidate()
 }
 
+// resumePage lifts a pause by skipping the failed step: the sync queue continues
+// with the next operation instead of retrying the one that desynced this variant.
+func (a *app) resumePage(id string) {
+	a.mu.Lock()
+	p := a.pages[id]
+	if p != nil && !p.closed && p.status == "paused" {
+		p.status = "ready"
+		p.lastError = nil
+		// A pause can coexist with a nav failure; leaving navFailed/pendingNav
+		// set would block markNavSucceededLocked and re-apply the failed URL on
+		// the next reconcile, looping straight back into the pause.
+		p.navError = nil
+		p.navFailed = false
+		p.pendingNav = ""
+		p.navPendingAt = time.Time{}
+	}
+	a.mu.Unlock()
+	a.pushState()
+}
+
+// gotoPageHome navigates a page back to its own variant origin — the recovery
+// when a followed path does not exist under that variant.
+func (a *app) gotoPageHome(id string) {
+	a.mu.Lock()
+	p := a.pages[id]
+	var view *mygo.WebView
+	home := ""
+	if p != nil && !p.closed {
+		resetNavLocked(p)
+		p.pendingNav = ""
+		p.navPendingAt = time.Time{}
+		view = p.view
+		home = p.base
+	}
+	a.mu.Unlock()
+	if view != nil && home != "" {
+		view.Page().LoadURL(home)
+	}
+	a.invalidate()
+}
+
 // screenshotAll captures every running page to a PNG named
 // {base}_{pageName}.png inside a per-batch folder under the user's
 // Pictures/Peapod screenshots root.

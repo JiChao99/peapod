@@ -769,6 +769,16 @@ func (a *app) pageCard(c *ui.Context, tk *theme.Tokens, ps pageState, activeID s
 		if ps.NavError != nil {
 			ui.Text(c, navErrorReason(ps.NavError.Name, a.currentLang())).FontSize(12).TextColor(tk.Error).Wrap()
 		}
+		if ps.Status == "paused" {
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				if action.Button(c, a.tr("ui.resume"), action.ButtonProps{Variant: action.Primary, Size: theme.Small}).Clicked() {
+					a.resumePage(ps.ID)
+				}
+				if action.Button(c, a.tr("ui.gotoHome"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).Clicked() {
+					a.gotoPageHome(ps.ID)
+				}
+			})
+		}
 	})
 }
 
@@ -822,7 +832,7 @@ func (a *app) renderStage(c *ui.Context, tk *theme.Tokens, st appState) {
 		})
 
 		if mobile && len(all) > 0 {
-			a.renderMobileStage(c, tk, all, zoom, barH)
+			a.renderMobileStage(c, tk, all, zoom, barH, st)
 		} else {
 			a.renderDesktopStage(c, tk, st, all, zoom, barH, activeView, activeRec)
 		}
@@ -890,6 +900,9 @@ func (a *app) renderDesktopStage(c *ui.Context, tk *theme.Tokens, st appState, a
 			}
 			ui.WebView(c, activeView).Absolute().Left(0).Top(0).Width(tw * fit).Height(th * fit)
 			a.applyPageZoom(activeView, activeRec, fit, zoom)
+			if ps, ok := pageStateByID(st.Pages, st.ActiveID); ok && ps.Status == "paused" {
+				a.pausedMask(c, tk, ps, false)
+			}
 		})
 	})
 }
@@ -921,7 +934,7 @@ func (a *app) renderRecordingsOverlay(c *ui.Context, tk *theme.Tokens, barH floa
 
 // renderMobileStage shows every page side by side, each fitted to an equal slot
 // at its own resolution, so mobile layouts can be compared at a glance.
-func (a *app) renderMobileStage(c *ui.Context, tk *theme.Tokens, pages []*pageRecord, zoom float64, barH float32) {
+func (a *app) renderMobileStage(c *ui.Context, tk *theme.Tokens, pages []*pageRecord, zoom float64, barH float32, st appState) {
 	n := len(pages)
 	winW, winH := c.Size()
 	regionW := winW - panelWidth - 2*stagePadding
@@ -959,11 +972,59 @@ func (a *app) renderMobileStage(c *ui.Context, tk *theme.Tokens, pages []*pageRe
 				if fit <= 0 {
 					fit = 0.05
 				}
-				ui.WebView(c, p.view).Width(tw*fit).Height(th*fit).Radius(8).Border(1, tk.Border)
-				a.applyPageZoom(p.view, p, fit, zoom)
+				ui.Box(c).Width(tw * fit).Height(th * fit).Clip().Radius(8).Children(func() {
+					ui.WebView(c, p.view).Absolute().Left(0).Top(0).Width(tw*fit).Height(th*fit).Radius(8).Border(1, tk.Border)
+					a.applyPageZoom(p.view, p, fit, zoom)
+					if ps, ok := pageStateByID(st.Pages, p.id); ok && ps.Status == "paused" {
+						a.pausedMask(c, tk, ps, slotW < 160)
+					}
+				})
 			})
 		}
 	})
+}
+
+// pausedMask overlays a paused page's stage slot with a translucent scrim, the
+// pause reason and a Resume action, so a desynced variant is obvious at a glance
+// instead of looking like a live page. WebView2 is composited (windowless), so a
+// native scrim paints above it.
+func (a *app) pausedMask(c *ui.Context, tk *theme.Tokens, ps pageState, compact bool) {
+	ui.Column(c).Absolute().Fill().Center().AlignItems(ui.Center).Gap(8).Padding(16).
+		Background(tk.BgLayout.Alpha(0.72)).Children(func() {
+		if compact {
+			// Narrow mobile slots can't fit the reason text; an icon-only Resume
+			// keeps the recovery clickable inside the clip.
+			b := ui.ButtonBase(c).Label(a.tr("ui.resume")).Tooltip(a.tr("ui.resume")).Size(32, 32).Center().
+				Radius(tk.BorderRadiusSM).Cursor(ui.CursorPointer).Background(tk.Primary).TextColor(tk.PrimaryText)
+			b.Children(func() { ui.Icon(c, lucide.Play()).FontSize(16) })
+			if b.Clicked() {
+				a.resumePage(ps.ID)
+			}
+			return
+		}
+		display.Tag(c, a.tr("page.paused"), display.TagProps{Color: display.TagWarning, Size: theme.Small, Round: true})
+		reason := ""
+		if ps.Error != nil {
+			reason = syncErrorReason(ps.Error.Code, a.currentLang())
+		} else if ps.NavError != nil {
+			reason = navErrorReason(ps.NavError.Name, a.currentLang())
+		}
+		if reason != "" {
+			ui.Text(c, reason).FontSize(12).TextColor(tk.Text).Wrap()
+		}
+		if action.Button(c, a.tr("ui.resume"), action.ButtonProps{Variant: action.Primary, Size: theme.Small}).Clicked() {
+			a.resumePage(ps.ID)
+		}
+	})
+}
+
+func pageStateByID(pages []pageState, id string) (pageState, bool) {
+	for _, ps := range pages {
+		if ps.ID == id {
+			return ps, true
+		}
+	}
+	return pageState{}, false
 }
 
 // applyPageZoom keeps a page's CSS viewport at its configured resolution: the
