@@ -30,7 +30,7 @@ import (
 // The recordings browser is a lightweight, pinky-Activity-style view of the
 // evidence chain the recorder writes: a session list beside a step timeline
 // with plain-language operations and per-page thumbnails, plus replay and a
-// self-contained HTML report. It deliberately has no video player — Peapod
+// folder-relative HTML report. It deliberately has no video player — Peapod
 // captures per-step PNGs, not a movie — and reads only local artifacts.
 const (
 	recThumbW      = 100  // thumbnail box width (DIPs); image is contained

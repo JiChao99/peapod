@@ -229,21 +229,21 @@ func (a *app) finishReplayRun(rp *replayRun, errMsg string) {
 	rp.active = false
 	rp.err = errMsg
 	done, total := rp.done, rp.total
-	// Only touch the notice if it still belongs to this replay; a newer notice
-	// (e.g. a batch result with its open-folder action) must not be clobbered.
-	replayNotice := a.noticeTag == "replay"
+	// Only touch the notice if it still belongs to this replay, and write it in
+	// the same critical section: a notice landing between the check and the
+	// write must not be clobbered, and cleanup's reset must not be undone.
+	if a.noticeTag == "replay" {
+		msg, kind := errMsg, "error"
+		switch errMsg {
+		case "":
+			msg, kind = a.tr("ui.replay.done", done, total), "success"
+		case "cancelled", "task stopped":
+			// Cancel/stop need no notice — the panel's replay result line states them.
+			msg, kind = "", ""
+		}
+		a.notice, a.noticeKind = msg, kind
+		a.noticeTag, a.noticePath, a.noticePathIsDir = "", "", false
+	}
 	a.mu.Unlock()
 	a.pushState()
-	if !replayNotice {
-		return
-	}
-	// Cancel/stop need no notice — the panel's replay result line states them.
-	switch errMsg {
-	case "":
-		a.setNoticeFull(a.tr("ui.replay.done", done, total), "success", "", "", false)
-	case "cancelled", "task stopped":
-		a.clearNoticeTag("replay")
-	default:
-		a.setNoticeFull(errMsg, "error", "", "", false)
-	}
 }

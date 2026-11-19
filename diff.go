@@ -233,12 +233,17 @@ func (a *app) diffAll() {
 		}()
 		dir, err := batchDir(filepath.Join(userArtifactRoot(), "diffs"), "diff")
 		if err != nil {
-			a.setNoticeErr(trLang(lang, "err.diffDir", err.Error()))
+			if !a.batchStale(taskID) {
+				a.setNoticeErr(trLang(lang, "err.diffDir", err.Error()))
+			}
 			return
 		}
 		ok, failed, differ := a.runBatchDiff(taskID, targets, dir, lang, func(p *pageRecord) ([]byte, error) {
 			return p.view.CapturePage()
 		})
+		if a.batchStale(taskID) {
+			return
+		}
 		if failed > 0 {
 			a.setNoticeOpen(trLang(lang, "notice.diffPartial", ok, failed, dir), "warning", dir, true)
 			return

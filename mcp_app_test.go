@@ -254,3 +254,23 @@ func TestMCPReplayFlow(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+// TestResolveMCPRequestPlainBases locks the MCP path's variant preservation:
+// same-origin pages with different first path segments keep their own segment
+// in the follow base, exactly like the panel's buildRequest path.
+func TestResolveMCPRequestPlainBases(t *testing.T) {
+	a := newApp()
+	req, err := a.resolveMCPRequest(startIn{Pages: []mcpPage{
+		{URL: "https://example.com/zh-cn/docs"},
+		{URL: "https://example.com/en/docs"},
+	}})
+	if err != nil {
+		t.Fatalf("resolveMCPRequest: %v", err)
+	}
+	want := []string{"https://example.com/zh-cn", "https://example.com/en"}
+	for i, p := range req.pages {
+		if p.base != want[i] {
+			t.Errorf("page %d base = %q, want %q", i, p.base, want[i])
+		}
+	}
+}

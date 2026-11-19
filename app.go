@@ -588,7 +588,6 @@ func (a *app) launch(req startRequest) error {
 	a.noticeTag = ""
 	a.noticePath = ""
 	a.noticePathIsDir = false
-	a.syncUI = map[string]*bool{}
 	a.cancel = make(chan struct{})
 	cancel := a.cancel
 	taskID := a.taskID
@@ -775,7 +774,9 @@ func (a *app) screenshotAll() {
 		}()
 		dir, err := screenshotDir(base)
 		if err != nil {
-			a.setNoticeErr(trLang(lang, "err.shotDir", err.Error()))
+			if !a.batchStale(taskID) {
+				a.setNoticeErr(trLang(lang, "err.shotDir", err.Error()))
+			}
 			return
 		}
 		used := map[string]bool{}
@@ -809,6 +810,9 @@ func (a *app) screenshotAll() {
 			}
 			saved++
 		}
+		if a.batchStale(taskID) {
+			return
+		}
 		if failed > 0 {
 			a.setNoticeOpen(trLang(lang, "notice.shotPartial", saved, failed, dir), "warning", dir, true)
 			return
@@ -828,6 +832,14 @@ func (a *app) batchShotValidLocked(taskID, id string) bool {
 	}
 	p := a.pages[id]
 	return p != nil && !p.closed
+}
+
+// batchStale reports whether a batch goroutine outlived its task, so its result
+// notice (and open-folder action) must not land on a newer task or idle screen.
+func (a *app) batchStale(taskID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.taskID != taskID || a.status != "running"
 }
 
 func (a *app) setNotice(msg string) { a.setNoticeKind(msg, "info") }
@@ -1189,9 +1201,17 @@ func (a *app) cleanup(pages []*pageRecord, lang string) {
 	a.taskSyncDelay = 0
 	// Drop the previous task's result notice so a stale screenshot/diff path does
 	// not linger in the footer after stop; the recorder's save notice (if any)
-	// lands afterwards as a fresh result.
+	// lands afterwards as a fresh result. Clear the tag/path too, so a replay
+	// finishing concurrently cannot resurrect its result over this reset.
 	a.notice = ""
 	a.noticeKind = ""
+	a.noticeTag = ""
+	a.noticePath = ""
+	a.noticePathIsDir = false
+	// A batch goroutine may outlive the task (capture timeouts); release its
+	// busy flags so the next task's buttons are not disabled by a dead batch.
+	a.shotBusy = false
+	a.diffBusy = false
 	if failed {
 		a.status = "cleanup-error"
 		a.message = trLang(lang, "err.cleanupFailed")

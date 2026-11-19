@@ -62,16 +62,24 @@ func (a *app) view(c *ui.Context) {
 	if st.Status != a.lastStatus {
 		a.configScroll.X, a.configScroll.Y = 0, 0
 		// A launch (panel or MCP) supersedes any pending form validation and any
-		// open overwrite confirm, so neither can scroll or save mid-countdown.
+		// open confirm, so none can scroll, save or stop mid-countdown — and a
+		// confirm left open by an MCP stop must not pop up on the next run.
 		a.fieldErr = nil
 		a.scrollErrField = ""
 		a.lastScrolledErr = ""
 		a.profileOverwriteOpen = false
+		a.confirmStop = false
+		a.replayConfirmOpen = false
+		a.replayPendingDir = ""
+		a.replayEntryURL = ""
+		a.syncUI = map[string]*bool{}
 		switch st.Status {
 		case "starting", "running":
 			a.stageStopped = false
-		case "idle", "cleanup-error":
-			if a.lastStatus == "running" || a.lastStatus == "stopping" {
+		case "stopping":
+			// Only a run that actually had pages counts as stopped; cancelling
+			// the countdown never created a session to clear.
+			if a.lastStatus == "running" {
 				a.stageStopped = true
 			}
 		}
@@ -828,7 +836,6 @@ func (a *app) runtimeBody(c *ui.Context, tk *theme.Tokens, st appState) {
 		ui.Column(c).Gap(8).Padding(12).Radius(tk.BorderRadiusLG).Background(tk.ErrorFillTertiary).Children(func() {
 			ui.Text(c, a.tr("ui.syncErrors")).FontSize(13).Bold().TextColor(tk.Error)
 			for _, e := range st.Errors {
-				e := e
 				name := names[e.TargetID]
 				if name == "" {
 					name = e.TargetID
