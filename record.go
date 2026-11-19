@@ -370,7 +370,7 @@ func (r *recorder) finish() {
 		_ = os.WriteFile(filepath.Join(r.dir, "summary.json"), data, 0o644)
 	}
 	if dispatched > 0 {
-		r.a.setNoticeOK(trLang(r.lang, "notice.recordSaved", dispatched, r.dir))
+		r.a.setNoticeOpen(trLang(r.lang, "notice.recordSaved", dispatched, r.dir), "success", r.dir, true)
 	}
 }
 

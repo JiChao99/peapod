@@ -113,15 +113,26 @@ func (a *app) startReplay(path string, delay time.Duration) (int, error) {
 		return 0, err
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.status != "running" {
+		a.mu.Unlock()
 		return 0, fmt.Errorf("%s", a.tr("err.replayNotRunning"))
 	}
 	if a.replay != nil && a.replay.active {
+		a.mu.Unlock()
 		return 0, fmt.Errorf("a replay is already running")
 	}
 	rp := &replayRun{taskID: a.taskID, total: len(ops), active: true, quit: make(chan struct{})}
 	a.replay = rp
+	// Tag the "replaying…" notice here, under the same lock that publishes the
+	// run, so a fast run cannot finish before the notice exists (which would
+	// leave a stale tagged notice that finishReplayRun already cleared).
+	a.notice = a.tr("notice.recReplaying", len(ops))
+	a.noticeKind = "info"
+	a.noticeTag = "replay"
+	a.noticePath = ""
+	a.noticePathIsDir = false
+	a.mu.Unlock()
+	a.pushState()
 	go a.runReplay(rp, ops, delay)
 	return len(ops), nil
 }
@@ -217,6 +228,22 @@ func (a *app) finishReplayRun(rp *replayRun, errMsg string) {
 	a.mu.Lock()
 	rp.active = false
 	rp.err = errMsg
+	done, total := rp.done, rp.total
+	// Only touch the notice if it still belongs to this replay; a newer notice
+	// (e.g. a batch result with its open-folder action) must not be clobbered.
+	replayNotice := a.noticeTag == "replay"
 	a.mu.Unlock()
 	a.pushState()
+	if !replayNotice {
+		return
+	}
+	// Cancel/stop need no notice — the panel's replay result line states them.
+	switch errMsg {
+	case "":
+		a.setNoticeFull(a.tr("ui.replay.done", done, total), "success", "", "", false)
+	case "cancelled", "task stopped":
+		a.clearNoticeTag("replay")
+	default:
+		a.setNoticeFull(errMsg, "error", "", "", false)
+	}
 }

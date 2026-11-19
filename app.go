@@ -90,6 +90,11 @@ type appState struct {
 	Notice   string      `json:"notice"`
 	// NoticeKind tiers Notice for the panel: info | success | warning | error.
 	NoticeKind string `json:"noticeKind,omitempty"`
+	// NoticePath/NoticePathIsDir drive the notice's open-folder/open-file action.
+	NoticePath      string `json:"noticePath,omitempty"`
+	NoticePathIsDir bool   `json:"noticePathIsDir,omitempty"`
+	ShotBusy        bool   `json:"shotBusy,omitempty"`
+	DiffBusy        bool   `json:"diffBusy,omitempty"`
 
 	// Recording/replay evidence surface (docs/mcp.md). Recording is true while
 	// a recorder is attached; Replay appears once a peapod_replay has started
@@ -119,12 +124,23 @@ type app struct {
 	// noticeKind tiers the notice for the panel: info | success | warning | error.
 	// Guarded by mu like notice; setNotice* write both together.
 	noticeKind string
-	pages      map[string]*pageRecord
-	order      []string
-	activeID   string
-	primaryID  string
-	cancel     chan struct{}
-	seq        int
+	// noticeTag marks a notice tied to a transient activity ("replay") so the
+	// activity's end can replace or clear it instead of leaving it stale.
+	noticeTag string
+	// noticePath/noticePathIsDir attach an "open" action to a result notice
+	// (screenshot folder, diff evidence, exported report).
+	noticePath      string
+	noticePathIsDir bool
+	// shotBusy/diffBusy mark an in-flight batch so the panel can spin and
+	// disable the trigger instead of letting a second batch stack on it.
+	shotBusy  bool
+	diffBusy  bool
+	pages     map[string]*pageRecord
+	order     []string
+	activeID  string
+	primaryID string
+	cancel    chan struct{}
+	seq       int
 
 	// rec is the running task's operation recorder (record.go), nil when the
 	// task does not record. replay is the latest peapod_replay run (replay.go).
@@ -141,18 +157,28 @@ type app struct {
 	// mu; each page's opQueue carries its own copy.
 	taskSyncDelay time.Duration
 
-	configs      []*pageConfig
-	configSeq    int
-	template     string // optional URL template with {placeholders}; empty = plain URLs
-	viewMode     string // desktop | mobile
-	lastViewMode string
-	resW, resH   float64 // preset seeded by viewMode; each page copies it
-	uaPreset     string  // built-in UA option key (ua.go); UI-owned like viewMode
-	uaCustom     string  // full UA string when uaPreset == uaCustom
-	shareStorage bool
-	record       bool   // record operations + per-step screenshots; UI-owned like shareStorage
-	syncDelay    string // continuous-operation pace in ms ("0" = instant); UI-owned like shareStorage
-	syncUI       map[string]*bool
+	configs   []*pageConfig
+	configSeq int
+	// fieldErr maps a setup-field id ("primary", "page:<id>", "template") to its
+	// validation error; the form outlines the field and scrolls the first one
+	// into view. Main-thread only, like configs; revalidated each render so a
+	// corrected field clears its own outline.
+	fieldErr       map[string]string
+	scrollErrField string
+	// lastScrolledErr is the field already scrolled into view, so the reveal
+	// fires once per error rather than every frame (which would pin the scroll
+	// and block the user from scrolling away). Main-thread only.
+	lastScrolledErr string
+	template        string // optional URL template with {placeholders}; empty = plain URLs
+	viewMode        string // desktop | mobile
+	lastViewMode    string
+	resW, resH      float64 // preset seeded by viewMode; each page copies it
+	uaPreset        string  // built-in UA option key (ua.go); UI-owned like viewMode
+	uaCustom        string  // full UA string when uaPreset == uaCustom
+	shareStorage    bool
+	record          bool   // record operations + per-step screenshots; UI-owned like shareStorage
+	syncDelay       string // continuous-operation pace in ms ("0" = instant); UI-owned like shareStorage
+	syncUI          map[string]*bool
 
 	// Setup profiles (profiles.go): profileName is the save-as input, profileSel
 	// the picked existing profile, profiles the cached list refreshed on
@@ -390,6 +416,8 @@ func (a *app) bulkAddURLs(raw string) (int, error) {
 // variant base is rendered from the shared template plus its own vars, and the
 // URL field becomes an optional path appended to that base.
 func (a *app) buildRequest() (startRequest, error) {
+	a.fieldErr = map[string]string{}
+	a.scrollErrField = ""
 	if len(a.configs) < 2 || len(a.configs) > 10 {
 		return startRequest{}, fmt.Errorf("%s", a.tr("err.pageCount"))
 	}
@@ -398,7 +426,7 @@ func (a *app) buildRequest() (startRequest, error) {
 	if tmpl == "" {
 		primaryURL = strings.TrimSpace(a.configs[0].url)
 		if err := a.validateURL(primaryURL); err != nil {
-			return startRequest{}, fmt.Errorf("%s", a.tr("err.primaryURL", err.Error()))
+			return startRequest{}, a.fieldError("page:"+a.configs[0].id, a.tr("err.primaryURL", err.Error()))
 		}
 	}
 	pages := make([]resolvedPage, 0, len(a.configs))
@@ -411,25 +439,25 @@ func (a *app) buildRequest() (startRequest, error) {
 				raw = primaryURL
 			}
 			if err := a.validateURL(raw); err != nil {
-				return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
+				return startRequest{}, a.fieldError("page:"+cfg.id, a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
 			}
 			base = originOf(raw)
 			plainURLs = append(plainURLs, raw)
 		} else {
 			vars, bad := parseVars(cfg.vars)
 			if bad != "" {
-				return startRequest{}, fmt.Errorf("%s", a.tr("err.vars", a.cfgName(cfg, i), bad))
+				return startRequest{}, a.fieldError("vars:"+cfg.id, a.tr("err.vars", a.cfgName(cfg, i), bad))
 			}
 			b, missing := renderTemplate(tmpl, vars)
 			if len(missing) > 0 {
-				return startRequest{}, fmt.Errorf("%s", a.tr("err.template", a.cfgName(cfg, i), strings.Join(missing, ", ")))
+				return startRequest{}, a.fieldError("vars:"+cfg.id, a.tr("err.template", a.cfgName(cfg, i), strings.Join(missing, ", ")))
 			}
 			if err := a.validateURL(b); err != nil {
-				return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
+				return startRequest{}, a.fieldError("page:"+cfg.id, a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
 			}
 			clean, ok := cleanTemplateBase(b)
 			if !ok {
-				return startRequest{}, fmt.Errorf("%s", a.tr("err.templateBase", a.cfgName(cfg, i)))
+				return startRequest{}, a.fieldError("page:"+cfg.id, a.tr("err.templateBase", a.cfgName(cfg, i)))
 			}
 			base = clean
 			path := strings.TrimSpace(cfg.url)
@@ -441,7 +469,7 @@ func (a *app) buildRequest() (startRequest, error) {
 			}
 			raw = base + path
 			if err := a.validateURL(raw); err != nil {
-				return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
+				return startRequest{}, a.fieldError("page:"+cfg.id, a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
 			}
 		}
 		pages = append(pages, resolvedPage{
@@ -458,6 +486,20 @@ func (a *app) buildRequest() (startRequest, error) {
 	return startRequest{pages: pages, shareStorage: a.shareStorage, viewMode: a.viewMode,
 		userAgent: resolveUA(a.uaPreset, a.uaCustom, a.viewMode), record: a.record,
 		syncDelay: formSyncDelay(a.syncDelay)}, nil
+}
+
+// fieldError records a per-field validation error for the setup form's outline
+// and auto-scroll, remembering the first failing field, and returns it as the
+// build error. Main-thread only, like the form fields.
+func (a *app) fieldError(id, msg string) error {
+	if a.fieldErr == nil {
+		a.fieldErr = map[string]string{}
+	}
+	a.fieldErr[id] = msg
+	if a.scrollErrField == "" {
+		a.scrollErrField = id
+	}
+	return fmt.Errorf("%s", msg)
 }
 
 func (a *app) cfgName(cfg *pageConfig, i int) string {
@@ -509,6 +551,9 @@ func (a *app) launch(req startRequest) error {
 	a.message = ""
 	a.notice = ""
 	a.noticeKind = ""
+	a.noticeTag = ""
+	a.noticePath = ""
+	a.noticePathIsDir = false
 	a.syncUI = map[string]*bool{}
 	a.cancel = make(chan struct{})
 	cancel := a.cancel
@@ -616,6 +661,11 @@ func (a *app) screenshotAll() {
 		a.setNoticeErr(a.tr("err.notRunning"))
 		return
 	}
+	if a.shotBusy {
+		a.mu.Unlock()
+		return
+	}
+	a.shotBusy = true
 	type shot struct {
 		name string
 		id   string
@@ -630,6 +680,9 @@ func (a *app) screenshotAll() {
 	taskID := a.taskID
 	a.mu.Unlock()
 	if len(shots) == 0 {
+		a.mu.Lock()
+		a.shotBusy = false
+		a.mu.Unlock()
 		a.setNoticeErr(a.tr("err.noPages"))
 		return
 	}
@@ -637,7 +690,14 @@ func (a *app) screenshotAll() {
 		base = "screenshot"
 	}
 	lang := a.currentLang()
+	a.pushState()
 	go func() {
+		defer func() {
+			a.mu.Lock()
+			a.shotBusy = false
+			a.mu.Unlock()
+			a.pushState()
+		}()
 		dir, err := screenshotDir(base)
 		if err != nil {
 			a.setNoticeErr(trLang(lang, "err.shotDir", err.Error()))
@@ -675,10 +735,10 @@ func (a *app) screenshotAll() {
 			saved++
 		}
 		if failed > 0 {
-			a.setNoticeWarn(trLang(lang, "notice.shotPartial", saved, failed, dir))
+			a.setNoticeOpen(trLang(lang, "notice.shotPartial", saved, failed, dir), "warning", dir, true)
 			return
 		}
-		a.setNoticeOK(trLang(lang, "notice.shotDone", saved, dir))
+		a.setNoticeOpen(trLang(lang, "notice.shotDone", saved, dir), "success", dir, true)
 	}()
 }
 
@@ -704,9 +764,38 @@ func (a *app) setNoticeWarn(msg string) { a.setNoticeKind(msg, "warning") }
 func (a *app) setNoticeOK(msg string)   { a.setNoticeKind(msg, "success") }
 
 func (a *app) setNoticeKind(msg, kind string) {
+	a.setNoticeFull(msg, kind, "", "", false)
+}
+
+// setNoticeOpen attaches an open-folder/open-file action to a result notice.
+func (a *app) setNoticeOpen(msg, kind, path string, isDir bool) {
+	a.setNoticeFull(msg, kind, "", path, isDir)
+}
+
+func (a *app) setNoticeFull(msg, kind, tag, path string, isDir bool) {
 	a.mu.Lock()
 	a.notice = msg
 	a.noticeKind = kind
+	a.noticeTag = tag
+	a.noticePath = path
+	a.noticePathIsDir = isDir
+	a.mu.Unlock()
+	a.pushState()
+}
+
+// clearNoticeTag drops the notice only if it still carries tag, so a newer
+// notice set while the activity ran is not clobbered when the activity ends.
+func (a *app) clearNoticeTag(tag string) {
+	a.mu.Lock()
+	if a.noticeTag != tag {
+		a.mu.Unlock()
+		return
+	}
+	a.notice = ""
+	a.noticeKind = ""
+	a.noticeTag = ""
+	a.noticePath = ""
+	a.noticePathIsDir = false
 	a.mu.Unlock()
 	a.pushState()
 }
@@ -987,14 +1076,18 @@ func (a *app) snapshot() appState {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	st := appState{
-		Status:      a.status,
-		ActiveID:    a.activeID,
-		Message:     a.message,
-		Notice:      a.notice,
-		NoticeKind:  a.noticeKind,
-		Pages:       make([]pageState, 0, len(a.order)),
-		Errors:      []syncError{},
-		SyncDelayMs: float64(a.taskSyncDelay) / float64(time.Millisecond),
+		Status:          a.status,
+		ActiveID:        a.activeID,
+		Message:         a.message,
+		Notice:          a.notice,
+		NoticeKind:      a.noticeKind,
+		NoticePath:      a.noticePath,
+		NoticePathIsDir: a.noticePathIsDir,
+		ShotBusy:        a.shotBusy,
+		DiffBusy:        a.diffBusy,
+		Pages:           make([]pageState, 0, len(a.order)),
+		Errors:          []syncError{},
+		SyncDelayMs:     float64(a.taskSyncDelay) / float64(time.Millisecond),
 	}
 	for _, id := range a.order {
 		p := a.pages[id]

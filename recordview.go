@@ -643,12 +643,11 @@ func (a *app) replayRecording(dir string) {
 
 // beginReplay starts the replay and switches back to the pages so it is visible.
 func (a *app) beginReplay(dir string) {
-	n, err := a.startReplay(filepath.Join(dir, "script.jsonl"), defaultReplayDelay)
+	_, err := a.startReplay(filepath.Join(dir, "script.jsonl"), defaultReplayDelay)
 	if err != nil {
 		a.setNoticeErr(err.Error())
 		return
 	}
-	a.setNotice(a.tr("notice.recReplaying", n))
 	a.recView.open = false // switch back to the pages so the replay is visible
 	a.invalidate()
 }
@@ -703,7 +702,7 @@ func (a *app) exportRecording(c *ui.Context, dir string) {
 		a.setNoticeErr(err.Error())
 		return
 	}
-	a.setNoticeOK(a.tr("notice.recExported", path))
+	a.setNoticeOpen(a.tr("notice.recExported", path), "success", path, false)
 	c.OpenURL(fileURL(path))
 }
 

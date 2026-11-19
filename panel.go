@@ -216,6 +216,15 @@ func (a *app) renderNotice(c *ui.Context, tk *theme.Tokens, st appState) {
 			ui.Icon(c, icon).FontSize(15).TextColor(accent)
 		})
 		ui.Text(c, st.Notice).FontSize(12).TextColor(tk.Text).Wrap().Grow(1).MinWidth(0)
+		if st.NoticePath != "" {
+			label := a.tr("ui.openReport")
+			if st.NoticePathIsDir {
+				label = a.tr("ui.openFolder")
+			}
+			if action.Button(c, label, action.ButtonProps{Variant: action.Default, Size: theme.Small}).Clicked() {
+				c.OpenURL(fileURL(st.NoticePath))
+			}
+		}
 	})
 }
 
@@ -441,6 +450,14 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 		}
 		ui.Text(c, hint).FontSize(12).TextColor(tk.TextTertiary).Wrap()
 	})
+	// Re-validate while any field is flagged so a corrected value clears its own
+	// outline (and the scroll target advances to the next failing field).
+	if len(a.fieldErr) > 0 {
+		a.buildRequest()
+		if len(a.fieldErr) == 0 {
+			a.lastScrolledErr = ""
+		}
+	}
 	for i, cfg := range a.configs {
 		a.setupRow(c, tk, cfg, i)
 	}
@@ -510,7 +527,7 @@ func (a *app) bulkBody(c *ui.Context, tk *theme.Tokens) {
 
 func (a *app) setupRow(c *ui.Context, tk *theme.Tokens, cfg *pageConfig, i int) {
 	c = c.Key(cfg.id)
-	ui.Column(c).Gap(8).Padding(12).Radius(tk.BorderRadiusLG).AlignItems(ui.Stretch).
+	row := ui.Column(c).Gap(8).Padding(12).Radius(tk.BorderRadiusLG).AlignItems(ui.Stretch).
 		Background(tk.BgContainerSecondary).Border(1, tk.BorderSecondary).Children(func() {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			if i == 0 {
@@ -544,9 +561,13 @@ func (a *app) setupRow(c *ui.Context, tk *theme.Tokens, cfg *pageConfig, i int) 
 		})
 		field.Input(c, &cfg.name, field.InputProps{Placeholder: a.tr("ui.page.name"), Variant: field.InputFilled})
 		if a.templateMode() {
-			field.Input(c, &cfg.vars, field.InputProps{Placeholder: a.tr("ui.vars.placeholder"), Variant: field.InputFilled})
+			field.Input(c, &cfg.vars, field.InputProps{Placeholder: a.tr("ui.vars.placeholder"), Variant: field.InputFilled,
+				Invalid: a.fieldErr["vars:"+cfg.id] != ""})
+			a.fieldErrorText(c, tk, "vars:"+cfg.id)
 		}
-		field.Input(c, &cfg.url, field.InputProps{Placeholder: a.urlPlaceholder(i), Variant: field.InputFilled})
+		field.Input(c, &cfg.url, field.InputProps{Placeholder: a.urlPlaceholder(i), Variant: field.InputFilled,
+			Invalid: a.fieldErr["page:"+cfg.id] != ""})
+		a.fieldErrorText(c, tk, "page:"+cfg.id)
 		if a.templateMode() {
 			ui.Text(c, a.templatePreview(cfg)).FontSize(12).TextColor(tk.TextTertiary).SingleLine()
 		}
@@ -560,6 +581,18 @@ func (a *app) setupRow(c *ui.Context, tk *theme.Tokens, cfg *pageConfig, i int) 
 			})
 		})
 	})
+	if a.scrollErrField != "" && a.scrollErrField != a.lastScrolledErr &&
+		(a.scrollErrField == "page:"+cfg.id || a.scrollErrField == "vars:"+cfg.id) {
+		row.ScrollIntoView()
+		a.lastScrolledErr = a.scrollErrField
+	}
+}
+
+// fieldErrorText renders a field's validation error inline under the input.
+func (a *app) fieldErrorText(c *ui.Context, tk *theme.Tokens, id string) {
+	if msg := a.fieldErr[id]; msg != "" {
+		ui.Text(c, msg).FontSize(12).TextColor(tk.Error).Wrap()
+	}
 }
 
 func (a *app) templateMode() bool { return strings.TrimSpace(a.template) != "" }
@@ -650,20 +683,32 @@ func (a *app) runtimeBody(c *ui.Context, tk *theme.Tokens, st appState) {
 		}
 		ui.Text(c, a.tr("ui.shot.preview", sanitizeFileName(base), sanitizeFileName(first))).
 			FontSize(12).TextColor(tk.TextTertiary).SingleLine()
-		if action.Button(c, a.tr("ui.shot.button"), action.ButtonProps{Variant: action.Default}).
-			AlignSelf(ui.Stretch).Clicked() {
-			a.screenshotAll()
-		}
+		ui.Row(c).Gap(8).AlignItems(ui.Center).AlignSelf(ui.Stretch).Children(func() {
+			btn := action.Button(c, a.tr("ui.shot.button"), action.ButtonProps{Variant: action.Default}).
+				Grow(1).Disabled(st.ShotBusy)
+			if btn.Clicked() {
+				a.screenshotAll()
+			}
+			if st.ShotBusy {
+				feedback.Spin(c, feedback.SpinProps{Size: theme.Small}, nil)
+			}
+		})
 		ui.Text(c, a.tr("ui.shot.hint")).FontSize(12).TextColor(tk.TextTertiary)
 	})
 
 	ui.Column(c).Gap(8).Padding(12).Radius(tk.BorderRadiusLG).AlignItems(ui.Stretch).
 		Background(tk.BgContainerSecondary).Border(1, tk.BorderSecondary).Children(func() {
 		a.fieldLabel(c, tk, a.tr("ui.diff"))
-		if action.Button(c, a.tr("ui.diff.button"), action.ButtonProps{Variant: action.Default}).
-			AlignSelf(ui.Stretch).Clicked() {
-			a.diffAll()
-		}
+		ui.Row(c).Gap(8).AlignItems(ui.Center).AlignSelf(ui.Stretch).Children(func() {
+			btn := action.Button(c, a.tr("ui.diff.button"), action.ButtonProps{Variant: action.Default}).
+				Grow(1).Disabled(st.DiffBusy)
+			if btn.Clicked() {
+				a.diffAll()
+			}
+			if st.DiffBusy {
+				feedback.Spin(c, feedback.SpinProps{Size: theme.Small}, nil)
+			}
+		})
 		ui.Text(c, a.tr("ui.diff.hint")).FontSize(12).TextColor(tk.TextTertiary)
 	})
 
@@ -771,7 +816,7 @@ func (a *app) renderStage(c *ui.Context, tk *theme.Tokens, st appState) {
 				a.iconButton(c, tk, lucide.X(), a.tr("rec.close"), func() { a.toggleRecordings() })
 			}
 			if !a.recView.open && activeView != nil {
-				a.iconButton(c, tk, lucide.Camera(), a.tr("ui.shotAll"), func() { a.screenshotAll() })
+				a.iconButton(c, tk, lucide.Camera(), a.tr("ui.shotAll"), func() { a.screenshotAll() }, st.ShotBusy)
 				a.iconButton(c, tk, lucide.RefreshCw(), a.tr("ui.reload"), func() { a.reloadPage(st.ActiveID) })
 			}
 		})
@@ -935,14 +980,17 @@ func (a *app) applyPageZoom(view *mygo.WebView, rec *pageRecord, fit float32, zo
 	}
 }
 
-func (a *app) iconButton(c *ui.Context, tk *theme.Tokens, svg *ui.SVG, label string, onClick func()) {
+func (a *app) iconButton(c *ui.Context, tk *theme.Tokens, svg *ui.SVG, label string, onClick func(), disabled ...bool) {
+	off := len(disabled) > 0 && disabled[0]
 	b := ui.ButtonBase(c).Label(label).Tooltip(label).Size(32, 32).Center().
-		Radius(tk.BorderRadiusSM).Cursor(ui.CursorPointer).TextColor(tk.TextSecondary)
-	if b.Hovered() {
+		Radius(tk.BorderRadiusSM).Cursor(ui.CursorPointer).TextColor(tk.TextSecondary).Disabled(off)
+	if off {
+		b.TextColor(tk.TextQuaternary).Cursor(ui.CursorDefault)
+	} else if b.Hovered() {
 		b.TextColor(tk.Primary).Background(tk.FillTertiary)
 	}
 	b.Children(func() { ui.Icon(c, svg).FontSize(16) })
-	if b.Clicked() {
+	if !off && b.Clicked() {
 		onClick()
 	}
 }
