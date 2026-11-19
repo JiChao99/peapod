@@ -362,3 +362,27 @@ func TestCaptureDedupesSharedEvents(t *testing.T) {
 		t.Error("capture listener must skip an event the other listener already handled")
 	}
 }
+
+// TestFinishReplayRunNoticeGuard locks the tag guard and its atomicity: a newer
+// notice survives, a replay-owned notice is replaced by the result, and a
+// replay finishing after cleanup cannot resurrect a notice cleanup dropped.
+func TestFinishReplayRunNoticeGuard(t *testing.T) {
+	a := newApp()
+	rp := &replayRun{done: 3, total: 3}
+	a.setNoticeFull("batch result", "success", "shot", "C:/shots", true)
+	a.finishReplayRun(rp, "")
+	if a.notice != "batch result" || a.noticeTag != "shot" || a.noticePath != "C:/shots" || !a.noticePathIsDir {
+		t.Fatalf("replay clobbered a newer notice: %q tag=%q path=%q", a.notice, a.noticeTag, a.noticePath)
+	}
+	a.setNoticeFull("replaying", "info", "replay", "", false)
+	a.finishReplayRun(rp, "")
+	if a.notice == "" || a.noticeKind != "success" || a.noticeTag != "" {
+		t.Fatalf("replay result not published: %q kind=%q tag=%q", a.notice, a.noticeKind, a.noticeTag)
+	}
+	a.setNoticeFull("replaying", "info", "replay", "", false)
+	a.cleanup(nil, "zh")
+	a.finishReplayRun(rp, "")
+	if a.notice != "" || a.noticeTag != "" {
+		t.Fatalf("late replay resurrected a notice cleanup dropped: %q tag=%q", a.notice, a.noticeTag)
+	}
+}

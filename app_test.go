@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateURL(t *testing.T) {
@@ -234,5 +235,83 @@ func TestBatchDirSanitizesAndCreates(t *testing.T) {
 	}
 	if fi, err := os.Stat(dir); err != nil || !fi.IsDir() {
 		t.Fatalf("dir not created: %v", err)
+	}
+}
+
+// TestViewModeResolutionMemory checks that each view mode remembers its
+// last-used resolution: switching away and back restores the custom values
+// instead of the factory preset, and every row is reseeded as before.
+func TestViewModeResolutionMemory(t *testing.T) {
+	a := newApp()
+	// desktop → mobile seeds the mobile default.
+	a.viewMode = "mobile"
+	a.reseedViewMode()
+	if a.resW != 390 || a.resH != 844 {
+		t.Fatalf("mobile seed = %v×%v, want 390×844", a.resW, a.resH)
+	}
+	// The user customizes the primary row while in mobile.
+	a.configs[0].resW, a.configs[0].resH = 414, 896
+	// mobile → desktop restores the desktop preset.
+	a.viewMode = "desktop"
+	a.reseedViewMode()
+	if a.resW != 1280 || a.resH != 800 {
+		t.Fatalf("desktop restore = %v×%v, want 1280×800", a.resW, a.resH)
+	}
+	// desktop → mobile restores the custom mobile values, not 390×844.
+	a.viewMode = "mobile"
+	a.reseedViewMode()
+	if a.resW != 414 || a.resH != 896 {
+		t.Fatalf("mobile memory = %v×%v, want the custom 414×896", a.resW, a.resH)
+	}
+	for i, cfg := range a.configs {
+		if cfg.resW != 414 || cfg.resH != 896 {
+			t.Fatalf("row %d res = %v×%v, want reseeded 414×896", i, cfg.resW, cfg.resH)
+		}
+	}
+	// A no-op call must not clobber anything.
+	a.reseedViewMode()
+	if a.resW != 414 || a.resH != 896 || a.lastViewMode != "mobile" {
+		t.Fatalf("no-op reseed changed state: %v×%v mode=%q", a.resW, a.resH, a.lastViewMode)
+	}
+}
+
+// TestCountdownProgress checks the panel's countdown derivation from the
+// mu-guarded start timestamp: 3→2→1 whole seconds and a 0→100 ring percent.
+func TestCountdownProgress(t *testing.T) {
+	a := newApp()
+	if sec, pct := a.countdownProgress(); sec != 0 || pct != 0 {
+		t.Fatalf("idle countdown = %d/%v, want 0/0", sec, pct)
+	}
+	a.mu.Lock()
+	a.status = "starting"
+	a.startAt = time.Now()
+	a.mu.Unlock()
+	if sec, _ := a.countdownProgress(); sec != 3 {
+		t.Fatalf("fresh countdown sec = %d, want 3", sec)
+	}
+	a.mu.Lock()
+	t0 := time.Now()
+	a.startAt = t0.Add(-1500 * time.Millisecond)
+	a.mu.Unlock()
+	sec, pct := a.countdownProgress()
+	// Derive expectations from measured elapsed so a slow CI tick can't flake.
+	elapsed := 1500*time.Millisecond + time.Since(t0)
+	wantSec := 3 - int(elapsed/time.Second)
+	if wantSec < 1 {
+		wantSec = 1
+	}
+	wantPct := float32(min(float64(elapsed)/float64(3*time.Second)*100, 100))
+	if sec != wantSec {
+		t.Fatalf("mid countdown sec = %d, want %d (elapsed %v)", sec, wantSec, elapsed)
+	}
+	if pct < wantPct-5 || pct > wantPct+5 {
+		t.Fatalf("mid countdown pct = %v, want ~%v (elapsed %v)", pct, wantPct, elapsed)
+	}
+	a.mu.Lock()
+	a.startAt = time.Now().Add(-5 * time.Second)
+	a.mu.Unlock()
+	sec, pct = a.countdownProgress()
+	if sec != 1 || pct != 100 {
+		t.Fatalf("expired countdown = %d/%v, want clamped 1/100", sec, pct)
 	}
 }

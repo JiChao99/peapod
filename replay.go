@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -57,13 +58,28 @@ func loadScript(path string) ([]operation, error) {
 
 // replayRun is one in-flight peapod_replay. Fields are guarded by a.mu.
 type replayRun struct {
-	taskID  string
-	total   int
-	done    int
-	skipped int
-	active  bool
-	err     string
-	quit    chan struct{}
+	taskID   string
+	total    int
+	done     int
+	skipped  int
+	active   bool
+	err      string
+	quit     chan struct{}
+	quitOnce sync.Once
+}
+
+// cancel closes the quit channel at most once, so the panel's Cancel button and
+// task cleanup can both call it without racing a double close.
+func (rp *replayRun) cancel() { rp.quitOnce.Do(func() { close(rp.quit) }) }
+
+// cancelReplay stops an in-flight replay from the panel. It is a no-op when no
+// replay is active; the run goroutine reports the cancellation via replayState.
+func (a *app) cancelReplay() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if rp := a.replay; rp != nil && rp.active {
+		rp.cancel()
+	}
 }
 
 // replayState is the peapod_status view of a replay run: poll active until it
@@ -97,15 +113,26 @@ func (a *app) startReplay(path string, delay time.Duration) (int, error) {
 		return 0, err
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if a.status != "running" {
+		a.mu.Unlock()
 		return 0, fmt.Errorf("%s", a.tr("err.replayNotRunning"))
 	}
 	if a.replay != nil && a.replay.active {
+		a.mu.Unlock()
 		return 0, fmt.Errorf("a replay is already running")
 	}
 	rp := &replayRun{taskID: a.taskID, total: len(ops), active: true, quit: make(chan struct{})}
 	a.replay = rp
+	// Tag the "replaying…" notice here, under the same lock that publishes the
+	// run, so a fast run cannot finish before the notice exists (which would
+	// leave a stale tagged notice that finishReplayRun already cleared).
+	a.notice = a.tr("notice.recReplaying", len(ops))
+	a.noticeKind = "info"
+	a.noticeTag = "replay"
+	a.noticePath = ""
+	a.noticePathIsDir = false
+	a.mu.Unlock()
+	a.pushState()
 	go a.runReplay(rp, ops, delay)
 	return len(ops), nil
 }
@@ -201,6 +228,22 @@ func (a *app) finishReplayRun(rp *replayRun, errMsg string) {
 	a.mu.Lock()
 	rp.active = false
 	rp.err = errMsg
+	done, total := rp.done, rp.total
+	// Only touch the notice if it still belongs to this replay, and write it in
+	// the same critical section: a notice landing between the check and the
+	// write must not be clobbered, and cleanup's reset must not be undone.
+	if a.noticeTag == "replay" {
+		msg, kind := errMsg, "error"
+		switch errMsg {
+		case "":
+			msg, kind = a.tr("ui.replay.done", done, total), "success"
+		case "cancelled", "task stopped":
+			// Cancel/stop need no notice — the panel's replay result line states them.
+			msg, kind = "", ""
+		}
+		a.notice, a.noticeKind = msg, kind
+		a.noticeTag, a.noticePath, a.noticePathIsDir = "", "", false
+	}
 	a.mu.Unlock()
 	a.pushState()
 }

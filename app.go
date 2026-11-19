@@ -12,9 +12,13 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
 )
 
 const mobileUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+
+// countdownGrace is the cancel window between Start and page creation.
+const countdownGrace = 3 * time.Second
 
 // pageConfig is one editable row of the setup form: a name and an optional
 // URL. A non-primary page left empty inherits the primary page's URL.
@@ -88,6 +92,13 @@ type appState struct {
 	Errors   []syncError `json:"errors"`
 	Message  string      `json:"message"`
 	Notice   string      `json:"notice"`
+	// NoticeKind tiers Notice for the panel: info | success | warning | error.
+	NoticeKind string `json:"noticeKind,omitempty"`
+	// NoticePath/NoticePathIsDir drive the notice's open-folder/open-file action.
+	NoticePath      string `json:"noticePath,omitempty"`
+	NoticePathIsDir bool   `json:"noticePathIsDir,omitempty"`
+	ShotBusy        bool   `json:"shotBusy,omitempty"`
+	DiffBusy        bool   `json:"diffBusy,omitempty"`
 
 	// Recording/replay evidence surface (docs/mcp.md). Recording is true while
 	// a recorder is attached; Replay appears once a peapod_replay has started
@@ -110,16 +121,33 @@ type app struct {
 	mu  sync.Mutex
 	win *mygo.Window
 
-	status    string
-	taskID    string
-	message   string
-	notice    string
+	status  string
+	taskID  string
+	message string
+	notice  string
+	// noticeKind tiers the notice for the panel: info | success | warning | error.
+	// Guarded by mu like notice; setNotice* write both together.
+	noticeKind string
+	// noticeTag marks a notice tied to a transient activity ("replay") so the
+	// activity's end can replace or clear it instead of leaving it stale.
+	noticeTag string
+	// noticePath/noticePathIsDir attach an "open" action to a result notice
+	// (screenshot folder, diff evidence, exported report).
+	noticePath      string
+	noticePathIsDir bool
+	// shotBusy/diffBusy mark an in-flight batch so the panel can spin and
+	// disable the trigger instead of letting a second batch stack on it.
+	shotBusy  bool
+	diffBusy  bool
 	pages     map[string]*pageRecord
 	order     []string
 	activeID  string
 	primaryID string
 	cancel    chan struct{}
 	seq       int
+	// startAt marks when the countdown began, guarded by mu; the panel derives
+	// the visible 3→2→1 countdown and ring progress from it.
+	startAt time.Time
 
 	// rec is the running task's operation recorder (record.go), nil when the
 	// task does not record. replay is the latest peapod_replay run (replay.go).
@@ -136,14 +164,41 @@ type app struct {
 	// mu; each page's opQueue carries its own copy.
 	taskSyncDelay time.Duration
 
-	configs      []*pageConfig
-	configSeq    int
-	template     string // optional URL template with {placeholders}; empty = plain URLs
-	viewMode     string // desktop | mobile
-	lastViewMode string
-	resW, resH   float64 // preset seeded by viewMode; each page copies it
-	uaPreset     string  // built-in UA option key (ua.go); UI-owned like viewMode
-	uaCustom     string  // full UA string when uaPreset == uaCustom
+	configs   []*pageConfig
+	configSeq int
+	// fieldErr maps a setup-field id ("primary", "page:<id>", "template") to its
+	// validation error; the form outlines the field and scrolls the first one
+	// into view. Main-thread only, like configs; revalidated each render so a
+	// corrected field clears its own outline.
+	fieldErr       map[string]string
+	scrollErrField string
+	// lastScrolledErr is the field already scrolled into view, so the reveal
+	// fires once per error rather than every frame (which would pin the scroll
+	// and block the user from scrolling away). Main-thread only.
+	lastScrolledErr string
+	template        string // optional URL template with {placeholders}; empty = plain URLs
+	viewMode        string // desktop | mobile
+	lastViewMode    string
+	resW, resH      float64 // preset seeded by viewMode; each page copies it
+	// resByMode remembers each view mode's last-used resolution so switching
+	// back restores it instead of the factory preset. Main-thread only.
+	resByMode map[string][2]float64
+	// advancedOpen expands the advanced-settings group (UA, sync pace, shared
+	// storage, recording); default collapsed. Main-thread only.
+	advancedOpen bool
+	// lastStatus/configScroll reset the setup form's scroll to the top whenever
+	// the task status changes, so a state change never leaves the user scrolled
+	// mid-form. Main-thread only.
+	lastStatus   string
+	configScroll ui.ScrollState
+	// stageStopped distinguishes "never run" from "run and stopped" for the
+	// stage's empty-state copy. Main-thread only.
+	stageStopped bool
+	// mcp is the live loopback server, nil when disabled or failed to start.
+	// Assigned once in WhenReady before the first frame; read by the title bar.
+	mcp          *mcpServer
+	uaPreset     string // built-in UA option key (ua.go); UI-owned like viewMode
+	uaCustom     string // full UA string when uaPreset == uaCustom
 	shareStorage bool
 	record       bool   // record operations + per-step screenshots; UI-owned like shareStorage
 	syncDelay    string // continuous-operation pace in ms ("0" = instant); UI-owned like shareStorage
@@ -155,6 +210,10 @@ type app struct {
 	profileName string
 	profileSel  string
 	profiles    []string
+	// profileOverwriteOpen/profileOverwriteName gate saving over an existing
+	// profile behind a confirm modal. UI-owned like the fields above.
+	profileOverwriteOpen bool
+	profileOverwriteName string
 
 	themeMode string // system | light | dark
 	// captionTheme is the theme last given to the native caption buttons, so
@@ -168,7 +227,14 @@ type app struct {
 	// range loop until after it, so the loop never reads a shifted slice.
 	pendingDup    string
 	pendingRemove string
-	lang          string // zh | en; bound to the panel Select, touched only on the main thread
+	// confirmStop gates the irreversible stop behind a confirmation modal;
+	// replayPendingDir/replayEntryURL/replayConfirmOpen hold a replay awaiting the
+	// entry-URL precheck choice. All UI-owned, touched only on the main thread.
+	confirmStop       bool
+	replayPendingDir  string
+	replayEntryURL    string
+	replayConfirmOpen bool
+	lang              string // zh | en; bound to the panel Select, touched only on the main thread
 
 	// langVal publishes lang for off-thread readers (MCP handlers, cleanup and
 	// screenshot goroutines). The panel stores it after each frame; readers load
@@ -188,12 +254,17 @@ func newApp() *app {
 		lastViewMode: "desktop",
 		resW:         1280,
 		resH:         800,
-		uaPreset:     uaDefault,
-		themeMode:    "system",
-		scalePct:     "100",
-		syncDelay:    "100",
-		lang:         "zh",
-		syncUI:       map[string]*bool{},
+		resByMode: map[string][2]float64{
+			"desktop": {1280, 800},
+			"mobile":  {390, 844},
+		},
+		lastStatus: "idle",
+		uaPreset:   uaDefault,
+		themeMode:  "system",
+		scalePct:   "100",
+		syncDelay:  "100",
+		lang:       "zh",
+		syncUI:     map[string]*bool{},
 		configs: []*pageConfig{
 			{id: "c1", resW: 1280, resH: 800},
 			{id: "c2", resW: 1280, resH: 800},
@@ -378,6 +449,8 @@ func (a *app) bulkAddURLs(raw string) (int, error) {
 // variant base is rendered from the shared template plus its own vars, and the
 // URL field becomes an optional path appended to that base.
 func (a *app) buildRequest() (startRequest, error) {
+	a.fieldErr = map[string]string{}
+	a.scrollErrField = ""
 	if len(a.configs) < 2 || len(a.configs) > 10 {
 		return startRequest{}, fmt.Errorf("%s", a.tr("err.pageCount"))
 	}
@@ -386,10 +459,11 @@ func (a *app) buildRequest() (startRequest, error) {
 	if tmpl == "" {
 		primaryURL = strings.TrimSpace(a.configs[0].url)
 		if err := a.validateURL(primaryURL); err != nil {
-			return startRequest{}, fmt.Errorf("%s", a.tr("err.primaryURL", err.Error()))
+			return startRequest{}, a.fieldError("page:"+a.configs[0].id, a.tr("err.primaryURL", err.Error()))
 		}
 	}
 	pages := make([]resolvedPage, 0, len(a.configs))
+	plainURLs := make([]string, 0, len(a.configs))
 	for i, cfg := range a.configs {
 		var raw, base string
 		if tmpl == "" {
@@ -398,24 +472,25 @@ func (a *app) buildRequest() (startRequest, error) {
 				raw = primaryURL
 			}
 			if err := a.validateURL(raw); err != nil {
-				return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
+				return startRequest{}, a.fieldError("page:"+cfg.id, a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
 			}
 			base = originOf(raw)
+			plainURLs = append(plainURLs, raw)
 		} else {
 			vars, bad := parseVars(cfg.vars)
 			if bad != "" {
-				return startRequest{}, fmt.Errorf("%s", a.tr("err.vars", a.cfgName(cfg, i), bad))
+				return startRequest{}, a.fieldError("vars:"+cfg.id, a.tr("err.vars", a.cfgName(cfg, i), bad))
 			}
 			b, missing := renderTemplate(tmpl, vars)
 			if len(missing) > 0 {
-				return startRequest{}, fmt.Errorf("%s", a.tr("err.template", a.cfgName(cfg, i), strings.Join(missing, ", ")))
+				return startRequest{}, a.fieldError("vars:"+cfg.id, a.tr("err.template", a.cfgName(cfg, i), strings.Join(missing, ", ")))
 			}
 			if err := a.validateURL(b); err != nil {
-				return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
+				return startRequest{}, a.fieldError("page:"+cfg.id, a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
 			}
 			clean, ok := cleanTemplateBase(b)
 			if !ok {
-				return startRequest{}, fmt.Errorf("%s", a.tr("err.templateBase", a.cfgName(cfg, i)))
+				return startRequest{}, a.fieldError("page:"+cfg.id, a.tr("err.templateBase", a.cfgName(cfg, i)))
 			}
 			base = clean
 			path := strings.TrimSpace(cfg.url)
@@ -427,7 +502,7 @@ func (a *app) buildRequest() (startRequest, error) {
 			}
 			raw = base + path
 			if err := a.validateURL(raw); err != nil {
-				return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
+				return startRequest{}, a.fieldError("page:"+cfg.id, a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
 			}
 		}
 		pages = append(pages, resolvedPage{
@@ -435,9 +510,29 @@ func (a *app) buildRequest() (startRequest, error) {
 			resW: clampRes(cfg.resW, a.resW), resH: clampRes(cfg.resH, a.resH),
 		})
 	}
+	if tmpl == "" {
+		bases := inferPlainBases(plainURLs)
+		for i := range pages {
+			pages[i].base = bases[i]
+		}
+	}
 	return startRequest{pages: pages, shareStorage: a.shareStorage, viewMode: a.viewMode,
 		userAgent: resolveUA(a.uaPreset, a.uaCustom, a.viewMode), record: a.record,
 		syncDelay: formSyncDelay(a.syncDelay)}, nil
+}
+
+// fieldError records a per-field validation error for the setup form's outline
+// and auto-scroll, remembering the first failing field, and returns it as the
+// build error. Main-thread only, like the form fields.
+func (a *app) fieldError(id, msg string) error {
+	if a.fieldErr == nil {
+		a.fieldErr = map[string]string{}
+	}
+	a.fieldErr[id] = msg
+	if a.scrollErrField == "" {
+		a.scrollErrField = id
+	}
+	return fmt.Errorf("%s", msg)
 }
 
 func (a *app) cfgName(cfg *pageConfig, i int) string {
@@ -463,11 +558,11 @@ func clampRes(v, fallback float64) float64 {
 func (a *app) startTask() {
 	req, err := a.buildRequest()
 	if err != nil {
-		a.setNotice(err.Error())
+		a.setNoticeErr(err.Error())
 		return
 	}
 	if err := a.launch(req); err != nil {
-		a.setNotice(err.Error())
+		a.setNoticeErr(err.Error())
 	}
 }
 
@@ -486,9 +581,13 @@ func (a *app) launch(req startRequest) error {
 	a.seq++
 	a.taskID = fmt.Sprintf("task-%d", a.seq)
 	a.status = "starting"
+	a.startAt = time.Now()
 	a.message = ""
 	a.notice = ""
-	a.syncUI = map[string]*bool{}
+	a.noticeKind = ""
+	a.noticeTag = ""
+	a.noticePath = ""
+	a.noticePathIsDir = false
 	a.cancel = make(chan struct{})
 	cancel := a.cancel
 	taskID := a.taskID
@@ -582,6 +681,47 @@ func (a *app) reloadPage(id string) {
 	a.invalidate()
 }
 
+// resumePage lifts a pause by skipping the failed step: the sync queue continues
+// with the next operation instead of retrying the one that desynced this variant.
+func (a *app) resumePage(id string) {
+	a.mu.Lock()
+	p := a.pages[id]
+	if p != nil && !p.closed && p.status == "paused" {
+		p.status = "ready"
+		p.lastError = nil
+		// A pause can coexist with a nav failure; leaving navFailed/pendingNav
+		// set would block markNavSucceededLocked and re-apply the failed URL on
+		// the next reconcile, looping straight back into the pause.
+		p.navError = nil
+		p.navFailed = false
+		p.pendingNav = ""
+		p.navPendingAt = time.Time{}
+	}
+	a.mu.Unlock()
+	a.pushState()
+}
+
+// gotoPageHome navigates a page back to its own variant origin — the recovery
+// when a followed path does not exist under that variant.
+func (a *app) gotoPageHome(id string) {
+	a.mu.Lock()
+	p := a.pages[id]
+	var view *mygo.WebView
+	home := ""
+	if p != nil && !p.closed {
+		resetNavLocked(p)
+		p.pendingNav = ""
+		p.navPendingAt = time.Time{}
+		view = p.view
+		home = p.base
+	}
+	a.mu.Unlock()
+	if view != nil && home != "" {
+		view.Page().LoadURL(home)
+	}
+	a.invalidate()
+}
+
 // screenshotAll captures every running page to a PNG named
 // {base}_{pageName}.png inside a per-batch folder under the user's
 // Pictures/Peapod screenshots root.
@@ -592,9 +732,14 @@ func (a *app) screenshotAll() {
 	a.mu.Lock()
 	if a.status != "running" {
 		a.mu.Unlock()
-		a.setNotice(a.tr("err.notRunning"))
+		a.setNoticeErr(a.tr("err.notRunning"))
 		return
 	}
+	if a.shotBusy {
+		a.mu.Unlock()
+		return
+	}
+	a.shotBusy = true
 	type shot struct {
 		name string
 		id   string
@@ -609,17 +754,29 @@ func (a *app) screenshotAll() {
 	taskID := a.taskID
 	a.mu.Unlock()
 	if len(shots) == 0 {
-		a.setNotice(a.tr("err.noPages"))
+		a.mu.Lock()
+		a.shotBusy = false
+		a.mu.Unlock()
+		a.setNoticeErr(a.tr("err.noPages"))
 		return
 	}
 	if base == "" {
 		base = "screenshot"
 	}
 	lang := a.currentLang()
+	a.pushState()
 	go func() {
+		defer func() {
+			a.mu.Lock()
+			a.shotBusy = false
+			a.mu.Unlock()
+			a.pushState()
+		}()
 		dir, err := screenshotDir(base)
 		if err != nil {
-			a.setNotice(trLang(lang, "err.shotDir", err.Error()))
+			if !a.batchStale(taskID) {
+				a.setNoticeErr(trLang(lang, "err.shotDir", err.Error()))
+			}
 			return
 		}
 		used := map[string]bool{}
@@ -653,11 +810,14 @@ func (a *app) screenshotAll() {
 			}
 			saved++
 		}
-		if failed > 0 {
-			a.setNotice(trLang(lang, "notice.shotPartial", saved, failed, dir))
+		if a.batchStale(taskID) {
 			return
 		}
-		a.setNotice(trLang(lang, "notice.shotDone", saved, dir))
+		if failed > 0 {
+			a.setNoticeOpen(trLang(lang, "notice.shotPartial", saved, failed, dir), "warning", dir, true)
+			return
+		}
+		a.setNoticeOpen(trLang(lang, "notice.shotDone", saved, dir), "success", dir, true)
 	}()
 }
 
@@ -674,9 +834,55 @@ func (a *app) batchShotValidLocked(taskID, id string) bool {
 	return p != nil && !p.closed
 }
 
-func (a *app) setNotice(msg string) {
+// batchStale reports whether a batch goroutine outlived its task, so its result
+// notice (and open-folder action) must not land on a newer task or idle screen.
+func (a *app) batchStale(taskID string) bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.taskID != taskID || a.status != "running"
+}
+
+func (a *app) setNotice(msg string) { a.setNoticeKind(msg, "info") }
+
+// setNoticeErr/Warn/OK tier a notice so the panel renders it as an error,
+// warning or success alert instead of undifferentiated gray text.
+func (a *app) setNoticeErr(msg string)  { a.setNoticeKind(msg, "error") }
+func (a *app) setNoticeWarn(msg string) { a.setNoticeKind(msg, "warning") }
+func (a *app) setNoticeOK(msg string)   { a.setNoticeKind(msg, "success") }
+
+func (a *app) setNoticeKind(msg, kind string) {
+	a.setNoticeFull(msg, kind, "", "", false)
+}
+
+// setNoticeOpen attaches an open-folder/open-file action to a result notice.
+func (a *app) setNoticeOpen(msg, kind, path string, isDir bool) {
+	a.setNoticeFull(msg, kind, "", path, isDir)
+}
+
+func (a *app) setNoticeFull(msg, kind, tag, path string, isDir bool) {
 	a.mu.Lock()
 	a.notice = msg
+	a.noticeKind = kind
+	a.noticeTag = tag
+	a.noticePath = path
+	a.noticePathIsDir = isDir
+	a.mu.Unlock()
+	a.pushState()
+}
+
+// clearNoticeTag drops the notice only if it still carries tag, so a newer
+// notice set while the activity ran is not clobbered when the activity ends.
+func (a *app) clearNoticeTag(tag string) {
+	a.mu.Lock()
+	if a.noticeTag != tag {
+		a.mu.Unlock()
+		return
+	}
+	a.notice = ""
+	a.noticeKind = ""
+	a.noticeTag = ""
+	a.noticePath = ""
+	a.noticePathIsDir = false
 	a.mu.Unlock()
 	a.pushState()
 }
@@ -726,21 +932,78 @@ func sanitizeFileName(s string) string {
 	}, strings.TrimSpace(s))
 }
 
-// runCountdown waits the 3s grace period, then creates the pages, unless the
-// user cancels first.
+// runCountdown waits the grace period, then creates the pages, unless the
+// user cancels first. It repaints on a short tick so the panel's countdown
+// digit and ring advance even without other events.
 func (a *app) runCountdown(taskID string, cancel chan struct{}, req startRequest, lang string) {
-	select {
-	case <-cancel:
-		a.mu.Lock()
-		if a.taskID == taskID && a.status == "starting" {
-			a.status = "idle"
+	deadline := time.NewTimer(countdownGrace)
+	defer deadline.Stop()
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-cancel:
+			a.mu.Lock()
+			if a.taskID == taskID && a.status == "starting" {
+				a.status = "idle"
+			}
+			a.mu.Unlock()
+			a.invalidate()
+			return
+		case <-deadline.C:
+			a.createPages(taskID, req, lang)
+			return
+		case <-tick.C:
+			a.invalidate()
 		}
-		a.mu.Unlock()
-		a.invalidate()
-		return
-	case <-time.After(3 * time.Second):
 	}
-	a.createPages(taskID, req, lang)
+}
+
+// countdownProgress derives the visible countdown from the mu-guarded start
+// timestamp: the remaining whole seconds (3→2→1) and the elapsed percent for
+// the progress ring. Both are zero when not starting.
+func (a *app) countdownProgress() (sec int, pct float32) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.status != "starting" || a.startAt.IsZero() {
+		return 0, 0
+	}
+	elapsed := time.Since(a.startAt)
+	rem := countdownGrace - elapsed
+	sec = min(max(int(rem.Seconds()+0.999), 1), 3)
+	pct = min(max(float32(elapsed.Seconds()/countdownGrace.Seconds()*100), 0), 100)
+	return sec, pct
+}
+
+// reseedViewMode applies a view-mode change on the main thread: it remembers
+// the leaving mode's last-used resolution (the primary row's when set, else
+// the preset), restores the entering mode's remembered resolution, and copies
+// it into every page row as before.
+func (a *app) reseedViewMode() {
+	if a.viewMode == a.lastViewMode {
+		return
+	}
+	if a.resByMode == nil {
+		a.resByMode = map[string][2]float64{}
+	}
+	w, h := a.resW, a.resH
+	if len(a.configs) > 0 && a.configs[0].resW > 0 && a.configs[0].resH > 0 {
+		w, h = a.configs[0].resW, a.configs[0].resH
+	}
+	a.resByMode[a.lastViewMode] = [2]float64{w, h}
+	r, ok := a.resByMode[a.viewMode]
+	if !ok {
+		if a.viewMode == "mobile" {
+			r = [2]float64{390, 844}
+		} else {
+			r = [2]float64{1280, 800}
+		}
+	}
+	a.resW, a.resH = r[0], r[1]
+	for _, cfg := range a.configs {
+		cfg.resW, cfg.resH = a.resW, a.resH
+	}
+	a.lastViewMode = a.viewMode
 }
 
 // createPages builds one web view per resolved page with capture preload,
@@ -925,7 +1188,7 @@ func (a *app) cleanup(pages []*pageRecord, lang string) {
 	a.stopRecordingLocked()
 	if rp := a.replay; rp != nil {
 		if rp.active {
-			close(rp.quit)
+			rp.cancel()
 		}
 		a.replay = nil
 	}
@@ -936,6 +1199,19 @@ func (a *app) cleanup(pages []*pageRecord, lang string) {
 	a.cancel = nil
 	a.taskViewMode = ""
 	a.taskSyncDelay = 0
+	// Drop the previous task's result notice so a stale screenshot/diff path does
+	// not linger in the footer after stop; the recorder's save notice (if any)
+	// lands afterwards as a fresh result. Clear the tag/path too, so a replay
+	// finishing concurrently cannot resurrect its result over this reset.
+	a.notice = ""
+	a.noticeKind = ""
+	a.noticeTag = ""
+	a.noticePath = ""
+	a.noticePathIsDir = false
+	// A batch goroutine may outlive the task (capture timeouts); release its
+	// busy flags so the next task's buttons are not disabled by a dead batch.
+	a.shotBusy = false
+	a.diffBusy = false
 	if failed {
 		a.status = "cleanup-error"
 		a.message = trLang(lang, "err.cleanupFailed")
@@ -952,13 +1228,18 @@ func (a *app) snapshot() appState {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	st := appState{
-		Status:      a.status,
-		ActiveID:    a.activeID,
-		Message:     a.message,
-		Notice:      a.notice,
-		Pages:       make([]pageState, 0, len(a.order)),
-		Errors:      []syncError{},
-		SyncDelayMs: float64(a.taskSyncDelay) / float64(time.Millisecond),
+		Status:          a.status,
+		ActiveID:        a.activeID,
+		Message:         a.message,
+		Notice:          a.notice,
+		NoticeKind:      a.noticeKind,
+		NoticePath:      a.noticePath,
+		NoticePathIsDir: a.noticePathIsDir,
+		ShotBusy:        a.shotBusy,
+		DiffBusy:        a.diffBusy,
+		Pages:           make([]pageState, 0, len(a.order)),
+		Errors:          []syncError{},
+		SyncDelayMs:     float64(a.taskSyncDelay) / float64(time.Millisecond),
 	}
 	for _, id := range a.order {
 		p := a.pages[id]

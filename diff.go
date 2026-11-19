@@ -196,9 +196,14 @@ func (a *app) diffAll() {
 	a.mu.Lock()
 	if a.status != "running" {
 		a.mu.Unlock()
-		a.setNotice(a.tr("err.notRunning"))
+		a.setNoticeErr(a.tr("err.notRunning"))
 		return
 	}
+	if a.diffBusy {
+		a.mu.Unlock()
+		return
+	}
+	a.diffBusy = true
 	var targets []diffTarget
 	for _, id := range a.order {
 		if id == a.primaryID {
@@ -211,24 +216,39 @@ func (a *app) diffAll() {
 	taskID := a.taskID
 	a.mu.Unlock()
 	if len(targets) == 0 {
-		a.setNotice(a.tr("err.noPages"))
+		a.mu.Lock()
+		a.diffBusy = false
+		a.mu.Unlock()
+		a.setNoticeErr(a.tr("err.noPages"))
 		return
 	}
 	lang := a.currentLang()
+	a.pushState()
 	go func() {
+		defer func() {
+			a.mu.Lock()
+			a.diffBusy = false
+			a.mu.Unlock()
+			a.pushState()
+		}()
 		dir, err := batchDir(filepath.Join(userArtifactRoot(), "diffs"), "diff")
 		if err != nil {
-			a.setNotice(trLang(lang, "err.diffDir", err.Error()))
+			if !a.batchStale(taskID) {
+				a.setNoticeErr(trLang(lang, "err.diffDir", err.Error()))
+			}
 			return
 		}
 		ok, failed, differ := a.runBatchDiff(taskID, targets, dir, lang, func(p *pageRecord) ([]byte, error) {
 			return p.view.CapturePage()
 		})
-		if failed > 0 {
-			a.setNotice(trLang(lang, "notice.diffPartial", ok, failed, dir))
+		if a.batchStale(taskID) {
 			return
 		}
-		a.setNotice(trLang(lang, "notice.diffDone", len(targets), differ, dir))
+		if failed > 0 {
+			a.setNoticeOpen(trLang(lang, "notice.diffPartial", ok, failed, dir), "warning", dir, true)
+			return
+		}
+		a.setNoticeOpen(trLang(lang, "notice.diffDone", len(targets), differ, dir), "success", dir, true)
 	}()
 }
 

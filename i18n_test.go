@@ -25,6 +25,22 @@ func TestTrLang(t *testing.T) {
 	}
 }
 
+// TestCatalogParity keeps the zh and en key sets identical so a new string can
+// never ship in one language only.
+func TestCatalogParity(t *testing.T) {
+	zh, en := catalogs["zh"], catalogs["en"]
+	for k := range zh {
+		if _, ok := en[k]; !ok {
+			t.Errorf("key %q missing from en catalog", k)
+		}
+	}
+	for k := range en {
+		if _, ok := zh[k]; !ok {
+			t.Errorf("key %q missing from zh catalog", k)
+		}
+	}
+}
+
 func TestCurrentLang(t *testing.T) {
 	a := newApp()
 	if got := a.currentLang(); got != "zh" {

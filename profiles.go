@@ -140,6 +140,12 @@ func (a *app) applyProfile(p profileData) error {
 	// so the profile's per-page resolutions survive.
 	a.viewMode, a.lastViewMode = viewMode, viewMode
 	a.resW, a.resH = configs[0].resW, configs[0].resH
+	// The profile's resolution becomes this mode's remembered preset, so a
+	// later mode switch restores it instead of the factory default.
+	if a.resByMode == nil {
+		a.resByMode = map[string][2]float64{}
+	}
+	a.resByMode[viewMode] = [2]float64{a.resW, a.resH}
 	a.uaPreset = preset
 	a.uaCustom = p.UACustom
 	a.shareStorage = p.ShareStorage
@@ -156,53 +162,70 @@ func (a *app) applyProfile(p profileData) error {
 	return nil
 }
 
+// requestSaveProfile is the panel's save entry point: a new name saves
+// directly, while a name that already exists on disk opens the overwrite
+// confirm modal first (renderProfileOverwrite in panel.go).
+func (a *app) requestSaveProfile(name string) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		a.setNoticeErr(a.tr("err.profilesName"))
+		return
+	}
+	if _, err := os.Stat(profilePath(name)); err == nil {
+		a.profileOverwriteName = name
+		a.profileOverwriteOpen = true
+		return
+	}
+	a.saveProfile(name)
+}
+
 // saveProfile writes the current form under name, overwriting an existing
 // profile of that name.
 func (a *app) saveProfile(name string) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		a.setNotice(a.tr("err.profilesName"))
+		a.setNoticeErr(a.tr("err.profilesName"))
 		return
 	}
 	if err := writeProfileFile(name, a.currentProfile()); err != nil {
-		a.setNotice(a.tr("err.profilesWrite", err.Error()))
+		a.setNoticeErr(a.tr("err.profilesWrite", err.Error()))
 		return
 	}
 	a.profiles = listProfiles()
 	a.profileSel = sanitizeFileName(name)
-	a.setNotice(a.tr("notice.profilesSaved", name))
+	a.setNoticeOK(a.tr("notice.profilesSaved", name))
 }
 
 // loadProfileIntoForm applies the selected profile to the setup form.
 func (a *app) loadProfileIntoForm() {
 	if a.profileSel == "" {
-		a.setNotice(a.tr("err.profilesPick"))
+		a.setNoticeErr(a.tr("err.profilesPick"))
 		return
 	}
 	p, err := readProfileFile(a.profileSel)
 	if err != nil {
-		a.setNotice(a.tr("err.profilesRead", err.Error()))
+		a.setNoticeErr(a.tr("err.profilesRead", err.Error()))
 		return
 	}
 	if err := a.applyProfile(p); err != nil {
-		a.setNotice(err.Error())
+		a.setNoticeErr(err.Error())
 		return
 	}
-	a.setNotice(a.tr("notice.profilesLoaded", a.profileSel))
+	a.setNoticeOK(a.tr("notice.profilesLoaded", a.profileSel))
 }
 
 // deleteProfile removes the selected profile file.
 func (a *app) deleteProfile() {
 	if a.profileSel == "" {
-		a.setNotice(a.tr("err.profilesPick"))
+		a.setNoticeErr(a.tr("err.profilesPick"))
 		return
 	}
 	name := a.profileSel
 	if err := os.Remove(profilePath(name)); err != nil {
-		a.setNotice(a.tr("err.profilesDelete", err.Error()))
+		a.setNoticeErr(a.tr("err.profilesDelete", err.Error()))
 		return
 	}
 	a.profileSel = ""
 	a.profiles = listProfiles()
-	a.setNotice(a.tr("notice.profilesDeleted", name))
+	a.setNoticeOK(a.tr("notice.profilesDeleted", name))
 }

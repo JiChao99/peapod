@@ -153,6 +153,121 @@ func TestOriginOfNormalizes(t *testing.T) {
 	}
 }
 
+func TestFirstPathSeg(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"https://x.com/en-us/docs/intro", "en-us"},
+		{"https://x.com/zh-cn/", "zh-cn"},
+		{"https://x.com/", ""},
+		{"https://x.com", ""},
+		{"https://x.com/en-us?q=1", "en-us"},
+		{"https://x.com/a/b/c", "a"},
+	}
+	for _, c := range cases {
+		if got := firstPathSeg(c.in); got != c.want {
+			t.Errorf("firstPathSeg(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestInferPlainBases(t *testing.T) {
+	cases := []struct {
+		name string
+		urls []string
+		want []string
+	}{
+		{
+			// Same-origin path variants: the divergent first segment becomes the base.
+			"locale variants",
+			[]string{"https://x.com/en-us/docs", "https://x.com/zh-cn/docs", "https://x.com/ja-jp/docs"},
+			[]string{"https://x.com/en-us", "https://x.com/zh-cn", "https://x.com/ja-jp"},
+		},
+		{
+			// All pages mirror one URL: origin-only base, full mirroring preserved.
+			"identical urls",
+			[]string{"https://x.com/docs/intro", "https://x.com/docs/intro"},
+			[]string{"https://x.com", "https://x.com"},
+		},
+		{
+			// Same first segment across pages: still origin-only (no variant to swap).
+			"shared first segment",
+			[]string{"https://x.com/docs/a", "https://x.com/docs/b"},
+			[]string{"https://x.com", "https://x.com"},
+		},
+		{
+			// Different hosts keep origin bases (host swap already preserves path).
+			"different hosts",
+			[]string{"https://a.com/en-us/p", "https://b.com/zh-cn/p"},
+			[]string{"https://a.com", "https://b.com"},
+		},
+		{
+			// A root page among variants has no prefix of its own.
+			"root among variants",
+			[]string{"https://x.com/en-us/p", "https://x.com/zh-cn/p", "https://x.com/"},
+			[]string{"https://x.com/en-us", "https://x.com/zh-cn", "https://x.com"},
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := inferPlainBases(c.urls)
+			for i := range c.want {
+				if got[i] != c.want[i] {
+					t.Errorf("base[%d] = %q, want %q", i, got[i], c.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestBuildRequestPreservesPathVariants(t *testing.T) {
+	a := newApp()
+	a.configs[0].url = "https://x.com/en-us/docs"
+	a.configs[1].url = "https://x.com/zh-cn/docs"
+	a.configs[2].url = "https://x.com/ja-jp/docs"
+	req, err := a.buildRequest()
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	want := []string{"https://x.com/en-us", "https://x.com/zh-cn", "https://x.com/ja-jp"}
+	for i, w := range want {
+		if req.pages[i].base != w {
+			t.Errorf("page %d base = %q, want %q", i, req.pages[i].base, w)
+		}
+	}
+	// A primary move within its variant maps each follower onto its OWN variant,
+	// never copying the primary's en-us path.
+	got := mapNavigation(req.pages[0].base, req.pages[1].base, "https://x.com/en-us/products?q=1")
+	if got != "https://x.com/zh-cn/products?q=1" {
+		t.Errorf("follower mapped to %q, want its own zh-cn variant", got)
+	}
+}
+
+func TestFollowKeepsFollowerSelfNavigation(t *testing.T) {
+	// The follower replays the click and navigates itself to its own variant.
+	// Navigation follow's saved destination must match that self-navigation so it
+	// clears instead of clobbering the follower back to the primary's variant.
+	a := newApp()
+	a.status = "running"
+	primary := &pageRecord{id: "p1", base: "https://x.com/en-us", url: "https://x.com/en-us/docs", isPrimary: true}
+	f := &pageRecord{id: "p2", base: "https://x.com/zh-cn", url: "https://x.com/zh-cn/docs", syncOn: true, status: "ready", queue: newOpQueue(0)}
+	a.pages = map[string]*pageRecord{"p1": primary, "p2": f}
+	a.order = []string{"p1", "p2"}
+	a.primaryID = "p1"
+
+	// Primary clicks a link; the follower is busy replaying it, so follow defers.
+	f.navPendingAt = time.Now()
+	a.followTargets(primary, "https://x.com/en-us/products")
+	if f.pendingNav != "https://x.com/zh-cn/products" {
+		t.Fatalf("pendingNav = %q, want the follower's own variant", f.pendingNav)
+	}
+	// The follower's own replay commits its variant URL: the deferred target equals
+	// it, so nothing is left to override the self-navigation.
+	f.navPendingAt = time.Time{}
+	f.url = "https://x.com/zh-cn/products"
+	if nav := a.reconcileNavLocked(f, false); nav != "" {
+		t.Errorf("self-navigation must not be clobbered, reconcile returned %q", nav)
+	}
+}
+
 func TestFollowTargetsRemembersPendingNav(t *testing.T) {
 	a, primary := followFixture()
 	f := a.pages["p2"]
