@@ -453,3 +453,125 @@ func TestRecMetaLineTornOmitsCounts(t *testing.T) {
 		t.Fatalf("completed meta lost counts: %q", got)
 	}
 }
+
+func recShotStep(seq int, typ string, withShot bool) recDetailStep {
+	st := recDetailStep{line: scriptLine{Seq: seq, Operation: operation{Type: typ}}}
+	if withShot {
+		st.shots = []recStepShot{{name: "Primary", path: "x.png"}}
+	}
+	return st
+}
+
+func TestGroupRecStepsCoalescesScrolls(t *testing.T) {
+	steps := []recDetailStep{
+		recShotStep(1, "click", true),
+		recShotStep(2, "scroll", true),
+		recShotStep(3, "scroll", false), // superseded: hidden by default
+		recShotStep(4, "scroll", true),
+		recShotStep(5, "input", true),
+		recShotStep(6, "scroll", true),
+	}
+	entries := groupRecSteps(steps, false)
+	if len(entries) != 4 {
+		t.Fatalf("entries = %d, want 4 (click, scroll run, input, scroll)", len(entries))
+	}
+	if entries[0].run || len(entries[0].steps) != 1 {
+		t.Fatalf("click entry = %+v", entries[0])
+	}
+	run := entries[1]
+	if !run.run || len(run.steps) != 2 || run.steps[0].line.Seq != 2 || run.steps[1].line.Seq != 4 {
+		t.Fatalf("scroll run = %+v, want steps 2 and 4 coalesced", run)
+	}
+	if entries[2].run || entries[3].run == false || len(entries[3].steps) != 1 {
+		t.Fatalf("trailing entries = %+v / %+v", entries[2], entries[3])
+	}
+	// Show-all keeps the no-shot scroll inside the run: 2,3,4 coalesce.
+	all := groupRecSteps(steps, true)
+	if len(all) != 4 || len(all[1].steps) != 3 {
+		t.Fatalf("show-all entries = %d, run len = %d, want 4 / 3", len(all), len(all[1].steps))
+	}
+	// Underlying steps are untouched: the lightbox still sees real shots.
+	if len(steps[2].shots) != 0 || len(steps[1].shots) != 1 {
+		t.Fatal("grouping mutated the underlying steps")
+	}
+}
+
+func TestRecSessionNamePersist(t *testing.T) {
+	root := t.TempDir()
+	dir := writeSession(t, root, "recording_20261118-120000", time.Now(), true)
+	m, ok := readSessionMeta(dir)
+	if !ok || m.name != "" {
+		t.Fatalf("fresh session name = %q, want empty", m.name)
+	}
+	if m.title() != formatRecTitle(m.startedAt) {
+		t.Fatalf("unnamed title = %q, want timestamp", m.title())
+	}
+	if err := renameRecSession(dir, "  登录流程  "); err != nil {
+		t.Fatal(err)
+	}
+	m, _ = readSessionMeta(dir)
+	if m.name != "登录流程" || m.title() != "登录流程" {
+		t.Fatalf("renamed meta = %q / %q", m.name, m.title())
+	}
+	// An empty name clears the custom title.
+	if err := renameRecSession(dir, "   "); err != nil {
+		t.Fatal(err)
+	}
+	m, _ = readSessionMeta(dir)
+	if m.name != "" || m.title() != formatRecTitle(m.startedAt) {
+		t.Fatalf("cleared meta = %q / %q", m.name, m.title())
+	}
+	// Overlong names are bounded.
+	if err := renameRecSession(dir, strings.Repeat("名", 200)); err != nil {
+		t.Fatal(err)
+	}
+	m, _ = readSessionMeta(dir)
+	if len([]rune(m.name)) > recNameMaxRunes+1 {
+		t.Fatalf("name not bounded: %d runes", len([]rune(m.name)))
+	}
+}
+
+func TestRecSessionMatches(t *testing.T) {
+	m := recSessionMeta{
+		dir:       filepath.Join("x", "recording_20261118-120000"),
+		name:      "Login Flow",
+		startedAt: time.Date(2026, 11, 18, 12, 0, 0, 0, time.Local),
+		pages:     []string{"Primary"},
+		urls:      []string{"https://example.com/login"},
+	}
+	for _, q := range []string{"", "login", "LOGIN", "example.com", "2026-11-18", "20261118", "primary"} {
+		if !recSessionMatches(m, q) {
+			t.Errorf("query %q should match", q)
+		}
+	}
+	for _, q := range []string{"nomatch", "别的"} {
+		if recSessionMatches(m, q) {
+			t.Errorf("query %q should not match", q)
+		}
+	}
+}
+
+func TestRecOpIconCoversTypes(t *testing.T) {
+	yes := true
+	for _, op := range []operation{
+		{Type: "click"}, {Type: "submit"}, {Type: "scroll"},
+		{Type: "input"}, {Type: "change"}, {Type: "select"},
+		{Type: "input", Checked: &yes}, {Type: "unknown"},
+	} {
+		if recOpIcon(op) == nil {
+			t.Errorf("no icon for %s (checked=%v)", op.Type, op.Checked != nil)
+		}
+	}
+}
+
+func TestDeleteRecSessionRefusesLive(t *testing.T) {
+	root := t.TempDir()
+	live := writeSession(t, root, "recording_20261118-120000", time.Now(), false)
+	a := newApp()
+	a.rec = &recorder{dir: live}
+	a.deleteRecSession(live)
+	if _, err := os.Stat(live); err != nil {
+		t.Fatalf("live session was deleted: %v", err)
+	}
+	a.deleteRecSession("") // empty dir is a no-op, not a RemoveAll("")
+}

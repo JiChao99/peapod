@@ -20,6 +20,8 @@ import (
 	"github.com/egoist/mygo/ui"
 	"github.com/lobehub/lobe-mygo/pkg/action"
 	"github.com/lobehub/lobe-mygo/pkg/display"
+	"github.com/lobehub/lobe-mygo/pkg/feedback"
+	"github.com/lobehub/lobe-mygo/pkg/field"
 	"github.com/lobehub/lobe-mygo/pkg/layout"
 	"github.com/lobehub/lobe-mygo/pkg/lucide"
 	"github.com/lobehub/lobe-mygo/pkg/theme"
@@ -43,6 +45,8 @@ const (
 	recShotMaxPixels  = 32 << 20 // width*height cap before decode: a crafted IHDR must not OOM
 	recReportMaxBytes = 64 << 20 // raw PNG bytes embedded per report; later shots show missing
 	recMetaMaxBytes   = 1 << 20  // session.json / summary.json read cap
+	recNameMaxBytes   = 4096     // name.txt read cap: a custom session name is short
+	recNameMaxRunes   = 80       // custom name length bound, so list rows stay tidy
 )
 
 // recBrowser is the viewer's UI-owned state, touched only on the main thread
@@ -54,6 +58,13 @@ type recBrowser struct {
 	detail   *recDetail                // lazy-loaded steps for sel
 	imgs     map[string]ui.ImageSource // decoded thumbnail cache (nil = unreadable)
 	lightbox *recLightbox              // full-size shot viewer, nil when closed
+
+	search      string // session list filter query (name / pages / date)
+	showNoShots bool   // timeline filter: also show steps without screenshots
+	renameDir   string // session with the inline rename input open ("" = none)
+	renameText  string // draft custom name bound to the rename input
+	deleteDir   string // session pending the delete/discard confirm modal
+	deleteOpen  bool   // confirm modal open flag, owned by feedback.Modal
 }
 
 // recLightbox holds one step's shots opened at a clicked thumbnail. The decoded
@@ -64,6 +75,7 @@ type recLightbox struct {
 	index int
 	desc  string
 	seq   int
+	at    string // step's recorded time (RFC3339), shown as a caption
 	src   ui.ImageSource
 	path  string
 }
@@ -101,6 +113,7 @@ type recSessionInfo struct {
 // cheap however many recordings exist.
 type recSessionMeta struct {
 	dir       string
+	name      string // custom name from name.txt, preferred over the timestamp
 	startedAt time.Time
 	endedAt   time.Time
 	ops       int
@@ -108,6 +121,7 @@ type recSessionMeta struct {
 	shots     int
 	failed    int
 	pages     []string
+	urls      []string // page URLs, for the list search
 	viewMode  string
 	torn      bool // summary.json missing: live or interrupted
 	recording bool // torn and the recorder's current session
@@ -115,10 +129,64 @@ type recSessionMeta struct {
 	sessErr   string
 }
 
+// title prefers the user's custom name over the recorded start timestamp.
+func (m recSessionMeta) title() string {
+	if m.name != "" {
+		return m.name
+	}
+	return formatRecTitle(m.startedAt)
+}
+
 // markLive distinguishes the recorder's current session from older sessions
 // interrupted before they could write a summary.
 func (m *recSessionMeta) markLive(live string) {
 	m.recording = m.torn && m.dir == live
+}
+
+// renameRecSession persists a custom session name in name.txt. An empty name
+// clears it, falling back to the timestamp title. The write is atomic (tmp +
+// rename) so a crash can't leave a partial name, and it never touches the
+// recorder's own files.
+func renameRecSession(dir, name string) error {
+	name = strings.TrimSpace(name)
+	path := filepath.Join(dir, "name.txt")
+	if name == "" {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, []byte(truncateRunes(name, recNameMaxRunes)), 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// recSessionMatches reports whether a session matches the list search query
+// (case-insensitive): custom name, timestamp title, folder date, page names
+// or page URLs. An empty query matches everything.
+func recSessionMatches(m recSessionMeta, q string) bool {
+	q = strings.ToLower(strings.TrimSpace(q))
+	if q == "" {
+		return true
+	}
+	for _, s := range []string{m.name, formatRecTitle(m.startedAt), filepath.Base(m.dir)} {
+		if strings.Contains(strings.ToLower(s), q) {
+			return true
+		}
+	}
+	for _, s := range m.pages {
+		if strings.Contains(strings.ToLower(s), q) {
+			return true
+		}
+	}
+	for _, s := range m.urls {
+		if strings.Contains(strings.ToLower(s), q) {
+			return true
+		}
+	}
+	return false
 }
 
 // recStepShot is one page's screenshot for a step.
@@ -180,8 +248,14 @@ func readSessionMeta(dir string) (recSessionMeta, bool) {
 			m.viewMode = si.ViewMode
 			for _, p := range si.Pages {
 				m.pages = append(m.pages, p.Name)
+				m.urls = append(m.urls, p.URL)
 			}
 		}
+	}
+	// A custom name lives in its own small file so renaming never rewrites
+	// the recorder's session.json (which a live recorder still owns).
+	if data, err := readBoundedFile(filepath.Join(dir, "name.txt"), recNameMaxBytes); err == nil {
+		m.name = strings.TrimSpace(string(data))
 	}
 	if sumErr == nil {
 		var s recSummary
@@ -373,6 +447,68 @@ func scrollCoords(op operation) string {
 	return fmt.Sprintf("%.0f", y)
 }
 
+// recOpIcon maps an operation to a timeline type icon, mirroring describeOp's
+// type switch so the icon and the plain-language label never disagree.
+func recOpIcon(op operation) *ui.SVG {
+	switch op.Type {
+	case "click":
+		return lucide.MousePointerClick()
+	case "submit":
+		return lucide.Send()
+	case "scroll":
+		return lucide.MoveVertical()
+	case "input", "change", "select":
+		if op.Checked != nil {
+			return lucide.SquareCheck()
+		}
+		switch op.Type {
+		case "input":
+			return lucide.TextCursorInput()
+		case "select":
+			return lucide.ChevronsUpDown()
+		default:
+			return lucide.Type()
+		}
+	default:
+		return lucide.CircleDot()
+	}
+}
+
+// recTimelineEntry is a VIEW-layer grouping of timeline steps: consecutive
+// scroll operations coalesce into one entry, everything else stays individual.
+// The underlying recDetail steps are untouched, so the lightbox still opens
+// and navigates the real per-step screenshots.
+type recTimelineEntry struct {
+	steps []recDetailStep
+	run   bool // a scroll group (rendered coalesced only when len(steps) > 1)
+}
+
+// groupRecSteps builds the timeline entries. Steps without screenshots are
+// dropped unless showNoShots is set; consecutive scrolls among the remaining
+// steps merge into one entry.
+func groupRecSteps(steps []recDetailStep, showNoShots bool) []recTimelineEntry {
+	var out []recTimelineEntry
+	gap := false
+	for _, st := range steps {
+		scroll := st.line.Operation.Type == "scroll"
+		if !showNoShots && len(st.shots) == 0 {
+			// A hidden non-scroll op breaks consecutiveness: merging across it
+			// would label two separate scroll runs as one.
+			if !scroll {
+				gap = true
+			}
+			continue
+		}
+		if scroll && !gap && len(out) > 0 && out[len(out)-1].run {
+			out[len(out)-1].steps = append(out[len(out)-1].steps, st)
+		} else {
+			out = append(out, recTimelineEntry{steps: []recDetailStep{st}, run: scroll})
+		}
+		gap = false
+	}
+	return out
+}
+
 func truncateRunes(s string, n int) string {
 	r := []rune(s)
 	if len(r) <= n {
@@ -458,6 +594,7 @@ func (a *app) openRecLightbox(st recDetailStep, index int) {
 	a.recView.lightbox = &recLightbox{
 		shots: st.shots, index: index,
 		desc: describeOp(st.line.Operation, a.currentLang()), seq: st.line.Seq,
+		at: st.line.At,
 	}
 	a.loadLightboxImage()
 	a.invalidate()
@@ -528,13 +665,21 @@ func (a *app) renderRecLightbox(c *ui.Context, tk *theme.Tokens) {
 		}
 		panel := layout.Block(c, layout.BlockProps{Variant: layout.BlockFilled})
 		panel.Radius(12).Padding(16).Gap(12).Background(tk.BgElevated)
+		// Reclaim the keyboard from a guest WebView2 that may hold it: the
+		// panel is focusable (but not a Tab stop before its own buttons) and
+		// takes the focus in the frame it appears, so Esc/Left/Right land on
+		// the overlay instead of the page underneath.
+		panel.TabStop(false).AutoFocus()
 		tk.Elevate(panel, theme.BoxShadow)
 		panel.Children(func() {
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 				ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
 					ui.Text(c, lb.desc).FontSize(14).Bold().TextColor(tk.TextHeading).SingleLine()
-					ui.Text(c, a.tr("rec.lightbox.counter", lb.index+1, len(lb.shots), lb.shots[lb.index].name)).
-						FontSize(12).TextColor(tk.TextTertiary).SingleLine()
+					caption := a.tr("rec.lightbox.counter", lb.index+1, len(lb.shots), lb.shots[lb.index].name)
+					if clk := recClock(parseRecTime(lb.at)); clk != "" {
+						caption += " · " + clk
+					}
+					ui.Text(c, caption).FontSize(12).TextColor(tk.TextTertiary).SingleLine()
 				})
 				a.iconButton(c, tk, lucide.X(), a.tr("rec.lightbox.close"), func() { a.closeRecLightbox() })
 			})
@@ -744,6 +889,7 @@ func (a *app) renderRecordings(c *ui.Context, tk *theme.Tokens) {
 		a.renderRecList(c, tk)
 		a.renderRecDetail(c, tk)
 	})
+	a.renderRecDeleteConfirm(c, tk)
 }
 
 func (a *app) renderRecList(c *ui.Context, tk *theme.Tokens) {
@@ -756,35 +902,178 @@ func (a *app) renderRecList(c *ui.Context, tk *theme.Tokens) {
 				a.invalidate()
 			})
 		})
+		ui.Row(c).Padding(0, 12, 8, 12).Children(func() {
+			field.Input(c, &a.recView.search, field.InputProps{
+				Placeholder: a.tr("rec.search.placeholder"),
+				Prefix:      lucide.Search(),
+				Size:        theme.Small,
+			}).Grow(1)
+		})
 		ui.Scroll(c).Grow(1).MinHeight(0).Children(func() {
 			ui.Column(c).Gap(8).Padding(12).AlignItems(ui.Stretch).Children(func() {
 				if len(a.recView.list) == 0 {
 					ui.Text(c, a.tr("rec.empty")).FontSize(12).TextColor(tk.TextTertiary)
 					return
 				}
+				shown := 0
 				for _, m := range a.recView.list {
 					m := m
-					ck := c.Key(m.dir)
-					card := layout.Block(ck, layout.BlockProps{Variant: layout.BlockOutlined, Clickable: true})
-					card.AlignSelf(ui.Stretch).Padding(12).Gap(6)
-					if m.dir == a.recView.sel {
-						card.Border(1, tk.Primary).Background(tk.PrimaryFillTertiary)
+					if !recSessionMatches(m, a.recView.search) {
+						continue
 					}
-					if card.Clicked() {
-						a.openRecSession(m.dir)
-						a.invalidate()
-					}
-					card.Children(func() {
-						ui.Row(ck).Gap(6).AlignItems(ui.Center).Children(func() {
-							ui.Text(ck, formatRecTitle(m.startedAt)).FontSize(13).Bold().TextColor(tk.TextHeading).Grow(1).MinWidth(0).SingleLine()
-							a.recStatusTag(ck, m)
-						})
-						ui.Text(ck, recMetaLine(m, a.currentLang())).FontSize(11).TextColor(tk.TextTertiary).SingleLine()
-					})
+					shown++
+					a.renderRecCard(c, tk, m)
+				}
+				if shown == 0 {
+					ui.Text(c, a.tr("rec.search.empty")).FontSize(12).TextColor(tk.TextTertiary)
 				}
 			})
 		})
 	})
+}
+
+// renderRecCard draws one session's listing card: title (custom name preferred),
+// status, counts, the torn/live reason, and the rename / delete actions. Only
+// metadata is read here — never scripts or screenshots.
+func (a *app) renderRecCard(c *ui.Context, tk *theme.Tokens, m recSessionMeta) {
+	ck := c.Key(m.dir)
+	card := layout.Block(ck, layout.BlockProps{Variant: layout.BlockOutlined, Clickable: true})
+	card.AlignSelf(ui.Stretch).Padding(12).Gap(6)
+	if m.dir == a.recView.sel {
+		card.Border(1, tk.Primary).Background(tk.PrimaryFillTertiary)
+	}
+	if card.Clicked() {
+		a.openRecSession(m.dir)
+		a.invalidate()
+	}
+	card.Children(func() {
+		if a.recView.renameDir == m.dir {
+			ui.Row(ck).Gap(4).AlignItems(ui.Center).Children(func() {
+				field.Input(ck, &a.recView.renameText, field.InputProps{
+					Placeholder: a.tr("rec.rename.placeholder"),
+					Size:        theme.Small,
+				}).Grow(1).MinWidth(0)
+				a.recSmallIcon(ck, tk, lucide.Check(), a.tr("rec.rename.save"), func() {
+					if err := renameRecSession(m.dir, a.recView.renameText); err != nil {
+						a.setNoticeErr(err.Error())
+						return
+					}
+					a.recView.renameDir = ""
+					a.refreshRecList()
+					a.setNoticeOK(a.tr("notice.recRenamed"))
+					a.invalidate()
+				})
+				a.recSmallIcon(ck, tk, lucide.X(), a.tr("rec.rename.cancel"), func() {
+					a.recView.renameDir = ""
+					a.invalidate()
+				})
+			})
+		} else {
+			ui.Row(ck).Gap(6).AlignItems(ui.Center).Children(func() {
+				ui.Text(ck, m.title()).FontSize(13).Bold().TextColor(tk.TextHeading).Grow(1).MinWidth(0).SingleLine()
+				a.recStatusTag(ck, m)
+			})
+		}
+		ui.Text(ck, recMetaLine(m, a.currentLang())).FontSize(11).TextColor(tk.TextTertiary).SingleLine()
+		if m.recording {
+			ui.Text(ck, a.tr("rec.reason.live")).FontSize(11).TextColor(tk.Error).Wrap()
+		} else if m.torn {
+			ui.Text(ck, a.tr("rec.reason.torn")).FontSize(11).TextColor(tk.Warning).Wrap()
+		}
+		ui.Row(ck).Gap(4).AlignItems(ui.Center).Children(func() {
+			a.recSmallIcon(ck, tk, lucide.Pencil(), a.tr("rec.rename"), func() {
+				a.recView.renameDir = m.dir
+				a.recView.renameText = m.name
+				a.invalidate()
+			})
+			// The live recording is never deletable: its evidence is still
+			// being written. Torn non-live sessions offer 丢弃 instead.
+			if !m.recording {
+				label := a.tr("rec.delete")
+				if m.torn {
+					label = a.tr("rec.discard")
+				}
+				if action.Button(ck, label, action.ButtonProps{Variant: action.Text, Size: theme.Small}).Clicked() {
+					a.recView.deleteDir = m.dir
+					a.recView.deleteOpen = true
+					a.invalidate()
+				}
+			}
+		})
+	})
+}
+
+// recSmallIcon is a compact 24px icon button for the dense session cards.
+func (a *app) recSmallIcon(c *ui.Context, tk *theme.Tokens, svg *ui.SVG, label string, onClick func()) {
+	b := ui.ButtonBase(c).Label(label).Tooltip(label).Size(24, 24).Center().
+		Radius(tk.BorderRadiusSM).Cursor(ui.CursorPointer).TextColor(tk.TextSecondary)
+	if b.Hovered() {
+		b.TextColor(tk.Primary).Background(tk.FillTertiary)
+	}
+	b.Children(func() { ui.Icon(c, svg).FontSize(14) })
+	if b.Clicked() {
+		onClick()
+	}
+}
+
+// renderRecDeleteConfirm gates deleting (or discarding a torn) session behind
+// a confirm modal; only its OK path ever reaches os.RemoveAll.
+func (a *app) renderRecDeleteConfirm(c *ui.Context, tk *theme.Tokens) {
+	if !a.recView.deleteOpen {
+		return
+	}
+	dir := a.recView.deleteDir
+	torn := false
+	for _, m := range a.recView.list {
+		if m.dir == dir {
+			torn = m.torn
+			break
+		}
+	}
+	title, okText := a.tr("rec.delete.title"), a.tr("rec.delete.ok")
+	if torn {
+		title, okText = a.tr("rec.discard.title"), a.tr("rec.discard.ok")
+	}
+	if feedback.Modal(c, &a.recView.deleteOpen, feedback.ModalProps{
+		Title:      title,
+		OkText:     okText,
+		CancelText: a.tr("ui.cancel"),
+		Width:      440,
+	}, func() {
+		ui.Text(c, a.tr("rec.delete.body", filepath.Base(dir))).FontSize(13).TextColor(tk.TextSecondary).Wrap()
+	}) {
+		a.recView.deleteOpen = false
+		a.deleteRecSession(dir)
+	}
+}
+
+// deleteRecSession removes a session folder after the confirm modal. The live
+// recording is refused again here even if the UI somehow offered it.
+func (a *app) deleteRecSession(dir string) {
+	if dir == "" || dir == a.liveRecDir() {
+		a.setNoticeWarn(a.tr("rec.delete.refused"))
+		return
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		a.setNoticeErr(err.Error())
+		return
+	}
+	if a.recView.renameDir == dir {
+		a.recView.renameDir = ""
+	}
+	if a.recView.sel == dir {
+		a.recView.sel = ""
+	}
+	// Drop the deleted session's decoded thumbnails so they do not linger.
+	prefix := dir + string(filepath.Separator)
+	for p := range a.recView.imgs {
+		if strings.HasPrefix(p, prefix) {
+			delete(a.recView.imgs, p)
+		}
+	}
+	a.refreshRecList()
+	a.setNoticeOK(a.tr("notice.recDeleted"))
+	a.invalidate()
 }
 
 // recStatusTag tags sessions without a summary: the live recording, or one
@@ -814,28 +1103,53 @@ func (a *app) renderRecDetail(c *ui.Context, tk *theme.Tokens) {
 		ui.Column(c).Gap(12).Padding(16).AlignItems(ui.Stretch).Children(func() {
 			ui.Column(c).Gap(8).Children(func() {
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, formatRecTitle(d.meta.startedAt)).FontSize(18).Bold().TextColor(tk.TextHeading).Grow(1).MinWidth(0).SingleLine()
+					ui.Text(c, d.meta.title()).FontSize(18).Bold().TextColor(tk.TextHeading).Grow(1).MinWidth(0).SingleLine()
 					a.recStatusTag(c, d.meta)
 				})
 				ui.Text(c, recMetaLine(d.meta, a.currentLang())).FontSize(12).TextColor(tk.TextTertiary)
+				if d.meta.recording {
+					ui.Text(c, a.tr("rec.reason.live")).FontSize(12).TextColor(tk.Error).Wrap()
+				} else if d.meta.torn {
+					ui.Text(c, a.tr("rec.reason.torn")).FontSize(12).TextColor(tk.Warning).Wrap()
+				}
 				if d.meta.writeErr != "" {
 					ui.Text(c, a.tr("rec.writeErr", d.meta.writeErr)).FontSize(12).TextColor(tk.Warning).Wrap()
 				}
 				if d.meta.sessErr != "" {
 					ui.Text(c, a.tr("rec.sessErr", d.meta.sessErr)).FontSize(12).TextColor(tk.Warning).Wrap()
 				}
-				ui.Row(c).Gap(8).Children(func() {
+				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 					if action.Button(c, a.tr("rec.replay"), action.ButtonProps{Variant: action.Primary, Size: theme.Small}).Clicked() {
 						a.replayRecording(d.meta.dir)
 					}
 					if action.Button(c, a.tr("rec.export"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).Clicked() {
 						a.exportRecording(c, d.meta.dir)
 					}
+					filterLabel := a.tr("rec.showAllSteps")
+					if a.recView.showNoShots {
+						filterLabel = a.tr("rec.onlyShots")
+					}
+					if action.Button(c, filterLabel, action.ButtonProps{Variant: action.Text, Size: theme.Small}).Clicked() {
+						a.recView.showNoShots = !a.recView.showNoShots
+						a.invalidate()
+					}
 				})
 			})
 			shown := min(len(d.steps), recMaxSteps)
-			for i := 0; i < shown; i++ {
-				a.renderRecStep(c, tk, d.steps[i])
+			entries := groupRecSteps(d.steps[:shown], a.recView.showNoShots)
+			if !a.recView.showNoShots {
+				hidden := 0
+				for _, st := range d.steps[:shown] {
+					if len(st.shots) == 0 {
+						hidden++
+					}
+				}
+				if hidden > 0 {
+					ui.Text(c, a.tr("rec.hiddenNoShots", hidden)).FontSize(12).TextColor(tk.TextTertiary)
+				}
+			}
+			for _, e := range entries {
+				a.renderRecEntry(c, tk, e)
 			}
 			if len(d.steps) > shown {
 				ui.Text(c, a.tr("rec.truncated", shown, len(d.steps))).FontSize(12).TextColor(tk.TextTertiary)
@@ -844,49 +1158,75 @@ func (a *app) renderRecDetail(c *ui.Context, tk *theme.Tokens) {
 	})
 }
 
-func (a *app) renderRecStep(c *ui.Context, tk *theme.Tokens, st recDetailStep) {
-	c = c.Key(strconv.Itoa(st.line.Seq))
+// renderRecEntry draws one timeline entry: a single step, or a coalesced run
+// of consecutive scrolls shown as "滚动 ×N · y0→y1". Every thumbnail still
+// opens the lightbox on its own real step, so shot navigation is unchanged.
+func (a *app) renderRecEntry(c *ui.Context, tk *theme.Tokens, e recTimelineEntry) {
+	first := e.steps[0]
+	last := e.steps[len(e.steps)-1]
+	c = c.Key(strconv.Itoa(first.line.Seq))
 	card := layout.Block(c, layout.BlockProps{Variant: layout.BlockOutlined})
 	card.AlignSelf(ui.Stretch).Padding(12).Gap(10)
 	card.Children(func() {
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 			ui.Column(c).Size(26, 26).Center().Radius(13).Background(tk.FillTertiary).Shrink(0).Children(func() {
-				ui.Text(c, strconv.Itoa(st.line.Seq)).FontSize(12).Bold().TextColor(tk.TextSecondary)
+				ui.Text(c, strconv.Itoa(first.line.Seq)).FontSize(12).Bold().TextColor(tk.TextSecondary)
 			})
+			ui.Icon(c, recOpIcon(first.line.Operation)).FontSize(16).TextColor(tk.TextSecondary).Shrink(0)
 			ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
-				ui.Text(c, describeOp(st.line.Operation, a.currentLang())).FontSize(14).Bold().TextColor(tk.TextHeading).SingleLine()
+				title := describeOp(first.line.Operation, a.currentLang())
+				clock := recClock(parseRecTime(first.line.At))
+				if e.run && len(e.steps) > 1 {
+					title = a.tr("rec.scrollRun", len(e.steps),
+						scrollCoords(first.line.Operation), scrollCoords(last.line.Operation))
+					if end := recClock(parseRecTime(last.line.At)); end != "" && end != clock {
+						if clock == "" {
+							clock = end
+						} else {
+							clock += "→" + end
+						}
+					}
+				}
+				ui.Text(c, title).FontSize(14).Bold().TextColor(tk.TextHeading).SingleLine()
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					display.Tag(c, recSourceLabel(st.line.Source, a.currentLang()), display.TagProps{Color: recSourceColor(st.line.Source), Size: theme.Small, Round: true})
-					ui.Text(c, recClock(parseRecTime(st.line.At))).FontSize(12).TextColor(tk.TextTertiary).Shrink(0)
-					ui.Text(c, st.line.URL).FontSize(12).TextColor(tk.TextTertiary).Grow(1).MinWidth(0).SingleLine()
+					display.Tag(c, recSourceLabel(first.line.Source, a.currentLang()), display.TagProps{Color: recSourceColor(first.line.Source), Size: theme.Small, Round: true})
+					ui.Text(c, clock).FontSize(12).TextColor(tk.TextTertiary).Shrink(0)
+					ui.Text(c, first.line.URL).FontSize(12).TextColor(tk.TextTertiary).Grow(1).MinWidth(0).SingleLine()
 				})
 			})
 		})
-		if len(st.shots) == 0 {
+		shots := 0
+		for _, st := range e.steps {
+			shots += len(st.shots)
+		}
+		if shots == 0 {
 			ui.Text(c, a.tr("rec.noShots")).FontSize(12).TextColor(tk.TextQuaternary)
 			return
 		}
 		ui.ScrollHorizontal(c).AlignSelf(ui.Stretch).Children(func() {
 			ui.Row(c).Gap(10).AlignItems(ui.Start).Children(func() {
-				for i, sh := range st.shots {
-					sh := sh
-					idx := i
-					ui.Column(c).Gap(4).AlignItems(ui.Center).Children(func() {
-						btn := ui.ButtonBase(c).Label(sh.name).Tooltip(a.tr("rec.zoom")).
-							Size(recThumbW, recThumbH).Center().Radius(4).Clip().Cursor(ui.CursorPointer).
-							Border(1, tk.BorderSecondary).Background(tk.BgContainerSecondary)
-						if src := a.recImage(sh.path); src != nil {
-							btn.Children(func() { ui.Image(c, src).Size(recThumbW, recThumbH).Fit(ui.Contain) })
-						} else {
-							btn.Children(func() {
-								ui.Text(c, a.tr("rec.shotMissing")).FontSize(11).TextColor(tk.TextQuaternary)
-							})
-						}
-						if btn.Clicked() {
-							a.openRecLightbox(st, idx)
-						}
-						ui.Text(c, sh.name).FontSize(11).TextColor(tk.TextTertiary).SingleLine().MaxWidth(recThumbW)
-					})
+				for _, st := range e.steps {
+					st := st
+					for i, sh := range st.shots {
+						sh := sh
+						idx := i
+						ui.Column(c).Gap(4).AlignItems(ui.Center).Children(func() {
+							btn := ui.ButtonBase(c).Label(sh.name).Tooltip(a.tr("rec.zoom")).
+								Size(recThumbW, recThumbH).Center().Radius(4).Clip().Cursor(ui.CursorPointer).
+								Border(1, tk.BorderSecondary).Background(tk.BgContainerSecondary)
+							if src := a.recImage(sh.path); src != nil {
+								btn.Children(func() { ui.Image(c, src).Size(recThumbW, recThumbH).Fit(ui.Contain) })
+							} else {
+								btn.Children(func() {
+									ui.Text(c, a.tr("rec.shotMissing")).FontSize(11).TextColor(tk.TextQuaternary)
+								})
+							}
+							if btn.Clicked() {
+								a.openRecLightbox(st, idx)
+							}
+							ui.Text(c, sh.name).FontSize(11).TextColor(tk.TextTertiary).SingleLine().MaxWidth(recThumbW)
+						})
+					}
 				}
 			})
 		})
