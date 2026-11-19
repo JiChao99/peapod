@@ -162,7 +162,13 @@ type app struct {
 	captionTheme string
 	scalePct     string // UI zoom percent: 100 | 125 | 150
 	shotName     string // base name for batch screenshots
-	lang         string // zh | en; bound to the panel Select, touched only on the main thread
+	bulkOpen     bool   // URL-list bulk add area expanded; UI-owned like shotName
+	bulkText     string // pasted URL list, one per line; UI-owned like shotName
+	// pendingDup/pendingRemove defer row mutations clicked during the setup
+	// range loop until after it, so the loop never reads a shifted slice.
+	pendingDup    string
+	pendingRemove string
+	lang          string // zh | en; bound to the panel Select, touched only on the main thread
 
 	// langVal publishes lang for off-thread readers (MCP handlers, cleanup and
 	// screenshot goroutines). The panel stores it after each frame; readers load
@@ -295,6 +301,76 @@ func (a *app) removePage(id string) {
 			return
 		}
 	}
+}
+
+// duplicatePage clones a setup row right after its source, so a variant that
+// differs in one field starts from a filled row instead of an empty one.
+func (a *app) duplicatePage(id string) {
+	if len(a.configs) >= 10 {
+		return
+	}
+	for i, cfg := range a.configs {
+		if cfg.id != id {
+			continue
+		}
+		a.configSeq++
+		clone := *cfg
+		clone.id = fmt.Sprintf("c%d", a.configSeq)
+		if clone.name != "" {
+			clone.name = a.tr("ui.page.copyName", clone.name)
+		}
+		a.configs = append(a.configs, nil)
+		copy(a.configs[i+2:], a.configs[i+1:])
+		a.configs[i+1] = &clone
+		return
+	}
+}
+
+// parseURLLines splits a pasted URL list into trimmed, non-empty lines.
+func parseURLLines(raw string) []string {
+	var out []string
+	for _, line := range strings.Split(raw, "\n") {
+		if s := strings.TrimSpace(line); s != "" {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// bulkAddURLs appends one setup row per URL line, all or nothing: every line
+// must validate and the total must stay within the ten-page cap. Generated
+// rows inherit the preset resolution and take their host as name, so batch
+// screenshots of ten look-alike pages stay tellable apart.
+func (a *app) bulkAddURLs(raw string) (int, error) {
+	if a.templateMode() {
+		return 0, fmt.Errorf("%s", a.tr("err.bulkPlain"))
+	}
+	lines := parseURLLines(raw)
+	if len(lines) == 0 {
+		return 0, fmt.Errorf("%s", a.tr("err.bulkEmpty"))
+	}
+	if len(a.configs)+len(lines) > 10 {
+		return 0, fmt.Errorf("%s", a.tr("err.bulkTooMany", len(lines), len(a.configs)))
+	}
+	for i, line := range lines {
+		if err := a.validateURL(line); err != nil {
+			return 0, fmt.Errorf("%s", a.tr("err.bulkURL", i+1, err.Error()))
+		}
+	}
+	for _, line := range lines {
+		a.configSeq++
+		cfg := &pageConfig{
+			id:   fmt.Sprintf("c%d", a.configSeq),
+			url:  line,
+			resW: a.resW,
+			resH: a.resH,
+		}
+		if u, err := url.Parse(line); err == nil {
+			cfg.name = u.Hostname()
+		}
+		a.configs = append(a.configs, cfg)
+	}
+	return len(lines), nil
 }
 
 // buildRequest resolves the setup form. In plain mode the primary URL is

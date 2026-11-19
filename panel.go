@@ -322,11 +322,68 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 	for i, cfg := range a.configs {
 		a.setupRow(c, tk, cfg, i)
 	}
-	if len(a.configs) < 10 {
-		if action.Button(c, a.tr("ui.addPage"), action.ButtonProps{Variant: action.Dashed}).AlignSelf(ui.Stretch).Clicked() {
-			a.addPage()
-		}
+	// Apply row mutations clicked during the loop only now: mutating configs
+	// mid-iteration shifts the backing array the range loop still reads.
+	if a.pendingRemove != "" {
+		a.removePage(a.pendingRemove)
+		a.pendingRemove = ""
 	}
+	if a.pendingDup != "" {
+		a.duplicatePage(a.pendingDup)
+		a.pendingDup = ""
+	}
+	if len(a.configs) < 10 {
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			if action.Button(c, a.tr("ui.addPage"), action.ButtonProps{Variant: action.Dashed}).Grow(1).Clicked() {
+				a.addPage()
+			}
+			if !a.templateMode() {
+				if action.Button(c, a.tr("ui.bulk"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).Clicked() {
+					a.bulkOpen = !a.bulkOpen
+				}
+			}
+		})
+	}
+	if a.bulkOpen && len(a.configs) < 10 && !a.templateMode() {
+		a.bulkBody(c, tk)
+	}
+}
+
+// bulkBody is the expanded URL-list area: paste one URL per line, watch the
+// resulting page count against the cap live, then append every row at once.
+func (a *app) bulkBody(c *ui.Context, tk *theme.Tokens) {
+	lines := parseURLLines(a.bulkText)
+	over := len(a.configs)+len(lines) > 10
+	ui.Column(c).Gap(8).Padding(12).Radius(tk.BorderRadiusLG).AlignItems(ui.Stretch).
+		Background(tk.BgContainerSecondary).Border(1, tk.BorderSecondary).Children(func() {
+		field.TextArea(c, &a.bulkText, field.TextAreaProps{
+			Placeholder: a.tr("ui.bulk.placeholder"),
+			MinRows:     3,
+			MaxRows:     8,
+			Variant:     field.InputFilled,
+		}).AlignSelf(ui.Stretch)
+		preview, color := a.tr("ui.bulk.preview", len(lines), len(a.configs)), tk.TextTertiary
+		if over {
+			preview, color = a.tr("err.bulkTooMany", len(lines), len(a.configs)), tk.Error
+		}
+		ui.Text(c, preview).FontSize(12).TextColor(color).Wrap()
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Row(c).Grow(1)
+			if action.Button(c, a.tr("ui.cancel"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).Clicked() {
+				a.bulkOpen = false
+			}
+			if action.Button(c, a.tr("ui.bulk.generate"), action.ButtonProps{Variant: action.Primary, Size: theme.Small}).
+				Disabled(len(lines) == 0 || over).Clicked() {
+				if n, err := a.bulkAddURLs(a.bulkText); err != nil {
+					a.setNotice(err.Error())
+				} else {
+					a.bulkText = ""
+					a.bulkOpen = false
+					a.setNotice(a.tr("notice.bulkDone", n))
+				}
+			}
+		})
+	})
 }
 
 func (a *app) setupRow(c *ui.Context, tk *theme.Tokens, cfg *pageConfig, i int) {
@@ -340,6 +397,17 @@ func (a *app) setupRow(c *ui.Context, tk *theme.Tokens, cfg *pageConfig, i int) 
 				display.Tag(c, a.tr("ui.page.n", i+1), display.TagProps{Size: theme.Small, Round: true})
 			}
 			ui.Row(c).Grow(1)
+			if len(a.configs) < 10 {
+				cp := ui.ButtonBase(c).Label(a.tr("ui.page.copy")).Tooltip(a.tr("ui.page.copy")).Size(28, 28).Center().
+					Radius(tk.BorderRadiusSM).Cursor(ui.CursorPointer).TextColor(tk.TextTertiary)
+				if cp.Hovered() {
+					cp.TextColor(tk.Primary).Background(tk.FillTertiary)
+				}
+				cp.Children(func() { ui.Icon(c, lucide.Copy()).FontSize(15) })
+				if cp.Clicked() {
+					a.pendingDup = cfg.id
+				}
+			}
 			if i > 0 && len(a.configs) > 2 {
 				rm := ui.ButtonBase(c).Label(a.tr("ui.page.remove")).Tooltip(a.tr("ui.page.remove")).Size(28, 28).Center().
 					Radius(tk.BorderRadiusSM).Cursor(ui.CursorPointer).TextColor(tk.TextTertiary)
@@ -348,7 +416,7 @@ func (a *app) setupRow(c *ui.Context, tk *theme.Tokens, cfg *pageConfig, i int) 
 				}
 				rm.Children(func() { ui.Icon(c, lucide.Trash2()).FontSize(15) })
 				if rm.Clicked() {
-					a.removePage(cfg.id)
+					a.pendingRemove = cfg.id
 				}
 			}
 		})

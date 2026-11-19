@@ -38,7 +38,7 @@ It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with it
 
 ## Quick start
 
-1. **Add pages.** The UI starts in Chinese; switch to English from the language menu in the top bar. Enter the primary URL and add up to 10 pages. A page left empty inherits the primary URL. To work with variants, set a template such as `https://{host}/{lang}` and give each page its own values (`host=staging.example.com, lang=de`).
+1. **Add pages.** The UI starts in Chinese; switch to English from the language menu in the top bar. Enter the primary URL and add up to 10 pages. A page left empty inherits the primary URL. Paste a URL list under **Bulk add** to generate several pages at once, or duplicate any row and tweak the difference. To work with variants, set a template such as `https://{host}/{lang}` and give each page its own values (`host=staging.example.com, lang=de`).
 2. **Choose the setup.** Pick desktop mode (one large page at a time) or mobile mode (all pages side by side), set each page's resolution, pick one User-Agent preset for the whole task (by default it follows the mode, so mobile mode uses iPhone), choose shared or isolated storage, and optionally turn on **Record operations**.
 3. **Start and operate.** Use the primary page as you normally would. The other pages follow. Click a page card to bring that page to the front.
 4. **Collect evidence.** Take a batch screenshot of every page, or open **Recordings** to browse the step timeline, replay a session, or export an HTML report. Replay runs the steps on every page, including the primary, but doesn't include navigations, so start the task at the flow's entry URL first.
@@ -53,6 +53,7 @@ It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with it
 
 ### Variants and devices
 - **URL variant templates.** One template, with different variables and an optional path per page. Navigation follow maps paths between the rendered prefixes.
+- **Bulk add and duplicate.** Paste one URL per line to append every row in one step, within the 10-page cap (plain URL mode only); generated pages inherit the preset resolution and take their host as name. Duplicate any row to clone its URL, variables and resolution, then edit only what differs.
 - **Desktop and mobile layouts.** Per-page resolutions from 200 to 3840 px.
 - **User-Agent presets.** iPhone, iPad, Android phone and tablet, Windows Chrome, Edge and Firefox, and macOS Safari, or paste a custom string.
 - **Isolated or shared storage.** Each page gets its own ephemeral session by default. You can also share cookies and cache across pages.
