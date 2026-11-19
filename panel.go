@@ -322,17 +322,29 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 	for i, cfg := range a.configs {
 		a.setupRow(c, tk, cfg, i)
 	}
+	// Apply row mutations clicked during the loop only now: mutating configs
+	// mid-iteration shifts the backing array the range loop still reads.
+	if a.pendingRemove != "" {
+		a.removePage(a.pendingRemove)
+		a.pendingRemove = ""
+	}
+	if a.pendingDup != "" {
+		a.duplicatePage(a.pendingDup)
+		a.pendingDup = ""
+	}
 	if len(a.configs) < 10 {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			if action.Button(c, a.tr("ui.addPage"), action.ButtonProps{Variant: action.Dashed}).Grow(1).Clicked() {
 				a.addPage()
 			}
-			if action.Button(c, a.tr("ui.bulk"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).Clicked() {
-				a.bulkOpen = !a.bulkOpen
+			if !a.templateMode() {
+				if action.Button(c, a.tr("ui.bulk"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).Clicked() {
+					a.bulkOpen = !a.bulkOpen
+				}
 			}
 		})
 	}
-	if a.bulkOpen {
+	if a.bulkOpen && len(a.configs) < 10 && !a.templateMode() {
 		a.bulkBody(c, tk)
 	}
 }
@@ -393,7 +405,7 @@ func (a *app) setupRow(c *ui.Context, tk *theme.Tokens, cfg *pageConfig, i int) 
 				}
 				cp.Children(func() { ui.Icon(c, lucide.Copy()).FontSize(15) })
 				if cp.Clicked() {
-					a.duplicatePage(cfg.id)
+					a.pendingDup = cfg.id
 				}
 			}
 			if i > 0 && len(a.configs) > 2 {
@@ -404,7 +416,7 @@ func (a *app) setupRow(c *ui.Context, tk *theme.Tokens, cfg *pageConfig, i int) 
 				}
 				rm.Children(func() { ui.Icon(c, lucide.Trash2()).FontSize(15) })
 				if rm.Clicked() {
-					a.removePage(cfg.id)
+					a.pendingRemove = cfg.id
 				}
 			}
 		})

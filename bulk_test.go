@@ -123,3 +123,37 @@ func TestDuplicatePageEmptyNameAndCap(t *testing.T) {
 		t.Errorf("duplicate past cap: %d, want 10", len(a.configs))
 	}
 }
+
+func TestBulkAddURLsCapBoundary(t *testing.T) {
+	a := newApp()
+	n, err := a.bulkAddURLs(strings.Repeat("https://ok.example.com\n", 7))
+	if err != nil {
+		t.Fatalf("3+7 must fit the cap: %v", err)
+	}
+	if n != 7 || len(a.configs) != 10 {
+		t.Errorf("added %d, configs %d, want 7 and 10", n, len(a.configs))
+	}
+}
+
+func TestDuplicatePageEnglishSuffix(t *testing.T) {
+	a := newApp()
+	a.langVal.Store("en")
+	a.configs[1].name = "Staging"
+	a.duplicatePage(a.configs[1].id)
+	if got := a.configs[2].name; got != "Staging copy" {
+		t.Errorf("en clone name = %q, want %q", got, "Staging copy")
+	}
+}
+
+func TestDuplicatePagePositions(t *testing.T) {
+	a := newApp()
+	primary, last := a.configs[0], a.configs[2]
+	a.duplicatePage(primary.id)
+	if len(a.configs) != 4 || a.configs[0] != primary || a.configs[1].url != primary.url {
+		t.Fatalf("primary duplicate must land at index 1, keeping primary first")
+	}
+	a.duplicatePage(last.id)
+	if len(a.configs) != 5 || a.configs[4].id == last.id || a.configs[3] != last {
+		t.Errorf("last-row duplicate must append after the source")
+	}
+}

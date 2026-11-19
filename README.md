@@ -53,7 +53,7 @@ It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with it
 
 ### Variants and devices
 - **URL variant templates.** One template, with different variables and an optional path per page. Navigation follow maps paths between the rendered prefixes.
-- **Bulk add and duplicate.** Paste one URL per line to append every row in one step, within the 10-page cap; generated pages inherit the preset resolution and take their host as name. Duplicate any row to clone its URL, variables and resolution, then edit only what differs.
+- **Bulk add and duplicate.** Paste one URL per line to append every row in one step, within the 10-page cap (plain URL mode only); generated pages inherit the preset resolution and take their host as name. Duplicate any row to clone its URL, variables and resolution, then edit only what differs.
 - **Desktop and mobile layouts.** Per-page resolutions from 200 to 3840 px.
 - **User-Agent presets.** iPhone, iPad, Android phone and tablet, Windows Chrome, Edge and Firefox, and macOS Safari, or paste a custom string.
 - **Isolated or shared storage.** Each page gets its own ephemeral session by default. You can also share cookies and cache across pages.

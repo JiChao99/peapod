@@ -164,7 +164,11 @@ type app struct {
 	shotName     string // base name for batch screenshots
 	bulkOpen     bool   // URL-list bulk add area expanded; UI-owned like shotName
 	bulkText     string // pasted URL list, one per line; UI-owned like shotName
-	lang         string // zh | en; bound to the panel Select, touched only on the main thread
+	// pendingDup/pendingRemove defer row mutations clicked during the setup
+	// range loop until after it, so the loop never reads a shifted slice.
+	pendingDup    string
+	pendingRemove string
+	lang          string // zh | en; bound to the panel Select, touched only on the main thread
 
 	// langVal publishes lang for off-thread readers (MCP handlers, cleanup and
 	// screenshot goroutines). The panel stores it after each frame; readers load
