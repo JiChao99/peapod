@@ -140,6 +140,12 @@ func (a *app) applyProfile(p profileData) error {
 	// so the profile's per-page resolutions survive.
 	a.viewMode, a.lastViewMode = viewMode, viewMode
 	a.resW, a.resH = configs[0].resW, configs[0].resH
+	// The profile's resolution becomes this mode's remembered preset, so a
+	// later mode switch restores it instead of the factory default.
+	if a.resByMode == nil {
+		a.resByMode = map[string][2]float64{}
+	}
+	a.resByMode[viewMode] = [2]float64{a.resW, a.resH}
 	a.uaPreset = preset
 	a.uaCustom = p.UACustom
 	a.shareStorage = p.ShareStorage
@@ -154,6 +160,23 @@ func (a *app) applyProfile(p profileData) error {
 	a.syncDelay = syncDelay
 	a.invalidate()
 	return nil
+}
+
+// requestSaveProfile is the panel's save entry point: a new name saves
+// directly, while a name that already exists on disk opens the overwrite
+// confirm modal first (renderProfileOverwrite in panel.go).
+func (a *app) requestSaveProfile(name string) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		a.setNoticeErr(a.tr("err.profilesName"))
+		return
+	}
+	if _, err := os.Stat(profilePath(name)); err == nil {
+		a.profileOverwriteName = name
+		a.profileOverwriteOpen = true
+		return
+	}
+	a.saveProfile(name)
 }
 
 // saveProfile writes the current form under name, overwriting an existing

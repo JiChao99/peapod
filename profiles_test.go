@@ -233,3 +233,44 @@ func TestDeleteProfile(t *testing.T) {
 		t.Fatalf("notice = %q, want deleted", a.notice)
 	}
 }
+
+// TestRequestSaveProfileOverwriteGate checks that a new name saves directly
+// while an existing name opens the confirm modal and leaves the file untouched
+// until the overwrite is confirmed.
+func TestRequestSaveProfileOverwriteGate(t *testing.T) {
+	pinProfileHome(t)
+	a := newApp()
+	a.template = "https://first.example"
+	a.requestSaveProfile("qa")
+	if a.profileOverwriteOpen {
+		t.Fatal("new name must save directly, without the overwrite modal")
+	}
+	if _, err := os.Stat(profilePath("qa")); err != nil {
+		t.Fatalf("first save missing: %v", err)
+	}
+
+	// Same name again: the gate opens and the stored profile stays unchanged.
+	a.template = "https://second.example"
+	a.requestSaveProfile("qa")
+	if !a.profileOverwriteOpen || a.profileOverwriteName != "qa" {
+		t.Fatalf("overwrite gate = %v/%q, want open for qa", a.profileOverwriteOpen, a.profileOverwriteName)
+	}
+	p, err := readProfileFile("qa")
+	if err != nil || p.Template != "https://first.example" {
+		t.Fatalf("profile changed before confirm: %+v err=%v", p, err)
+	}
+
+	// Confirming the modal saves over the old file.
+	a.profileOverwriteOpen = false
+	a.saveProfile(a.profileOverwriteName)
+	p, err = readProfileFile("qa")
+	if err != nil || p.Template != "https://second.example" {
+		t.Fatalf("confirmed overwrite not applied: %+v err=%v", p, err)
+	}
+
+	// An empty name still errors without opening the gate.
+	a.requestSaveProfile("   ")
+	if a.profileOverwriteOpen || a.notice != trLang("zh", "err.profilesName") {
+		t.Fatalf("empty name: gate=%v notice=%q, want closed + name error", a.profileOverwriteOpen, a.notice)
+	}
+}

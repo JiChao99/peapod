@@ -12,9 +12,13 @@ import (
 	"time"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/ui"
 )
 
 const mobileUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+
+// countdownGrace is the cancel window between Start and page creation.
+const countdownGrace = 3 * time.Second
 
 // pageConfig is one editable row of the setup form: a name and an optional
 // URL. A non-primary page left empty inherits the primary page's URL.
@@ -141,6 +145,9 @@ type app struct {
 	primaryID string
 	cancel    chan struct{}
 	seq       int
+	// startAt marks when the countdown began, guarded by mu; the panel derives
+	// the visible 3→2→1 countdown and ring progress from it.
+	startAt time.Time
 
 	// rec is the running task's operation recorder (record.go), nil when the
 	// task does not record. replay is the latest peapod_replay run (replay.go).
@@ -173,12 +180,23 @@ type app struct {
 	viewMode        string // desktop | mobile
 	lastViewMode    string
 	resW, resH      float64 // preset seeded by viewMode; each page copies it
-	uaPreset        string  // built-in UA option key (ua.go); UI-owned like viewMode
-	uaCustom        string  // full UA string when uaPreset == uaCustom
-	shareStorage    bool
-	record          bool   // record operations + per-step screenshots; UI-owned like shareStorage
-	syncDelay       string // continuous-operation pace in ms ("0" = instant); UI-owned like shareStorage
-	syncUI          map[string]*bool
+	// resByMode remembers each view mode's last-used resolution so switching
+	// back restores it instead of the factory preset. Main-thread only.
+	resByMode map[string][2]float64
+	// advancedOpen expands the advanced-settings group (UA, sync pace, shared
+	// storage, recording); default collapsed. Main-thread only.
+	advancedOpen bool
+	// lastStatus/configScroll reset the setup form's scroll to the top whenever
+	// the task status changes, so a state change never leaves the user scrolled
+	// mid-form. Main-thread only.
+	lastStatus   string
+	configScroll ui.ScrollState
+	uaPreset     string // built-in UA option key (ua.go); UI-owned like viewMode
+	uaCustom     string // full UA string when uaPreset == uaCustom
+	shareStorage bool
+	record       bool   // record operations + per-step screenshots; UI-owned like shareStorage
+	syncDelay    string // continuous-operation pace in ms ("0" = instant); UI-owned like shareStorage
+	syncUI       map[string]*bool
 
 	// Setup profiles (profiles.go): profileName is the save-as input, profileSel
 	// the picked existing profile, profiles the cached list refreshed on
@@ -186,6 +204,10 @@ type app struct {
 	profileName string
 	profileSel  string
 	profiles    []string
+	// profileOverwriteOpen/profileOverwriteName gate saving over an existing
+	// profile behind a confirm modal. UI-owned like the fields above.
+	profileOverwriteOpen bool
+	profileOverwriteName string
 
 	themeMode string // system | light | dark
 	// captionTheme is the theme last given to the native caption buttons, so
@@ -226,12 +248,17 @@ func newApp() *app {
 		lastViewMode: "desktop",
 		resW:         1280,
 		resH:         800,
-		uaPreset:     uaDefault,
-		themeMode:    "system",
-		scalePct:     "100",
-		syncDelay:    "100",
-		lang:         "zh",
-		syncUI:       map[string]*bool{},
+		resByMode: map[string][2]float64{
+			"desktop": {1280, 800},
+			"mobile":  {390, 844},
+		},
+		lastStatus: "idle",
+		uaPreset:   uaDefault,
+		themeMode:  "system",
+		scalePct:   "100",
+		syncDelay:  "100",
+		lang:       "zh",
+		syncUI:     map[string]*bool{},
 		configs: []*pageConfig{
 			{id: "c1", resW: 1280, resH: 800},
 			{id: "c2", resW: 1280, resH: 800},
@@ -548,6 +575,7 @@ func (a *app) launch(req startRequest) error {
 	a.seq++
 	a.taskID = fmt.Sprintf("task-%d", a.seq)
 	a.status = "starting"
+	a.startAt = time.Now()
 	a.message = ""
 	a.notice = ""
 	a.noticeKind = ""
@@ -886,21 +914,78 @@ func sanitizeFileName(s string) string {
 	}, strings.TrimSpace(s))
 }
 
-// runCountdown waits the 3s grace period, then creates the pages, unless the
-// user cancels first.
+// runCountdown waits the grace period, then creates the pages, unless the
+// user cancels first. It repaints on a short tick so the panel's countdown
+// digit and ring advance even without other events.
 func (a *app) runCountdown(taskID string, cancel chan struct{}, req startRequest, lang string) {
-	select {
-	case <-cancel:
-		a.mu.Lock()
-		if a.taskID == taskID && a.status == "starting" {
-			a.status = "idle"
+	deadline := time.NewTimer(countdownGrace)
+	defer deadline.Stop()
+	tick := time.NewTicker(100 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-cancel:
+			a.mu.Lock()
+			if a.taskID == taskID && a.status == "starting" {
+				a.status = "idle"
+			}
+			a.mu.Unlock()
+			a.invalidate()
+			return
+		case <-deadline.C:
+			a.createPages(taskID, req, lang)
+			return
+		case <-tick.C:
+			a.invalidate()
 		}
-		a.mu.Unlock()
-		a.invalidate()
-		return
-	case <-time.After(3 * time.Second):
 	}
-	a.createPages(taskID, req, lang)
+}
+
+// countdownProgress derives the visible countdown from the mu-guarded start
+// timestamp: the remaining whole seconds (3→2→1) and the elapsed percent for
+// the progress ring. Both are zero when not starting.
+func (a *app) countdownProgress() (sec int, pct float32) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.status != "starting" || a.startAt.IsZero() {
+		return 0, 0
+	}
+	elapsed := time.Since(a.startAt)
+	rem := countdownGrace - elapsed
+	sec = min(max(int(rem.Seconds()+0.999), 1), 3)
+	pct = min(max(float32(elapsed.Seconds()/countdownGrace.Seconds()*100), 0), 100)
+	return sec, pct
+}
+
+// reseedViewMode applies a view-mode change on the main thread: it remembers
+// the leaving mode's last-used resolution (the primary row's when set, else
+// the preset), restores the entering mode's remembered resolution, and copies
+// it into every page row as before.
+func (a *app) reseedViewMode() {
+	if a.viewMode == a.lastViewMode {
+		return
+	}
+	if a.resByMode == nil {
+		a.resByMode = map[string][2]float64{}
+	}
+	w, h := a.resW, a.resH
+	if len(a.configs) > 0 && a.configs[0].resW > 0 && a.configs[0].resH > 0 {
+		w, h = a.configs[0].resW, a.configs[0].resH
+	}
+	a.resByMode[a.lastViewMode] = [2]float64{w, h}
+	r, ok := a.resByMode[a.viewMode]
+	if !ok {
+		if a.viewMode == "mobile" {
+			r = [2]float64{390, 844}
+		} else {
+			r = [2]float64{1280, 800}
+		}
+	}
+	a.resW, a.resH = r[0], r[1]
+	for _, cfg := range a.configs {
+		cfg.resW, cfg.resH = a.resW, a.resH
+	}
+	a.lastViewMode = a.viewMode
 }
 
 // createPages builds one web view per resolved page with capture preload,

@@ -51,21 +51,23 @@ func (a *app) view(c *ui.Context) {
 	c.SetZoom(float32(a.uiZoom()))
 	tk := theme.TokensOf(c)
 
-	// Picking a view mode seeds a matching resolution into every page; the user
-	// can still edit each page's resolution afterwards.
-	if a.viewMode != a.lastViewMode {
-		if a.viewMode == "mobile" {
-			a.resW, a.resH = 390, 844
-		} else {
-			a.resW, a.resH = 1280, 800
-		}
-		for _, cfg := range a.configs {
-			cfg.resW, cfg.resH = a.resW, a.resH
-		}
-		a.lastViewMode = a.viewMode
-	}
+	// Picking a view mode restores that mode's remembered resolution and seeds
+	// it into every page; the user can still edit each page's resolution after.
+	a.reseedViewMode()
 
 	st := a.snapshot()
+	// A status change resets the setup form's scroll to the top so the user is
+	// never left scrolled mid-form after idle→starting→running→idle.
+	if st.Status != a.lastStatus {
+		a.configScroll.X, a.configScroll.Y = 0, 0
+		// A launch (panel or MCP) supersedes any pending form validation and any
+		// open overwrite confirm, so neither can scroll or save mid-countdown.
+		a.fieldErr = nil
+		a.scrollErrField = ""
+		a.lastScrolledErr = ""
+		a.profileOverwriteOpen = false
+		a.lastStatus = st.Status
+	}
 	a.applySyncToggles()
 
 	ui.Column(c).Fill().Background(tk.BgLayout).Children(func() {
@@ -110,6 +112,7 @@ func (a *app) view(c *ui.Context) {
 	})
 
 	a.renderReplayConfirm(c, tk)
+	a.renderProfileOverwrite(c, tk)
 	a.renderRecLightbox(c, tk)
 
 	// Publish the language the Select may have just changed so off-thread
@@ -174,13 +177,25 @@ func (a *app) syncUIFor(ps pageState) *bool {
 
 func (a *app) renderPanel(c *ui.Context, tk *theme.Tokens, st appState) {
 	ui.Column(c).Width(panelWidth).Background(tk.BgContainer).Children(func() {
-		layout.ScrollArea(c, layout.ScrollAreaProps{Direction: layout.Vertical, Fade: true}, func() {
+		layout.ScrollArea(c, layout.ScrollAreaProps{Direction: layout.Vertical, Fade: true, State: &a.configScroll}, func() {
 			ui.Column(c).Padding(16, 20, 20, 20).Gap(18).AlignItems(ui.Stretch).AlignSelf(ui.Stretch).Children(func() {
 				if st.Status == "running" || st.Status == "stopping" {
 					a.runtimeBody(c, tk, st)
-				} else {
-					a.setupBody(c, tk, st)
+					return
 				}
+				if st.Status == "starting" {
+					a.startingBody(c, tk)
+				}
+				// While the countdown runs the whole form is disabled (and
+				// dimmed) so edits cannot race the launch; the countdown above
+				// and the footer's Cancel stay live.
+				form := ui.Column(c).Gap(18).AlignItems(ui.Stretch).AlignSelf(ui.Stretch)
+				if st.Status == "starting" {
+					form.Disabled(true)
+				}
+				form.Children(func() {
+					a.setupBody(c, tk, st)
+				})
 			})
 		}).Grow(1)
 
@@ -312,6 +327,25 @@ func (a *app) renderReplayConfirm(c *ui.Context, tk *theme.Tokens) {
 	})
 }
 
+// renderProfileOverwrite confirms before a save replaces an existing profile
+// of the same name; a brand-new name never opens it (profiles.go).
+func (a *app) renderProfileOverwrite(c *ui.Context, tk *theme.Tokens) {
+	if !a.profileOverwriteOpen {
+		return
+	}
+	if feedback.Modal(c, &a.profileOverwriteOpen, feedback.ModalProps{
+		Title:      a.tr("ui.profiles.overwrite.title"),
+		OkText:     a.tr("ui.profiles.overwrite.ok"),
+		CancelText: a.tr("ui.cancel"),
+		Width:      420,
+	}, func() {
+		ui.Text(c, a.tr("ui.profiles.overwrite.body", a.profileOverwriteName)).FontSize(13).TextColor(tk.TextSecondary).Wrap()
+	}) {
+		a.profileOverwriteOpen = false
+		a.saveProfile(a.profileOverwriteName)
+	}
+}
+
 func (a *app) panelAction(c *ui.Context, tk *theme.Tokens, st appState) {
 	switch st.Status {
 	case "running":
@@ -376,7 +410,7 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 				field.Input(c, &a.profileName, field.InputProps{Placeholder: a.tr("ui.profiles.placeholder"), Variant: field.InputFilled})
 			})
 			if action.Button(c, a.tr("ui.profiles.save"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).Clicked() {
-				a.saveProfile(a.profileName)
+				a.requestSaveProfile(a.profileName)
 			}
 		})
 		ui.Text(c, a.tr("ui.profiles.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
@@ -391,57 +425,8 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 		Variant: field.InputOutlined,
 	}).AlignSelf(ui.Stretch)
 
-	ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
-		a.fieldLabel(c, tk, a.tr("ui.ua"))
-		opts := make([]field.SelectOption, 0, len(uaPresets))
-		for _, p := range uaPresets {
-			opts = append(opts, field.SelectOption{Value: p.key, Label: a.tr("ui.ua." + p.key), Icon: uaIcon(p.key)})
-		}
-		field.Select(c, &a.uaPreset, field.SelectProps{
-			Options: opts,
-			Variant: field.InputOutlined,
-		}).AlignSelf(ui.Stretch)
-		if a.uaPreset == uaCustom {
-			field.Input(c, &a.uaCustom, field.InputProps{Placeholder: a.tr("ui.ua.custom.placeholder"), Variant: field.InputFilled})
-		}
-		ui.Text(c, a.tr("ui.ua.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
-	})
-
-	ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
-		a.fieldLabel(c, tk, a.tr("ui.template"))
-		field.Input(c, &a.template, field.InputProps{Placeholder: a.tr("ui.template.placeholder"), Variant: field.InputFilled})
-		ui.Text(c, a.tr("ui.template.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
-	})
-
-	ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-		ui.Column(c).Grow(1).Gap(2).Children(func() {
-			ui.Text(c, a.tr("ui.shareStorage")).FontSize(14).TextColor(tk.Text)
-			ui.Text(c, a.tr("ui.shareStorage.hint")).FontSize(12).TextColor(tk.TextTertiary)
-		})
-		choice.Switch(c, &a.shareStorage, choice.SwitchProps{})
-	})
-
-	ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
-		ui.Column(c).Grow(1).Gap(2).Children(func() {
-			ui.Text(c, a.tr("ui.record")).FontSize(14).TextColor(tk.Text)
-			ui.Text(c, a.tr("ui.record.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
-		})
-		choice.Switch(c, &a.record, choice.SwitchProps{})
-	})
-
-	ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
-		a.fieldLabel(c, tk, a.tr("ui.syncDelay"))
-		opts := make([]field.SelectOption, 0, len(syncDelayOptions))
-		for _, v := range syncDelayOptions {
-			opts = append(opts, field.SelectOption{Value: v, Label: a.tr("ui.syncDelay." + v)})
-		}
-		field.Select(c, &a.syncDelay, field.SelectProps{
-			Options: opts,
-			Variant: field.InputOutlined,
-		}).AlignSelf(ui.Stretch)
-		ui.Text(c, a.tr("ui.syncDelay.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
-	})
-
+	// Primary workflow first: pages + URL template + start stay reachable
+	// without scrolling; the advanced knobs live in a collapsed group below.
 	ui.Column(c).Gap(2).Children(func() {
 		a.fieldLabel(c, tk, a.tr("ui.pages", len(a.configs)))
 		hint := a.tr("ui.pages.hint")
@@ -449,6 +434,12 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 			hint = a.tr("ui.pages.hintTemplate")
 		}
 		ui.Text(c, hint).FontSize(12).TextColor(tk.TextTertiary).Wrap()
+	})
+
+	ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
+		a.fieldLabel(c, tk, a.tr("ui.template"))
+		field.Input(c, &a.template, field.InputProps{Placeholder: a.tr("ui.template.placeholder"), Variant: field.InputFilled})
+		ui.Text(c, a.tr("ui.template.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
 	})
 	// Re-validate while any field is flagged so a corrected value clears its own
 	// outline (and the scroll target advances to the next failing field).
@@ -486,6 +477,103 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 	if a.bulkOpen && len(a.configs) < 10 && !a.templateMode() {
 		a.bulkBody(c, tk)
 	}
+
+	a.advancedBody(c, tk)
+}
+
+// advancedBody groups the secondary knobs — User-Agent, sync pace, shared
+// storage and operation recording — behind a chevron header, collapsed by
+// default so the primary pages+start workflow stays above the fold.
+func (a *app) advancedBody(c *ui.Context, tk *theme.Tokens) {
+	ui.Column(c).Gap(10).AlignItems(ui.Stretch).Children(func() {
+		chev := lucide.ChevronRight()
+		if a.advancedOpen {
+			chev = lucide.ChevronDown()
+		}
+		hdr := ui.ButtonBase(c).Label(a.tr("ui.advanced")).Tooltip(a.tr("ui.advanced")).
+			AlignSelf(ui.Stretch).Height(32).PaddingX(8).Gap(6).AlignItems(ui.Center).
+			Radius(tk.BorderRadiusSM).Cursor(ui.CursorPointer).TextColor(tk.TextSecondary)
+		if hdr.Hovered() {
+			hdr.TextColor(tk.Primary).Background(tk.FillTertiary)
+		}
+		hdr.Children(func() {
+			ui.Icon(c, chev).FontSize(15)
+			ui.Text(c, a.tr("ui.advanced")).FontSize(13).FontWeight(500)
+		})
+		if hdr.Clicked() {
+			a.advancedOpen = !a.advancedOpen
+		}
+		if !a.advancedOpen {
+			return
+		}
+		ui.Column(c).Gap(14).Padding(12).Radius(tk.BorderRadiusLG).AlignItems(ui.Stretch).
+			Background(tk.BgContainerSecondary).Border(1, tk.BorderSecondary).Children(func() {
+			ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
+				a.fieldLabel(c, tk, a.tr("ui.ua"))
+				opts := make([]field.SelectOption, 0, len(uaPresets))
+				for _, p := range uaPresets {
+					opts = append(opts, field.SelectOption{Value: p.key, Label: a.tr("ui.ua." + p.key), Icon: uaIcon(p.key)})
+				}
+				field.Select(c, &a.uaPreset, field.SelectProps{
+					Options: opts,
+					Variant: field.InputOutlined,
+				}).AlignSelf(ui.Stretch)
+				if a.uaPreset == uaCustom {
+					field.Input(c, &a.uaCustom, field.InputProps{Placeholder: a.tr("ui.ua.custom.placeholder"), Variant: field.InputFilled})
+				}
+				ui.Text(c, a.tr("ui.ua.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
+			})
+
+			ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
+				a.fieldLabel(c, tk, a.tr("ui.syncDelay"))
+				opts := make([]field.SelectOption, 0, len(syncDelayOptions))
+				for _, v := range syncDelayOptions {
+					opts = append(opts, field.SelectOption{Value: v, Label: a.tr("ui.syncDelay." + v)})
+				}
+				field.Select(c, &a.syncDelay, field.SelectProps{
+					Options: opts,
+					Variant: field.InputOutlined,
+				}).AlignSelf(ui.Stretch)
+				ui.Text(c, a.tr("ui.syncDelay.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
+			})
+
+			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+				ui.Column(c).Grow(1).Gap(2).Children(func() {
+					ui.Text(c, a.tr("ui.shareStorage")).FontSize(14).TextColor(tk.Text)
+					ui.Text(c, a.tr("ui.shareStorage.hint")).FontSize(12).TextColor(tk.TextTertiary)
+				})
+				choice.Switch(c, &a.shareStorage, choice.SwitchProps{})
+			})
+
+			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+				ui.Column(c).Grow(1).Gap(2).Children(func() {
+					ui.Text(c, a.tr("ui.record")).FontSize(14).TextColor(tk.Text)
+					ui.Text(c, a.tr("ui.record.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
+				})
+				choice.Switch(c, &a.record, choice.SwitchProps{})
+			})
+		})
+	})
+}
+
+// startingBody shows the launch countdown while status is "starting": a big
+// remaining-seconds digit inside a progress ring fed by the grace period, so
+// the wait reads as deliberate feedback instead of a frozen form.
+func (a *app) startingBody(c *ui.Context, tk *theme.Tokens) {
+	sec, pct := a.countdownProgress()
+	ui.Row(c).Gap(12).AlignItems(ui.Center).Padding(12).Radius(tk.BorderRadiusLG).
+		Background(tk.BgContainerSecondary).Border(1, tk.BorderSecondary).Children(func() {
+		ui.Box(c).Size(56, 56).Shrink(0).Children(func() {
+			feedback.Spin(c, feedback.SpinProps{Percent: &pct, CustomSize: 56}, nil)
+			ui.Column(c).Absolute().Fill().Center().Children(func() {
+				ui.Text(c, strconv.Itoa(sec)).FontSize(22).Bold().TextColor(tk.Primary)
+			})
+		})
+		ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
+			ui.Text(c, a.tr("ui.starting")).FontSize(14).Bold().TextColor(tk.TextHeading)
+			ui.Text(c, a.tr("ui.starting.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
+		})
+	})
 }
 
 // bulkBody is the expanded URL-list area: paste one URL per line, watch the
@@ -831,7 +919,9 @@ func (a *app) renderStage(c *ui.Context, tk *theme.Tokens, st appState) {
 			}
 		})
 
-		if mobile && len(all) > 0 {
+		if st.Status == "starting" {
+			a.renderStartingStage(c, tk)
+		} else if mobile && len(all) > 0 {
 			a.renderMobileStage(c, tk, all, zoom, barH, st)
 		} else {
 			a.renderDesktopStage(c, tk, st, all, zoom, barH, activeView, activeRec)
@@ -839,6 +929,39 @@ func (a *app) renderStage(c *ui.Context, tk *theme.Tokens, st appState) {
 		if a.recView.open {
 			a.renderRecordingsOverlay(c, tk, barH)
 		}
+	})
+}
+
+// renderStartingStage fills the stage with a dimmed skeleton at the configured
+// resolution while the countdown runs, so the wait shows a preparing page
+// instead of an empty black region.
+func (a *app) renderStartingStage(c *ui.Context, tk *theme.Tokens) {
+	_, pct := a.countdownProgress()
+	winW, winH := c.Size()
+	barH := c.TitleBar().Height
+	regionW := max(winW-panelWidth-2*stagePadding, 1)
+	regionH := max(winH-barH-toolbarHeight-2*stagePadding, 1)
+	tw, th := float32(a.resW), float32(a.resH)
+	if tw < 1 {
+		tw = 1280
+	}
+	if th < 1 {
+		th = 800
+	}
+	fit := min(regionW/tw, regionH/th, 1)
+	if fit <= 0 {
+		fit = 0.05
+	}
+	ui.Column(c).Grow(1).MinHeight(0).Center().Padding(stagePadding).Children(func() {
+		feedback.Spin(c, feedback.SpinProps{Percent: &pct, Size: theme.Large, Tip: a.tr("ui.starting")}, func() {
+			ui.Column(c).Width(tw*fit).Height(th*fit).Gap(12).Padding(24).Radius(8).
+				Background(tk.BgContainerSecondary).Border(1, tk.BorderSecondary).Children(func() {
+				ui.Box(c).Height(20).Width(tw * fit * 0.4).Radius(4).Background(tk.FillSecondary)
+				ui.Box(c).Height(12).AlignSelf(ui.Stretch).Radius(4).Background(tk.FillTertiary)
+				ui.Box(c).Height(12).AlignSelf(ui.Stretch).Radius(4).Background(tk.FillTertiary)
+				ui.Box(c).Height(12).Width(tw * fit * 0.6).Radius(4).Background(tk.FillTertiary)
+			})
+		})
 	})
 }
 
