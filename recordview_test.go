@@ -269,6 +269,9 @@ func TestExportReport(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(stepDir, "Primary.png"), testPNG(t, 390, 844), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(stepDir, "截图 1#x.png"), testPNG(t, 390, 844), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	path, err := exportReport(dir, "en")
 	if err != nil {
@@ -284,13 +287,21 @@ func TestExportReport(t *testing.T) {
 	html := string(data)
 	for _, want := range []string{
 		`<html lang="en">`,
-		"data:image/png;base64,",
+		`src="steps/0001/Primary.png"`,
+		`src="steps/0001/%E6%88%AA%E5%9B%BE%201%23x.png"`,
+		`loading="lazy"`,
 		"Type “a&lt;b&gt;&amp;c” into #note", // value HTML-escaped
 		"Primary",
 	} {
 		if !strings.Contains(html, want) {
 			t.Errorf("report missing %q", want)
 		}
+	}
+	if strings.Contains(html, "data:image/png;base64,") {
+		t.Error("report embeds base64 instead of referencing the sibling PNG")
+	}
+	if len(html) > 64<<10 {
+		t.Errorf("report html = %d bytes, want a small lazy-loading document", len(html))
 	}
 	if strings.Contains(html, "a<b>&c") {
 		t.Error("report contains unescaped value text")

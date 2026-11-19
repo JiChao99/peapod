@@ -76,6 +76,7 @@ func (a *app) startMCP() error {
 		ln.Close()
 		return err
 	}
+	a.mcp = m
 	go m.http.Serve(ln)
 	return nil
 }

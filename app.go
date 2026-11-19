@@ -191,6 +191,12 @@ type app struct {
 	// mid-form. Main-thread only.
 	lastStatus   string
 	configScroll ui.ScrollState
+	// stageStopped distinguishes "never run" from "run and stopped" for the
+	// stage's empty-state copy. Main-thread only.
+	stageStopped bool
+	// mcp is the live loopback server, nil when disabled or failed to start.
+	// Assigned once in WhenReady before the first frame; read by the title bar.
+	mcp          *mcpServer
 	uaPreset     string // built-in UA option key (ua.go); UI-owned like viewMode
 	uaCustom     string // full UA string when uaPreset == uaCustom
 	shareStorage bool

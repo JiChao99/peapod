@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/egoist/mygo"
+	"github.com/egoist/mygo/transfer"
 	"github.com/egoist/mygo/ui"
 	"github.com/lobehub/lobe-mygo/pkg/action"
 	"github.com/lobehub/lobe-mygo/pkg/choice"
@@ -66,6 +67,14 @@ func (a *app) view(c *ui.Context) {
 		a.scrollErrField = ""
 		a.lastScrolledErr = ""
 		a.profileOverwriteOpen = false
+		switch st.Status {
+		case "starting", "running":
+			a.stageStopped = false
+		case "idle", "cleanup-error":
+			if a.lastStatus == "running" || a.lastStatus == "stopping" {
+				a.stageStopped = true
+			}
+		}
 		a.lastStatus = st.Status
 	}
 	a.applySyncToggles()
@@ -81,6 +90,7 @@ func (a *app) view(c *ui.Context) {
 			}
 			ui.Text(c, "Peapod").FontSize(13).Bold().TextColor(tk.TextHeading)
 			ui.Row(c).Grow(1)
+			a.mcpIndicator(c, tk)
 			field.Select(c, &a.themeMode, field.SelectProps{
 				Options: []field.SelectOption{
 					{Value: "system", Label: a.tr("ui.theme.system"), Icon: lucide.SunMoon()},
@@ -114,6 +124,16 @@ func (a *app) view(c *ui.Context) {
 	a.renderReplayConfirm(c, tk)
 	a.renderProfileOverwrite(c, tk)
 	a.renderRecLightbox(c, tk)
+
+	// The recordings overlay's Esc lives on its panel subtree; when focus sits
+	// outside it (toolbar, or a guest page before the overlay grabbed focus)
+	// this window-level fallback still closes it. Dialogs built with Modal()
+	// suspend window shortcuts while they show, so an open confirm wins.
+	c.OnWindowShortcut(0, ui.KeyEscape, func() {
+		if a.recView.open && a.recView.lightbox == nil {
+			a.toggleRecordings()
+		}
+	})
 
 	// Publish the language the Select may have just changed so off-thread
 	// readers (MCP, cleanup, screenshots) see it without racing the binding.
@@ -828,14 +848,8 @@ func (a *app) runtimeBody(c *ui.Context, tk *theme.Tokens, st appState) {
 
 func (a *app) pageCard(c *ui.Context, tk *theme.Tokens, ps pageState, activeID string) {
 	c = c.Key(ps.ID)
-	card := layout.Block(c, layout.BlockProps{Variant: layout.BlockOutlined, Clickable: true})
+	card := clickableCard(c, tk, ps.Name, ps.ID == activeID, func() { a.setActive(ps.ID) })
 	card.AlignSelf(ui.Stretch).Padding(14).Gap(10)
-	if ps.ID == activeID {
-		card.Border(1, tk.Primary).Background(tk.PrimaryFillTertiary)
-	}
-	if card.Clicked() {
-		a.setActive(ps.ID)
-	}
 	card.Children(func() {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, ps.Name).FontSize(15).Bold().TextColor(tk.TextHeading).Grow(1).MinWidth(0).SingleLine()
@@ -969,9 +983,13 @@ func (a *app) renderStartingStage(c *ui.Context, tk *theme.Tokens) {
 func (a *app) renderDesktopStage(c *ui.Context, tk *theme.Tokens, st appState, all []*pageRecord, zoom float64, barH float32, activeView *mygo.WebView, activeRec *pageRecord) {
 	ui.Column(c).Grow(1).MinHeight(0).Center().Padding(stagePadding).Children(func() {
 		if activeView == nil {
+			msg := a.tr("ui.stage.empty")
+			if a.stageStopped {
+				msg = a.tr("ui.stage.stopped")
+			}
 			ui.Column(c).Center().Gap(10).Children(func() {
 				ui.Icon(c, lucide.Globe()).FontSize(44).TextColor(tk.TextQuaternary)
-				ui.Text(c, a.tr("ui.stage.empty")).TextColor(tk.TextTertiary)
+				ui.Text(c, msg).TextColor(tk.TextTertiary)
 			})
 			return
 		}
@@ -1045,6 +1063,8 @@ func (a *app) renderRecordingsOverlay(c *ui.Context, tk *theme.Tokens, barH floa
 		panel := ui.Column(c).Absolute().Left(panelWidth).Top(barH + toolbarHeight).
 			Width(winW - panelWidth).Height(winH - barH - toolbarHeight).
 			Background(tk.BgLayout)
+		// Reclaim native focus on open so Esc works even if a guest page held it.
+		panel.TabStop(false).AutoFocus()
 		if panel.OverlayShortcut(0, ui.KeyEscape) {
 			a.toggleRecordings()
 			return
@@ -1166,7 +1186,7 @@ func (a *app) applyPageZoom(view *mygo.WebView, rec *pageRecord, fit float32, zo
 
 func (a *app) iconButton(c *ui.Context, tk *theme.Tokens, svg *ui.SVG, label string, onClick func(), disabled ...bool) {
 	off := len(disabled) > 0 && disabled[0]
-	b := ui.ButtonBase(c).Label(label).Tooltip(label).Size(32, 32).Center().
+	b := ui.ButtonBase(c).Label(label).Tooltip(label).Size(40, 40).Center().
 		Radius(tk.BorderRadiusSM).Cursor(ui.CursorPointer).TextColor(tk.TextSecondary).Disabled(off)
 	if off {
 		b.TextColor(tk.TextQuaternary).Cursor(ui.CursorDefault)
@@ -1177,6 +1197,45 @@ func (a *app) iconButton(c *ui.Context, tk *theme.Tokens, svg *ui.SVG, label str
 	if !off && b.Clicked() {
 		onClick()
 	}
+}
+
+// mcpIndicator shows whether the loopback MCP server is live and offers its
+// current address for copying. It reads the in-process server, never the
+// discovery file, so a stale mcp.json from an earlier launch can't mislead.
+func (a *app) mcpIndicator(c *ui.Context, tk *theme.Tokens) {
+	on := a.mcp != nil
+	label := a.tr("ui.mcp.off")
+	color := tk.TextQuaternary
+	if on {
+		label = a.tr("ui.mcp.on", a.mcp.url)
+		color = tk.Success
+	}
+	ui.Box(c).Size(8, 8).Radius(4).Background(color).Label(label).Tooltip(label)
+	a.iconButton(c, tk, lucide.Copy(), a.tr("ui.mcp.copy"), func() {
+		if a.mcp == nil {
+			return
+		}
+		if err := mygo.Clipboard.Write(transfer.TextData(a.mcp.url)); err != nil {
+			a.setNoticeErr(err.Error())
+			return
+		}
+		a.setNoticeOK(a.tr("notice.mcpCopied"))
+	}, !on)
+}
+
+// clickableCard is a selection card that still exposes its inner controls to
+// assistive technology. A plain button is a leaf in the UIA tree and would hide
+// the Switch / reload / rename buttons inside it, so the card is a labelled,
+// focusable group that also takes presses (pointer, Enter/Space and UIA Press).
+func clickableCard(c *ui.Context, tk *theme.Tokens, label string, active bool, onClick func()) ui.Element {
+	card := layout.Block(c, layout.BlockProps{Variant: layout.BlockOutlined})
+	card.Role(ui.RoleGroup).Label(label).Focusable().Cursor(ui.CursorPointer).OnClick(onClick)
+	if active {
+		card.Border(1, tk.Primary).Background(tk.PrimaryFillTertiary)
+	} else if card.Hovered() {
+		card.Border(1, tk.Border)
+	}
+	return card
 }
 
 func (a *app) fieldLabel(c *ui.Context, tk *theme.Tokens, s string) {

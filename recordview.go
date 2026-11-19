@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"html/template"
@@ -41,12 +40,11 @@ const (
 	recImgCacheMax = 512  // decoded thumbnails kept before the cache is cleared
 	recMaxSteps    = 100  // steps rendered in the timeline; export includes all
 
-	recShotMaxBytes   = 32 << 20 // one screenshot read cap, so corrupt files stay bounded
-	recShotMaxPixels  = 32 << 20 // width*height cap before decode: a crafted IHDR must not OOM
-	recReportMaxBytes = 64 << 20 // raw PNG bytes embedded per report; later shots show missing
-	recMetaMaxBytes   = 1 << 20  // session.json / summary.json read cap
-	recNameMaxBytes   = 4096     // name.txt read cap: a custom session name is short
-	recNameMaxRunes   = 80       // custom name length bound, so list rows stay tidy
+	recShotMaxBytes  = 32 << 20 // one screenshot read cap, so corrupt files stay bounded
+	recShotMaxPixels = 32 << 20 // width*height cap before decode: a crafted IHDR must not OOM
+	recMetaMaxBytes  = 1 << 20  // session.json / summary.json read cap
+	recNameMaxBytes  = 4096     // name.txt read cap: a custom session name is short
+	recNameMaxRunes  = 80       // custom name length bound, so list rows stay tidy
 )
 
 // recBrowser is the viewer's UI-owned state, touched only on the main thread
@@ -867,7 +865,7 @@ func fileURL(path string) string {
 
 // recToggleButton is the stage toolbar switch into the recordings browser.
 func (a *app) recToggleButton(c *ui.Context, tk *theme.Tokens) {
-	b := ui.ButtonBase(c).Label(a.tr("ui.rec.toggle")).Tooltip(a.tr("ui.rec.toggle")).Size(32, 32).Center().
+	b := ui.ButtonBase(c).Label(a.tr("ui.rec.toggle")).Tooltip(a.tr("ui.rec.toggle")).Size(40, 40).Center().
 		Radius(tk.BorderRadiusSM).Cursor(ui.CursorPointer)
 	if a.recView.open {
 		b.TextColor(tk.Primary).Background(tk.PrimaryFillTertiary)
@@ -937,22 +935,23 @@ func (a *app) renderRecList(c *ui.Context, tk *theme.Tokens) {
 // metadata is read here — never scripts or screenshots.
 func (a *app) renderRecCard(c *ui.Context, tk *theme.Tokens, m recSessionMeta) {
 	ck := c.Key(m.dir)
-	card := layout.Block(ck, layout.BlockProps{Variant: layout.BlockOutlined, Clickable: true})
-	card.AlignSelf(ui.Stretch).Padding(12).Gap(6)
-	if m.dir == a.recView.sel {
-		card.Border(1, tk.Primary).Background(tk.PrimaryFillTertiary)
-	}
-	if card.Clicked() {
+	card := clickableCard(ck, tk, m.title(), m.dir == a.recView.sel, func() {
 		a.openRecSession(m.dir)
 		a.invalidate()
-	}
+	})
+	card.AlignSelf(ui.Stretch).Padding(12).Gap(6)
 	card.Children(func() {
 		if a.recView.renameDir == m.dir {
 			ui.Row(ck).Gap(4).AlignItems(ui.Center).Children(func() {
 				field.Input(ck, &a.recView.renameText, field.InputProps{
 					Placeholder: a.tr("rec.rename.placeholder"),
 					Size:        theme.Small,
-				}).Grow(1).MinWidth(0)
+				}).Grow(1).MinWidth(0).OnShortcut(0, ui.KeyEscape, func() {
+					// Esc cancels the rename, not the whole overlay: the input's
+					// focus subtree claims the key before the panel's handler.
+					a.recView.renameDir = ""
+					a.invalidate()
+				})
 				a.recSmallIcon(ck, tk, lucide.Check(), a.tr("rec.rename.save"), func() {
 					if err := renameRecSession(m.dir, a.recView.renameText); err != nil {
 						a.setNoticeErr(err.Error())
@@ -1003,9 +1002,9 @@ func (a *app) renderRecCard(c *ui.Context, tk *theme.Tokens, m recSessionMeta) {
 	})
 }
 
-// recSmallIcon is a compact 24px icon button for the dense session cards.
+// recSmallIcon is a compact 32px icon button for the dense session cards.
 func (a *app) recSmallIcon(c *ui.Context, tk *theme.Tokens, svg *ui.SVG, label string, onClick func()) {
-	b := ui.ButtonBase(c).Label(label).Tooltip(label).Size(24, 24).Center().
+	b := ui.ButtonBase(c).Label(label).Tooltip(label).Size(32, 32).Center().
 		Radius(tk.BorderRadiusSM).Cursor(ui.CursorPointer).TextColor(tk.TextSecondary)
 	if b.Hovered() {
 		b.TextColor(tk.Primary).Background(tk.FillTertiary)
@@ -1256,7 +1255,7 @@ type reportStep struct {
 
 type reportShot struct {
 	Name string
-	Data template.URL
+	Src  template.URL
 }
 
 var reportTmpl = template.Must(template.New("report").Parse(`<!doctype html>
@@ -1289,14 +1288,15 @@ h1{font-size:22px;margin:0 0 4px}
 <div class="meta">{{.Meta}}<br>{{.Generated}}</div>
 {{range .Steps}}<div class="step">
 <div class="stephead"><div class="seq">{{.Seq}}</div><div><div class="desc">{{.Desc}}</div><div class="sub"><span class="tag">{{.Source}}</span>{{.Time}} · {{.URL}}</div></div></div>
-{{if .Shots}}<div class="shots">{{range .Shots}}<figure class="shot">{{if .Data}}<img src="{{.Data}}" alt="{{.Name}}">{{else}}<div class="none">{{$.ShotMissing}}</div>{{end}}<figcaption>{{.Name}}</figcaption></figure>{{end}}</div>{{else}}<div class="none">{{$.NoShots}}</div>{{end}}
+{{if .Shots}}<div class="shots">{{range .Shots}}<figure class="shot">{{if .Src}}<img src="{{.Src}}" alt="{{.Name}}" loading="lazy" decoding="async">{{else}}<div class="none">{{$.ShotMissing}}</div>{{end}}<figcaption>{{.Name}}</figcaption></figure>{{end}}</div>{{else}}<div class="none">{{$.NoShots}}</div>{{end}}
 </div>
 {{end}}</div></body></html>
 `))
 
-// exportReport writes a self-contained report.html into the session folder,
-// embedding every step screenshot as a base64 data URI so the report stands
-// alone. It returns the written path.
+// exportReport writes report.html into the session folder, referencing each
+// step screenshot by its relative path with lazy loading so the HTML stays
+// small and thumbnails decode only as they scroll into view. The report thus
+// travels with its session folder, not alone. It returns the written path.
 func exportReport(dir, lang string) (string, error) {
 	d, err := loadRecDetail(dir, 0)
 	if err != nil {
@@ -1310,7 +1310,6 @@ func exportReport(dir, lang string) (string, error) {
 		NoShots:     trLang(lang, "rec.noShots"),
 		ShotMissing: trLang(lang, "rec.shotMissing"),
 	}
-	var embedded int64
 	for _, st := range d.steps {
 		rs := reportStep{
 			Seq:    st.line.Seq,
@@ -1321,14 +1320,17 @@ func exportReport(dir, lang string) (string, error) {
 		}
 		for _, sh := range st.shots {
 			shot := reportShot{Name: sh.name}
-			if embedded < recReportMaxBytes {
-				raw, err := readBoundedFile(sh.path, recShotMaxBytes)
-				if err == nil {
-					_, err = png.DecodeConfig(bytes.NewReader(raw))
-				}
-				if err == nil {
-					embedded += int64(len(raw))
-					shot.Data = template.URL("data:image/png;base64," + base64.StdEncoding.EncodeToString(raw))
+			raw, err := readBoundedFile(sh.path, recShotMaxBytes)
+			if err == nil {
+				_, err = png.DecodeConfig(bytes.NewReader(raw))
+			}
+			if err == nil {
+				if rel, rerr := filepath.Rel(dir, sh.path); rerr == nil {
+					parts := strings.Split(filepath.ToSlash(rel), "/")
+					for i, p := range parts {
+						parts[i] = url.PathEscape(p)
+					}
+					shot.Src = template.URL(strings.Join(parts, "/"))
 				}
 			}
 			rs.Shots = append(rs.Shots, shot)
