@@ -390,6 +390,7 @@ func (a *app) resolveMCPRequest(in startIn) (startRequest, error) {
 		defW, defH = 390, 844
 	}
 	pages := make([]resolvedPage, 0, len(in.Pages))
+	plainURLs := make([]string, 0, len(in.Pages))
 	for i, p := range in.Pages {
 		var raw, base string
 		if tmpl == "" {
@@ -401,6 +402,7 @@ func (a *app) resolveMCPRequest(in startIn) (startRequest, error) {
 				return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", mcpName(p, i), err.Error()))
 			}
 			base = originOf(raw)
+			plainURLs = append(plainURLs, raw)
 		} else {
 			vars, bad := parseVars(p.Vars)
 			if bad != "" {
@@ -434,6 +436,12 @@ func (a *app) resolveMCPRequest(in startIn) (startRequest, error) {
 			name: mcpName(p, i), url: raw, base: base,
 			resW: clampRes(p.ResW, defW), resH: clampRes(p.ResH, defH),
 		})
+	}
+	if tmpl == "" {
+		bases := inferPlainBases(plainURLs)
+		for i := range pages {
+			pages[i].base = bases[i]
+		}
 	}
 	return startRequest{pages: pages, shareStorage: in.ShareStorage, viewMode: mode, userAgent: ua, diagnostics: in.Diagnostics, record: in.Record, syncDelay: syncDelayFromMs(in.SyncDelayMs)}, nil
 }

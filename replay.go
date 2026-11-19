@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -57,13 +58,28 @@ func loadScript(path string) ([]operation, error) {
 
 // replayRun is one in-flight peapod_replay. Fields are guarded by a.mu.
 type replayRun struct {
-	taskID  string
-	total   int
-	done    int
-	skipped int
-	active  bool
-	err     string
-	quit    chan struct{}
+	taskID   string
+	total    int
+	done     int
+	skipped  int
+	active   bool
+	err      string
+	quit     chan struct{}
+	quitOnce sync.Once
+}
+
+// cancel closes the quit channel at most once, so the panel's Cancel button and
+// task cleanup can both call it without racing a double close.
+func (rp *replayRun) cancel() { rp.quitOnce.Do(func() { close(rp.quit) }) }
+
+// cancelReplay stops an in-flight replay from the panel. It is a no-op when no
+// replay is active; the run goroutine reports the cancellation via replayState.
+func (a *app) cancelReplay() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if rp := a.replay; rp != nil && rp.active {
+		rp.cancel()
+	}
 }
 
 // replayState is the peapod_status view of a replay run: poll active until it

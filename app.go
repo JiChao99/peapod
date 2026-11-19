@@ -88,6 +88,8 @@ type appState struct {
 	Errors   []syncError `json:"errors"`
 	Message  string      `json:"message"`
 	Notice   string      `json:"notice"`
+	// NoticeKind tiers Notice for the panel: info | success | warning | error.
+	NoticeKind string `json:"noticeKind,omitempty"`
 
 	// Recording/replay evidence surface (docs/mcp.md). Recording is true while
 	// a recorder is attached; Replay appears once a peapod_replay has started
@@ -110,16 +112,19 @@ type app struct {
 	mu  sync.Mutex
 	win *mygo.Window
 
-	status    string
-	taskID    string
-	message   string
-	notice    string
-	pages     map[string]*pageRecord
-	order     []string
-	activeID  string
-	primaryID string
-	cancel    chan struct{}
-	seq       int
+	status  string
+	taskID  string
+	message string
+	notice  string
+	// noticeKind tiers the notice for the panel: info | success | warning | error.
+	// Guarded by mu like notice; setNotice* write both together.
+	noticeKind string
+	pages      map[string]*pageRecord
+	order      []string
+	activeID   string
+	primaryID  string
+	cancel     chan struct{}
+	seq        int
 
 	// rec is the running task's operation recorder (record.go), nil when the
 	// task does not record. replay is the latest peapod_replay run (replay.go).
@@ -168,7 +173,14 @@ type app struct {
 	// range loop until after it, so the loop never reads a shifted slice.
 	pendingDup    string
 	pendingRemove string
-	lang          string // zh | en; bound to the panel Select, touched only on the main thread
+	// confirmStop gates the irreversible stop behind a confirmation modal;
+	// replayPendingDir/replayEntryURL/replayConfirmOpen hold a replay awaiting the
+	// entry-URL precheck choice. All UI-owned, touched only on the main thread.
+	confirmStop       bool
+	replayPendingDir  string
+	replayEntryURL    string
+	replayConfirmOpen bool
+	lang              string // zh | en; bound to the panel Select, touched only on the main thread
 
 	// langVal publishes lang for off-thread readers (MCP handlers, cleanup and
 	// screenshot goroutines). The panel stores it after each frame; readers load
@@ -390,6 +402,7 @@ func (a *app) buildRequest() (startRequest, error) {
 		}
 	}
 	pages := make([]resolvedPage, 0, len(a.configs))
+	plainURLs := make([]string, 0, len(a.configs))
 	for i, cfg := range a.configs {
 		var raw, base string
 		if tmpl == "" {
@@ -401,6 +414,7 @@ func (a *app) buildRequest() (startRequest, error) {
 				return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
 			}
 			base = originOf(raw)
+			plainURLs = append(plainURLs, raw)
 		} else {
 			vars, bad := parseVars(cfg.vars)
 			if bad != "" {
@@ -435,6 +449,12 @@ func (a *app) buildRequest() (startRequest, error) {
 			resW: clampRes(cfg.resW, a.resW), resH: clampRes(cfg.resH, a.resH),
 		})
 	}
+	if tmpl == "" {
+		bases := inferPlainBases(plainURLs)
+		for i := range pages {
+			pages[i].base = bases[i]
+		}
+	}
 	return startRequest{pages: pages, shareStorage: a.shareStorage, viewMode: a.viewMode,
 		userAgent: resolveUA(a.uaPreset, a.uaCustom, a.viewMode), record: a.record,
 		syncDelay: formSyncDelay(a.syncDelay)}, nil
@@ -463,11 +483,11 @@ func clampRes(v, fallback float64) float64 {
 func (a *app) startTask() {
 	req, err := a.buildRequest()
 	if err != nil {
-		a.setNotice(err.Error())
+		a.setNoticeErr(err.Error())
 		return
 	}
 	if err := a.launch(req); err != nil {
-		a.setNotice(err.Error())
+		a.setNoticeErr(err.Error())
 	}
 }
 
@@ -488,6 +508,7 @@ func (a *app) launch(req startRequest) error {
 	a.status = "starting"
 	a.message = ""
 	a.notice = ""
+	a.noticeKind = ""
 	a.syncUI = map[string]*bool{}
 	a.cancel = make(chan struct{})
 	cancel := a.cancel
@@ -592,7 +613,7 @@ func (a *app) screenshotAll() {
 	a.mu.Lock()
 	if a.status != "running" {
 		a.mu.Unlock()
-		a.setNotice(a.tr("err.notRunning"))
+		a.setNoticeErr(a.tr("err.notRunning"))
 		return
 	}
 	type shot struct {
@@ -609,7 +630,7 @@ func (a *app) screenshotAll() {
 	taskID := a.taskID
 	a.mu.Unlock()
 	if len(shots) == 0 {
-		a.setNotice(a.tr("err.noPages"))
+		a.setNoticeErr(a.tr("err.noPages"))
 		return
 	}
 	if base == "" {
@@ -619,7 +640,7 @@ func (a *app) screenshotAll() {
 	go func() {
 		dir, err := screenshotDir(base)
 		if err != nil {
-			a.setNotice(trLang(lang, "err.shotDir", err.Error()))
+			a.setNoticeErr(trLang(lang, "err.shotDir", err.Error()))
 			return
 		}
 		used := map[string]bool{}
@@ -654,10 +675,10 @@ func (a *app) screenshotAll() {
 			saved++
 		}
 		if failed > 0 {
-			a.setNotice(trLang(lang, "notice.shotPartial", saved, failed, dir))
+			a.setNoticeWarn(trLang(lang, "notice.shotPartial", saved, failed, dir))
 			return
 		}
-		a.setNotice(trLang(lang, "notice.shotDone", saved, dir))
+		a.setNoticeOK(trLang(lang, "notice.shotDone", saved, dir))
 	}()
 }
 
@@ -674,9 +695,18 @@ func (a *app) batchShotValidLocked(taskID, id string) bool {
 	return p != nil && !p.closed
 }
 
-func (a *app) setNotice(msg string) {
+func (a *app) setNotice(msg string) { a.setNoticeKind(msg, "info") }
+
+// setNoticeErr/Warn/OK tier a notice so the panel renders it as an error,
+// warning or success alert instead of undifferentiated gray text.
+func (a *app) setNoticeErr(msg string)  { a.setNoticeKind(msg, "error") }
+func (a *app) setNoticeWarn(msg string) { a.setNoticeKind(msg, "warning") }
+func (a *app) setNoticeOK(msg string)   { a.setNoticeKind(msg, "success") }
+
+func (a *app) setNoticeKind(msg, kind string) {
 	a.mu.Lock()
 	a.notice = msg
+	a.noticeKind = kind
 	a.mu.Unlock()
 	a.pushState()
 }
@@ -925,7 +955,7 @@ func (a *app) cleanup(pages []*pageRecord, lang string) {
 	a.stopRecordingLocked()
 	if rp := a.replay; rp != nil {
 		if rp.active {
-			close(rp.quit)
+			rp.cancel()
 		}
 		a.replay = nil
 	}
@@ -936,6 +966,11 @@ func (a *app) cleanup(pages []*pageRecord, lang string) {
 	a.cancel = nil
 	a.taskViewMode = ""
 	a.taskSyncDelay = 0
+	// Drop the previous task's result notice so a stale screenshot/diff path does
+	// not linger in the footer after stop; the recorder's save notice (if any)
+	// lands afterwards as a fresh result.
+	a.notice = ""
+	a.noticeKind = ""
 	if failed {
 		a.status = "cleanup-error"
 		a.message = trLang(lang, "err.cleanupFailed")
@@ -956,6 +991,7 @@ func (a *app) snapshot() appState {
 		ActiveID:    a.activeID,
 		Message:     a.message,
 		Notice:      a.notice,
+		NoticeKind:  a.noticeKind,
 		Pages:       make([]pageState, 0, len(a.order)),
 		Errors:      []syncError{},
 		SyncDelayMs: float64(a.taskSyncDelay) / float64(time.Millisecond),

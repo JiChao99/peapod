@@ -32,11 +32,12 @@ import (
 // self-contained HTML report. It deliberately has no video player — Peapod
 // captures per-step PNGs, not a movie — and reads only local artifacts.
 const (
-	recThumbW      = 100 // thumbnail box width (DIPs); image is contained
-	recThumbH      = 140 // thumbnail box height
-	recThumbMaxDim = 200 // decode downscale bound, so thumbnails stay small
-	recImgCacheMax = 512 // decoded thumbnails kept before the cache is cleared
-	recMaxSteps    = 100 // steps rendered in the timeline; export includes all
+	recThumbW      = 100  // thumbnail box width (DIPs); image is contained
+	recThumbH      = 140  // thumbnail box height
+	recThumbMaxDim = 200  // decode downscale bound, so thumbnails stay small
+	recLightboxDim = 1600 // decode downscale bound for the full-size lightbox
+	recImgCacheMax = 512  // decoded thumbnails kept before the cache is cleared
+	recMaxSteps    = 100  // steps rendered in the timeline; export includes all
 
 	recShotMaxBytes   = 32 << 20 // one screenshot read cap, so corrupt files stay bounded
 	recShotMaxPixels  = 32 << 20 // width*height cap before decode: a crafted IHDR must not OOM
@@ -47,11 +48,24 @@ const (
 // recBrowser is the viewer's UI-owned state, touched only on the main thread
 // in view(). It lives on app as a value so app.go needs no ui import.
 type recBrowser struct {
-	open   bool                      // stage shows the browser instead of pages
-	sel    string                    // selected session dir
-	list   []recSessionMeta          // scanned sessions, newest first
-	detail *recDetail                // lazy-loaded steps for sel
-	imgs   map[string]ui.ImageSource // decoded thumbnail cache (nil = unreadable)
+	open     bool                      // stage shows the browser instead of pages
+	sel      string                    // selected session dir
+	list     []recSessionMeta          // scanned sessions, newest first
+	detail   *recDetail                // lazy-loaded steps for sel
+	imgs     map[string]ui.ImageSource // decoded thumbnail cache (nil = unreadable)
+	lightbox *recLightbox              // full-size shot viewer, nil when closed
+}
+
+// recLightbox holds one step's shots opened at a clicked thumbnail. The decoded
+// full-size source is cached on the struct and reloaded only when the shot
+// changes, so a large PNG is not decoded every frame. UI-owned, main thread only.
+type recLightbox struct {
+	shots []recStepShot
+	index int
+	desc  string
+	seq   int
+	src   ui.ImageSource
+	path  string
 }
 
 // recSummary mirrors summary.json (record.go finish).
@@ -436,6 +450,110 @@ func (a *app) recImage(path string) ui.ImageSource {
 	return src
 }
 
+// openRecLightbox opens the full-size viewer on one step's shots at index.
+func (a *app) openRecLightbox(st recDetailStep, index int) {
+	if index < 0 || index >= len(st.shots) {
+		return
+	}
+	a.recView.lightbox = &recLightbox{
+		shots: st.shots, index: index,
+		desc: describeOp(st.line.Operation, a.currentLang()), seq: st.line.Seq,
+	}
+	a.loadLightboxImage()
+	a.invalidate()
+}
+
+// loadLightboxImage decodes the current shot at full size, once per shot change.
+func (a *app) loadLightboxImage() {
+	lb := a.recView.lightbox
+	if lb == nil || lb.index < 0 || lb.index >= len(lb.shots) {
+		return
+	}
+	sh := lb.shots[lb.index]
+	if lb.path == sh.path {
+		return
+	}
+	lb.path = sh.path
+	lb.src = nil
+	if data, err := readBoundedFile(sh.path, recShotMaxBytes); err == nil {
+		lb.src = decodeThumb(data, recLightboxDim)
+	}
+}
+
+// lightboxStep moves to the previous/next shot, wrapping around the step.
+func (a *app) lightboxStep(delta int) {
+	lb := a.recView.lightbox
+	if lb == nil || len(lb.shots) == 0 {
+		return
+	}
+	lb.index = (lb.index + delta + len(lb.shots)) % len(lb.shots)
+	lb.path = "" // force a reload for the new shot
+	a.loadLightboxImage()
+	a.invalidate()
+}
+
+func (a *app) closeRecLightbox() {
+	a.recView.lightbox = nil
+	a.invalidate()
+}
+
+// renderRecLightbox paints the full-size shot viewer over the window. Escape
+// closes it and Left/Right move between the step's shots; the prev/next/close
+// buttons are focusable so the whole viewer is keyboard reachable.
+func (a *app) renderRecLightbox(c *ui.Context, tk *theme.Tokens) {
+	lb := a.recView.lightbox
+	if lb == nil || len(lb.shots) == 0 {
+		return
+	}
+	winW, winH := c.Size()
+	boxW := min(winW-220, 1100)
+	boxH := min(winH-220, 820)
+	if boxW < 80 {
+		boxW = 80
+	}
+	if boxH < 80 {
+		boxH = 80
+	}
+	ui.Overlay(c, func() {
+		back := ui.Column(c).Fill().Center().Padding(24).Background(tk.BgContainer.Alpha(0.72))
+		if back.OverlayShortcut(0, ui.KeyEscape) {
+			a.closeRecLightbox()
+			return
+		}
+		if back.OverlayShortcut(0, ui.KeyLeft) {
+			a.lightboxStep(-1)
+		}
+		if back.OverlayShortcut(0, ui.KeyRight) {
+			a.lightboxStep(1)
+		}
+		panel := layout.Block(c, layout.BlockProps{Variant: layout.BlockFilled})
+		panel.Radius(12).Padding(16).Gap(12).Background(tk.BgElevated)
+		tk.Elevate(panel, theme.BoxShadow)
+		panel.Children(func() {
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
+					ui.Text(c, lb.desc).FontSize(14).Bold().TextColor(tk.TextHeading).SingleLine()
+					ui.Text(c, a.tr("rec.lightbox.counter", lb.index+1, len(lb.shots), lb.shots[lb.index].name)).
+						FontSize(12).TextColor(tk.TextTertiary).SingleLine()
+				})
+				a.iconButton(c, tk, lucide.X(), a.tr("rec.lightbox.close"), func() { a.closeRecLightbox() })
+			})
+			ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
+				a.iconButton(c, tk, lucide.ChevronLeft(), a.tr("rec.lightbox.prev"), func() { a.lightboxStep(-1) })
+				ui.Column(c).Width(boxW).Height(boxH).Center().Radius(8).Clip().
+					Background(tk.BgContainerSecondary).Children(func() {
+					if lb.src != nil {
+						ui.Image(c, lb.src).Size(boxW, boxH).Fit(ui.Contain)
+					} else {
+						ui.Text(c, a.tr("rec.shotMissing")).FontSize(13).TextColor(tk.TextQuaternary)
+					}
+				})
+				a.iconButton(c, tk, lucide.ChevronRight(), a.tr("rec.lightbox.next"), func() { a.lightboxStep(1) })
+			})
+		})
+	})
+}
+
 func recListHas(list []recSessionMeta, dir string) bool {
 	for _, m := range list {
 		if m.dir == dir {
@@ -501,7 +619,7 @@ func (a *app) openRecSession(dir string) {
 	}
 	d, err := loadRecDetail(dir, recMaxSteps)
 	if err != nil {
-		a.setNotice(err.Error())
+		a.setNoticeErr(err.Error())
 		return
 	}
 	d.meta.markLive(a.liveRecDir())
@@ -509,9 +627,25 @@ func (a *app) openRecSession(dir string) {
 }
 
 func (a *app) replayRecording(dir string) {
+	// A recording re-enacts operations against whatever the pages show now. If
+	// the primary has drifted from the recorded entry URL, the first anchors may
+	// not exist, so offer to return to the entry before replaying.
+	if entry := recEntryURL(dir); entry != "" {
+		if cur := a.primaryURL(); cur != "" && !replayEntryMatches(cur, entry) {
+			a.replayPendingDir = dir
+			a.replayEntryURL = entry
+			a.replayConfirmOpen = true
+			return
+		}
+	}
+	a.beginReplay(dir)
+}
+
+// beginReplay starts the replay and switches back to the pages so it is visible.
+func (a *app) beginReplay(dir string) {
 	n, err := a.startReplay(filepath.Join(dir, "script.jsonl"), defaultReplayDelay)
 	if err != nil {
-		a.setNotice(err.Error())
+		a.setNoticeErr(err.Error())
 		return
 	}
 	a.setNotice(a.tr("notice.recReplaying", n))
@@ -519,13 +653,57 @@ func (a *app) replayRecording(dir string) {
 	a.invalidate()
 }
 
+// primaryURL reads the primary page's current URL under the task lock.
+func (a *app) primaryURL() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if p := a.pages[a.primaryID]; p != nil {
+		return p.url
+	}
+	return ""
+}
+
+// recEntryURL reads the recorded primary entry URL from session.json. An absent
+// or unreadable session yields "" so the precheck is skipped rather than guessed.
+func recEntryURL(dir string) string {
+	data, err := readBoundedFile(filepath.Join(dir, "session.json"), recMetaMaxBytes)
+	if err != nil {
+		return ""
+	}
+	var si recSessionInfo
+	if json.Unmarshal(data, &si) != nil {
+		return ""
+	}
+	for _, p := range si.Pages {
+		if p.IsPrimary && p.URL != "" {
+			return p.URL
+		}
+	}
+	return ""
+}
+
+// replayEntryMatches compares two URLs by scheme, host and path (ignoring query,
+// fragment and a trailing slash), so a harmless query difference does not trip
+// the precheck while a genuinely different page does.
+func replayEntryMatches(cur, entry string) bool {
+	cu, err1 := url.Parse(cur)
+	eu, err2 := url.Parse(entry)
+	if err1 != nil || err2 != nil {
+		return cur == entry
+	}
+	norm := func(u *url.URL) string {
+		return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host) + strings.TrimSuffix(u.Path, "/")
+	}
+	return norm(cu) == norm(eu)
+}
+
 func (a *app) exportRecording(c *ui.Context, dir string) {
 	path, err := exportReport(dir, a.currentLang())
 	if err != nil {
-		a.setNotice(err.Error())
+		a.setNoticeErr(err.Error())
 		return
 	}
-	a.setNotice(a.tr("notice.recExported", path))
+	a.setNoticeOK(a.tr("notice.recExported", path))
 	c.OpenURL(fileURL(path))
 }
 
@@ -691,17 +869,22 @@ func (a *app) renderRecStep(c *ui.Context, tk *theme.Tokens, st recDetailStep) {
 		}
 		ui.ScrollHorizontal(c).AlignSelf(ui.Stretch).Children(func() {
 			ui.Row(c).Gap(10).AlignItems(ui.Start).Children(func() {
-				for _, sh := range st.shots {
+				for i, sh := range st.shots {
 					sh := sh
+					idx := i
 					ui.Column(c).Gap(4).AlignItems(ui.Center).Children(func() {
+						btn := ui.ButtonBase(c).Label(sh.name).Tooltip(a.tr("rec.zoom")).
+							Size(recThumbW, recThumbH).Center().Radius(4).Clip().Cursor(ui.CursorPointer).
+							Border(1, tk.BorderSecondary).Background(tk.BgContainerSecondary)
 						if src := a.recImage(sh.path); src != nil {
-							ui.Image(c, src).Size(recThumbW, recThumbH).Fit(ui.Contain).Radius(4).
-								Border(1, tk.BorderSecondary).Background(tk.BgContainerSecondary)
+							btn.Children(func() { ui.Image(c, src).Size(recThumbW, recThumbH).Fit(ui.Contain) })
 						} else {
-							ui.Column(c).Size(recThumbW, recThumbH).Center().Radius(4).
-								Border(1, tk.BorderSecondary).Background(tk.BgContainerSecondary).Children(func() {
+							btn.Children(func() {
 								ui.Text(c, a.tr("rec.shotMissing")).FontSize(11).TextColor(tk.TextQuaternary)
 							})
+						}
+						if btn.Clicked() {
+							a.openRecLightbox(st, idx)
 						}
 						ui.Text(c, sh.name).FontSize(11).TextColor(tk.TextTertiary).SingleLine().MaxWidth(recThumbW)
 					})

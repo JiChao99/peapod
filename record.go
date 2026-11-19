@@ -93,12 +93,12 @@ func (a *app) startRecording(taskID string, req startRequest, lang string) {
 func (a *app) startRecordingIn(root, taskID string, req startRequest, lang string) {
 	dir, err := batchDir(root, "recording")
 	if err != nil {
-		a.setNotice(trLang(lang, "err.recordDir", err.Error()))
+		a.setNoticeWarn(trLang(lang, "err.recordDir", err.Error()))
 		return
 	}
 	f, err := os.Create(filepath.Join(dir, "script.jsonl"))
 	if err != nil {
-		a.setNotice(trLang(lang, "err.recordDir", err.Error()))
+		a.setNoticeWarn(trLang(lang, "err.recordDir", err.Error()))
 		return
 	}
 	r := &recorder{
@@ -370,7 +370,7 @@ func (r *recorder) finish() {
 		_ = os.WriteFile(filepath.Join(r.dir, "summary.json"), data, 0o644)
 	}
 	if dispatched > 0 {
-		r.a.setNotice(trLang(r.lang, "notice.recordSaved", dispatched, r.dir))
+		r.a.setNoticeOK(trLang(r.lang, "notice.recordSaved", dispatched, r.dir))
 	}
 }
 

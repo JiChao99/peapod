@@ -12,6 +12,7 @@ import (
 	"github.com/lobehub/lobe-mygo/pkg/action"
 	"github.com/lobehub/lobe-mygo/pkg/choice"
 	"github.com/lobehub/lobe-mygo/pkg/display"
+	"github.com/lobehub/lobe-mygo/pkg/feedback"
 	"github.com/lobehub/lobe-mygo/pkg/field"
 	"github.com/lobehub/lobe-mygo/pkg/layout"
 	"github.com/lobehub/lobe-mygo/pkg/lucide"
@@ -108,6 +109,9 @@ func (a *app) view(c *ui.Context) {
 		})
 	})
 
+	a.renderReplayConfirm(c, tk)
+	a.renderRecLightbox(c, tk)
+
 	// Publish the language the Select may have just changed so off-thread
 	// readers (MCP, cleanup, screenshots) see it without racing the binding.
 	a.langVal.Store(a.lang)
@@ -181,13 +185,120 @@ func (a *app) renderPanel(c *ui.Context, tk *theme.Tokens, st appState) {
 		}).Grow(1)
 
 		ui.Column(c).Padding(14, 20, 20, 20).Gap(10).AlignItems(ui.Stretch).Children(func() {
-			if st.Notice != "" {
-				ui.Text(c, st.Notice).FontSize(12).TextColor(tk.TextSecondary).Wrap()
-			}
+			a.renderNotice(c, tk, st)
 			if st.Message != "" {
 				ui.Text(c, st.Message).FontSize(12).TextColor(tk.Error).Wrap()
 			}
 			a.panelAction(c, tk, st)
+		})
+	})
+}
+
+// renderNotice tiers the footer notice by severity (error/warning/success/info)
+// so a validation failure, a partial result and a success no longer share one
+// gray line. The text wraps so a long artifact path stays readable.
+func (a *app) renderNotice(c *ui.Context, tk *theme.Tokens, st appState) {
+	if st.Notice == "" {
+		return
+	}
+	accent, icon := tk.Info, lucide.Info()
+	switch st.NoticeKind {
+	case "error":
+		accent, icon = tk.Error, lucide.CircleX()
+	case "warning":
+		accent, icon = tk.Warning, lucide.TriangleAlert()
+	case "success":
+		accent, icon = tk.Success, lucide.CircleCheck()
+	}
+	ui.Row(c).Gap(8).AlignItems(ui.Start).AlignSelf(ui.Stretch).Padding(10, 12).
+		Radius(tk.BorderRadius).Background(theme.Mix(tk.BgContainer, accent, 0.08)).Children(func() {
+		ui.Row(c).Height(18).AlignItems(ui.Center).Shrink(0).Children(func() {
+			ui.Icon(c, icon).FontSize(15).TextColor(accent)
+		})
+		ui.Text(c, st.Notice).FontSize(12).TextColor(tk.Text).Wrap().Grow(1).MinWidth(0)
+	})
+}
+
+// renderReplay shows an in-flight replay's progress with a Cancel button, and
+// keeps the final result (completed / cancelled / failed) visible afterwards so
+// the user can see how far it got and why it ended.
+func (a *app) renderReplay(c *ui.Context, tk *theme.Tokens, rp *replayState) {
+	pct := float32(0)
+	if rp.Total > 0 {
+		pct = float32(rp.Done) / float32(rp.Total) * 100
+	}
+	ui.Column(c).Gap(8).Padding(12).Radius(tk.BorderRadiusLG).AlignItems(ui.Stretch).
+		Background(tk.BgContainerSecondary).Border(1, tk.BorderSecondary).Children(func() {
+		if rp.Active {
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Icon(c, lucide.History()).FontSize(15).TextColor(tk.Primary).Shrink(0)
+				ui.Text(c, a.tr("ui.replay.running", rp.Done, rp.Total)).FontSize(13).Bold().
+					TextColor(tk.TextHeading).Grow(1).MinWidth(0).SingleLine()
+				if action.Button(c, a.tr("ui.replay.cancel"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).Clicked() {
+					a.cancelReplay()
+				}
+			})
+			feedback.Progress(c, pct, feedback.ProgressProps{Status: feedback.ProgressActive, Size: theme.Small, ShowInfo: true})
+		} else {
+			status, color := feedback.ProgressSuccess, tk.Success
+			msg := a.tr("ui.replay.done", rp.Done, rp.Total)
+			if rp.Error != "" {
+				status, color = feedback.ProgressException, tk.Error
+				reason := rp.Error
+				switch rp.Error {
+				case "cancelled":
+					reason = a.tr("ui.replay.cancelled")
+				case "task stopped":
+					reason = a.tr("ui.replay.taskStopped")
+				}
+				msg = a.tr("ui.replay.stopped", rp.Done, rp.Total, reason)
+			}
+			ui.Text(c, msg).FontSize(13).Bold().TextColor(color).Wrap()
+			feedback.Progress(c, pct, feedback.ProgressProps{Status: status, Size: theme.Small, ShowInfo: true})
+		}
+		if rp.Skipped > 0 {
+			ui.Text(c, a.tr("ui.replay.skipped", rp.Skipped)).FontSize(12).TextColor(tk.Warning).Wrap()
+		}
+	})
+}
+
+// renderReplayConfirm gates a replay whose primary has drifted from the recorded
+// entry URL: return to the entry (then replay once loaded), replay anyway, or
+// cancel. Esc, the backdrop and the close button dismiss it via feedback.Modal.
+func (a *app) renderReplayConfirm(c *ui.Context, tk *theme.Tokens) {
+	if !a.replayConfirmOpen {
+		return
+	}
+	feedback.Modal(c, &a.replayConfirmOpen, feedback.ModalProps{
+		Title:    a.tr("ui.replay.entry.title"),
+		Width:    460,
+		NoFooter: true,
+	}, func() {
+		ui.Column(c).Gap(12).Children(func() {
+			ui.Text(c, a.tr("ui.replay.entry.body")).FontSize(13).TextColor(tk.TextSecondary).Wrap()
+			ui.Column(c).Gap(4).Padding(10, 12).Radius(tk.BorderRadius).Background(tk.FillTertiary).Children(func() {
+				ui.Text(c, a.tr("ui.replay.entry.recorded", a.replayEntryURL)).FontSize(12).TextColor(tk.Text).Wrap()
+				ui.Text(c, a.tr("ui.replay.entry.current", a.primaryURL())).FontSize(12).TextColor(tk.Text).Wrap()
+			})
+			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
+				if action.Button(c, a.tr("ui.cancel"), action.ButtonProps{}).Clicked() {
+					a.replayConfirmOpen = false
+				}
+				if action.Button(c, a.tr("ui.replay.entry.anyway"), action.ButtonProps{}).Clicked() {
+					dir := a.replayPendingDir
+					a.replayConfirmOpen = false
+					a.beginReplay(dir)
+				}
+				if action.Button(c, a.tr("ui.replay.entry.return"), action.ButtonProps{Variant: action.Primary}).Clicked() {
+					entry := a.replayEntryURL
+					a.replayConfirmOpen = false
+					if err := a.navigatePage("", entry); err != nil {
+						a.setNoticeErr(err.Error())
+					} else {
+						a.setNotice(a.tr("notice.replayReturned"))
+					}
+				}
+			})
 		})
 	})
 }
@@ -197,8 +308,19 @@ func (a *app) panelAction(c *ui.Context, tk *theme.Tokens, st appState) {
 	case "running":
 		if action.Button(c, a.tr("ui.stop"), action.ButtonProps{Variant: action.Primary, Size: theme.Large}).
 			AlignSelf(ui.Stretch).Clicked() {
+			a.confirmStop = true
+		}
+		if feedback.Modal(c, &a.confirmStop, feedback.ModalProps{
+			Title:      a.tr("ui.stop.confirm.title"),
+			OkText:     a.tr("ui.stop.confirm.ok"),
+			CancelText: a.tr("ui.cancel"),
+			Width:      420,
+		}, func() {
+			ui.Text(c, a.tr("ui.stop.confirm.body")).FontSize(13).TextColor(tk.TextSecondary).Wrap()
+		}) {
+			a.confirmStop = false
 			if err := a.stopTask(); err != nil {
-				a.setNotice(err.Error())
+				a.setNoticeErr(err.Error())
 			}
 		}
 	case "stopping":
@@ -375,11 +497,11 @@ func (a *app) bulkBody(c *ui.Context, tk *theme.Tokens) {
 			if action.Button(c, a.tr("ui.bulk.generate"), action.ButtonProps{Variant: action.Primary, Size: theme.Small}).
 				Disabled(len(lines) == 0 || over).Clicked() {
 				if n, err := a.bulkAddURLs(a.bulkText); err != nil {
-					a.setNotice(err.Error())
+					a.setNoticeErr(err.Error())
 				} else {
 					a.bulkText = ""
 					a.bulkOpen = false
-					a.setNotice(a.tr("notice.bulkDone", n))
+					a.setNoticeOK(a.tr("notice.bulkDone", n))
 				}
 			}
 		})
@@ -507,6 +629,9 @@ func (a *app) runtimeBody(c *ui.Context, tk *theme.Tokens, st appState) {
 			ui.Text(c, st.RecordDir).FontSize(12).TextColor(tk.TextTertiary).Grow(1).MinWidth(0).SingleLine()
 		})
 	}
+	if st.Replay != nil {
+		a.renderReplay(c, tk, st.Replay)
+	}
 	for _, ps := range st.Pages {
 		a.pageCard(c, tk, ps, st.ActiveID)
 	}
@@ -543,10 +668,26 @@ func (a *app) runtimeBody(c *ui.Context, tk *theme.Tokens, st appState) {
 	})
 
 	if len(st.Errors) > 0 {
-		ui.Column(c).Gap(6).Padding(12).Radius(tk.BorderRadiusLG).Background(tk.ErrorFillTertiary).Children(func() {
+		names := map[string]string{}
+		for _, ps := range st.Pages {
+			names[ps.ID] = ps.Name
+		}
+		ui.Column(c).Gap(8).Padding(12).Radius(tk.BorderRadiusLG).Background(tk.ErrorFillTertiary).Children(func() {
 			ui.Text(c, a.tr("ui.syncErrors")).FontSize(13).Bold().TextColor(tk.Error)
 			for _, e := range st.Errors {
-				ui.Text(c, fmt.Sprintf("%s · %s", e.TargetID, e.Code)).FontSize(12).TextColor(tk.TextSecondary).SingleLine()
+				e := e
+				name := names[e.TargetID]
+				if name == "" {
+					name = e.TargetID
+				}
+				ui.Row(c).Gap(8).AlignItems(ui.Start).Children(func() {
+					ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
+						ui.Text(c, name).FontSize(12).Bold().TextColor(tk.Text).SingleLine()
+						ui.Text(c, syncErrorReason(e.Code, a.currentLang())).FontSize(12).TextColor(tk.TextSecondary).Wrap()
+						ui.Text(c, e.Code).FontSize(11).TextColor(tk.TextTertiary).SingleLine()
+					})
+					a.iconButton(c, tk, lucide.RefreshCw(), a.tr("ui.reload"), func() { a.reloadPage(e.TargetID) })
+				})
 			}
 		})
 	}
@@ -578,10 +719,10 @@ func (a *app) pageCard(c *ui.Context, tk *theme.Tokens, ps pageState, activeID s
 			a.iconButton(c, tk, lucide.RefreshCw(), a.tr("ui.reload"), func() { a.reloadPage(ps.ID) })
 		})
 		if ps.Error != nil {
-			ui.Text(c, ps.Error.Code+"："+ps.Error.Message).FontSize(12).TextColor(tk.Error).SingleLine()
+			ui.Text(c, syncErrorReason(ps.Error.Code, a.currentLang())).FontSize(12).TextColor(tk.Error).Wrap()
 		}
 		if ps.NavError != nil {
-			ui.Text(c, ps.NavError.Name+"："+ps.NavError.Description).FontSize(12).TextColor(tk.Error).SingleLine()
+			ui.Text(c, navErrorReason(ps.NavError.Name, a.currentLang())).FontSize(12).TextColor(tk.Error).Wrap()
 		}
 	})
 }
@@ -626,6 +767,9 @@ func (a *app) renderStage(c *ui.Context, tk *theme.Tokens, st appState) {
 				}
 			}
 			a.recToggleButton(c, tk)
+			if a.recView.open {
+				a.iconButton(c, tk, lucide.X(), a.tr("rec.close"), func() { a.toggleRecordings() })
+			}
 			if !a.recView.open && activeView != nil {
 				a.iconButton(c, tk, lucide.Camera(), a.tr("ui.shotAll"), func() { a.screenshotAll() })
 				a.iconButton(c, tk, lucide.RefreshCw(), a.tr("ui.reload"), func() { a.reloadPage(st.ActiveID) })
@@ -710,11 +854,21 @@ func (a *app) renderDesktopStage(c *ui.Context, tk *theme.Tokens, st appState, a
 // every WebView, and CapturePage never returns for an unplaced view, so live
 // recording and batch screenshots would stall while browsing.
 func (a *app) renderRecordingsOverlay(c *ui.Context, tk *theme.Tokens, barH float32) {
+	// The lightbox owns the screen while open; painting the opaque browser
+	// panel here would cover it, so yield until the lightbox closes.
+	if a.recView.lightbox != nil {
+		return
+	}
 	winW, winH := c.Size()
 	ui.Overlay(c, func() {
-		ui.Column(c).Absolute().Left(panelWidth).Top(barH + toolbarHeight).
+		panel := ui.Column(c).Absolute().Left(panelWidth).Top(barH + toolbarHeight).
 			Width(winW - panelWidth).Height(winH - barH - toolbarHeight).
-			Background(tk.BgLayout).Children(func() {
+			Background(tk.BgLayout)
+		if panel.OverlayShortcut(0, ui.KeyEscape) {
+			a.toggleRecordings()
+			return
+		}
+		panel.Children(func() {
 			a.renderRecordings(c, tk)
 		})
 	})
@@ -859,4 +1013,24 @@ func pageStatusColor(s string) display.TagColor {
 	default:
 		return ""
 	}
+}
+
+// syncErrorReason renders a replay failure code as a human sentence; the raw
+// code stays visible alongside it for diagnosis.
+func syncErrorReason(code, lang string) string {
+	key := "syncerr." + code
+	if s := trLang(lang, key); s != key {
+		return s
+	}
+	return trLang(lang, "syncerr.REPLAY_FAILED")
+}
+
+// navErrorReason renders a page load-failure label as a human sentence. Unknown
+// labels fall back to a generic message that still names the failure.
+func navErrorReason(name, lang string) string {
+	key := "naverr." + name
+	if s := trLang(lang, key); s != key {
+		return s
+	}
+	return trLang(lang, "naverr.generic", name)
 }
