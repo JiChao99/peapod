@@ -493,14 +493,11 @@ func (a *app) buildRequest() (startRequest, error) {
 				return startRequest{}, a.fieldError("page:"+cfg.id, a.tr("err.templateBase", a.cfgName(cfg, i)))
 			}
 			base = clean
-			path := strings.TrimSpace(cfg.url)
-			if path == "" {
-				path = "/"
+			var pathErr error
+			raw, pathErr = appendTemplatePath(base, cfg.url)
+			if pathErr != nil {
+				return startRequest{}, a.fieldError("page:"+cfg.id, a.tr("err.pageURL", a.cfgName(cfg, i), a.tr("err.urlInvalid")))
 			}
-			if !strings.HasPrefix(path, "/") {
-				path = "/" + path
-			}
-			raw = base + path
 			if err := a.validateURL(raw); err != nil {
 				return startRequest{}, a.fieldError("page:"+cfg.id, a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
 			}

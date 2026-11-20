@@ -18,9 +18,16 @@ func TestMapNavigation(t *testing.T) {
 		// Same host, different path prefix (template-style bases).
 		{"https://x.com/en", "https://x.com/de", "https://x.com/en/shop?x=1", "https://x.com/de/shop?x=1"},
 		{"https://x.com/en", "https://x.com/de", "https://x.com/en", "https://x.com/de"},
+		// Query variants remain page-specific while other query values follow.
+		{"https://x.com/?lang=0", "https://x.com/?lang=2", "https://x.com/home", "https://x.com/home?lang=2"},
+		{"https://x.com/?lang=0", "https://x.com/?lang=2", "https://x.com/shop?page=2&lang=0#top", "https://x.com/shop?lang=2&page=2#top"},
+		{"https://x.com/en?lang=0", "https://x.com/tr?lang=2", "https://x.com/en/shop?filter=hot", "https://x.com/tr/shop?filter=hot&lang=2"},
+		{"https://a.com/?lang=en", "https://b.com/?lang=tr", "https://a.com/home", "https://b.com/home?lang=tr"},
 		// Outside the primary's variant space: no follow.
 		{"https://a.com", "https://b.com", "https://elsewhere.com/x", ""},
 		{"https://a.com", "https://b.com", "https://a.com.evil.com/x", ""},
+		{"https://x.com/?lang=0", "https://x.com/?lang=2", "https://elsewhere.com/home", ""},
+		{"https://x.com/en?lang=0", "https://x.com/tr?lang=2", "https://x.com/english/home", ""},
 		{"https://x.com/en", "https://x.com/de", "https://x.com/english/x", ""},
 		{"", "https://b.com", "https://a.com/x", ""},
 	}
@@ -188,6 +195,12 @@ func TestInferPlainBases(t *testing.T) {
 			[]string{"https://x.com", "https://x.com"},
 		},
 		{
+			// Different query values become per-page variants.
+			"query variants",
+			[]string{"https://x.com/?lang=0", "https://x.com/?lang=2"},
+			[]string{"https://x.com?lang=0", "https://x.com?lang=2"},
+		},
+		{
 			// Same first segment across pages: still origin-only (no variant to swap).
 			"shared first segment",
 			[]string{"https://x.com/docs/a", "https://x.com/docs/b"},
@@ -238,6 +251,28 @@ func TestBuildRequestPreservesPathVariants(t *testing.T) {
 	got := mapNavigation(req.pages[0].base, req.pages[1].base, "https://x.com/en-us/products?q=1")
 	if got != "https://x.com/zh-cn/products?q=1" {
 		t.Errorf("follower mapped to %q, want its own zh-cn variant", got)
+	}
+}
+
+func TestBuildRequestPreservesQueryVariants(t *testing.T) {
+	a := newApp()
+	a.configs = a.configs[:2]
+	a.configs[0].url = "https://example.com/?lang=0"
+	a.configs[1].url = "https://example.com/?lang=2"
+
+	req, err := a.buildRequest()
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	if req.pages[0].url != "https://example.com/?lang=0" ||
+		req.pages[1].url != "https://example.com/?lang=2" {
+		t.Fatalf("configured URLs changed: %q, %q", req.pages[0].url, req.pages[1].url)
+	}
+	if got := mapNavigation(req.pages[0].base, req.pages[1].base, "https://example.com/home"); got != "https://example.com/home?lang=2" {
+		t.Errorf("query variant follow after redirect = %q", got)
+	}
+	if got := mapNavigation(req.pages[0].base, req.pages[1].base, "https://example.com/home?page=3&lang=0"); got != "https://example.com/home?lang=2&page=3" {
+		t.Errorf("query variant follow with route query = %q", got)
 	}
 }
 

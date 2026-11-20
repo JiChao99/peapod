@@ -59,6 +59,28 @@ func TestResolveMCPRequestTemplate(t *testing.T) {
 	}
 }
 
+func TestResolveMCPRequestTemplateQuery(t *testing.T) {
+	a := newApp()
+	req, err := a.resolveMCPRequest(startIn{
+		Template: "https://{host}/?lang={lang}",
+		Pages: []mcpPage{
+			{Vars: "host=a.com, lang=0", Path: "/shop?page=1"},
+			{Vars: "host=a.com, lang=2"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if req.pages[0].base != "https://a.com?lang=0" ||
+		req.pages[0].url != "https://a.com/shop?lang=0&page=1" {
+		t.Errorf("page0 = %+v", req.pages[0])
+	}
+	if req.pages[1].base != "https://a.com?lang=2" ||
+		req.pages[1].url != "https://a.com/?lang=2" {
+		t.Errorf("page1 = %+v", req.pages[1])
+	}
+}
+
 func TestResolveMCPRequestErrors(t *testing.T) {
 	a := newApp()
 	cases := []struct {

@@ -746,15 +746,11 @@ func (a *app) templatePreview(cfg *pageConfig) string {
 	if !ok {
 		return a.tr("err.templateBaseShort")
 	}
-	base = clean
-	path := strings.TrimSpace(cfg.url)
-	if path == "" {
-		path = "/"
+	preview, err := appendTemplatePath(clean, cfg.url)
+	if err != nil {
+		return a.tr("err.urlInvalid")
 	}
-	if !strings.HasPrefix(path, "/") {
-		path = "/" + path
-	}
-	return base + path
+	return preview
 }
 
 func (a *app) urlPlaceholder(i int) string {

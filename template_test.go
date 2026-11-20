@@ -101,10 +101,11 @@ func TestCleanTemplateBase(t *testing.T) {
 		ok   bool
 	}{
 		{"https://a.com/en", "https://a.com/en", true},
+		{"https://a.com/?lang=en", "https://a.com?lang=en", true},
+		{"https://a.com/en?lang=en", "https://a.com/en?lang=en", true},
 		{"https://a.com/en/", "https://a.com/en", true},
 		{"https://a.com/", "https://a.com", true},
 		{"https://a.com/en//", "https://a.com/en", true},
-		{"https://a.com/?lang=en", "", false},
 		{"https://a.com/en#frag", "", false},
 		{"https://a.com/?", "", false},
 		// A bare '#' has an empty fragment but still swallows an appended path.
@@ -144,8 +145,8 @@ func TestBuildRequestTemplateBaseRules(t *testing.T) {
 		t.Errorf("trailing slash follow = %q", got)
 	}
 
-	// Query/fragment in the base is rejected.
-	for _, tmpl := range []string{"https://{host}/?lang={lang}", "https://{host}/{lang}#x"} {
+	// Fragments and a bare query delimiter are rejected.
+	for _, tmpl := range []string{"https://{host}/?", "https://{host}/{lang}#x"} {
 		a := newApp()
 		a.configs = a.configs[:2]
 		a.template = tmpl
@@ -176,7 +177,35 @@ func TestTemplatePreviewMatchesBaseRules(t *testing.T) {
 		t.Errorf("trailing-slash preview = %q", got)
 	}
 	a.template = "https://{host}/?lang={lang}"
-	if got := a.templatePreview(cfg); got == "https://a.com/?lang=en/shop" {
-		t.Errorf("query-base preview should report an error, got %q", got)
+	if got := a.templatePreview(cfg); got != "https://a.com/shop?lang=en" {
+		t.Errorf("query-base preview = %q", got)
+	}
+}
+
+func TestBuildRequestTemplateQuery(t *testing.T) {
+	a := newApp()
+	a.configs = a.configs[:2]
+	a.template = "https://{host}/?lang={lang}"
+	a.configs[0].vars = "host=example.com, lang=0"
+	a.configs[0].url = "/shop?page=1"
+	a.configs[1].vars = "host=example.com, lang=2"
+
+	req, err := a.buildRequest()
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	if req.pages[0].base != "https://example.com?lang=0" ||
+		req.pages[0].url != "https://example.com/shop?lang=0&page=1" {
+		t.Errorf("primary = %+v", req.pages[0])
+	}
+	if req.pages[1].base != "https://example.com?lang=2" ||
+		req.pages[1].url != "https://example.com/?lang=2" {
+		t.Errorf("follower = %+v", req.pages[1])
+	}
+	if got := mapNavigation(req.pages[0].base, req.pages[1].base, "https://example.com/home?page=3&lang=0"); got != "https://example.com/home?lang=2&page=3" {
+		t.Errorf("query template follow = %q", got)
+	}
+	if got := mapNavigation(req.pages[0].base, req.pages[1].base, "https://example.com/home"); got != "https://example.com/home?lang=2" {
+		t.Errorf("query template follow after redirect = %q", got)
 	}
 }
