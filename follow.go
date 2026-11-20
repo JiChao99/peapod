@@ -24,16 +24,16 @@ func firstPathSeg(raw string) string {
 
 // inferPlainBases derives a navigation-follow base per plain-mode URL. The base
 // is normally just the origin, so a follower mirrors the primary's whole path.
-// But when several pages share an origin yet diverge in their FIRST path segment
-// (e.g. /en-us/…, /zh-cn/…, /ja-jp/… — the path-prefix variants that bulk add
-// produces), that segment is the variant: keeping it in the base makes
-// mapNavigation swap en-us→zh-cn instead of copying the primary's full path onto
-// every follower. Origins whose pages all share one first segment keep the
-// origin-only base, so full-page mirroring is unchanged.
+// When pages share an origin but diverge in their first path segment, that
+// segment is kept as a path variant. Query keys with different values across
+// the configured URLs are also kept per page, so language parameters such as
+// yplang=0 and yplang=2 don't get copied from the primary onto every follower.
 func inferPlainBases(urls []string) []string {
 	origins := make([]string, len(urls))
 	segs := make([]string, len(urls))
 	distinct := map[string]map[string]bool{}
+	queries := make([]url.Values, len(urls))
+	distinctQueryValues := map[string]map[string]bool{}
 	for i, raw := range urls {
 		o := originOf(raw)
 		origins[i] = o
@@ -45,14 +45,44 @@ func inferPlainBases(urls []string) []string {
 			}
 			distinct[o][seg] = true
 		}
+		u, err := url.Parse(raw)
+		if err != nil {
+			continue
+		}
+		queries[i], err = url.ParseQuery(u.RawQuery)
+		if err != nil {
+			queries[i] = nil
+			continue
+		}
+		for key, values := range queries[i] {
+			if distinctQueryValues[key] == nil {
+				distinctQueryValues[key] = map[string]bool{}
+			}
+			distinctQueryValues[key][url.Values{key: values}.Encode()] = true
+		}
+	}
+	queryVariants := map[string]bool{}
+	for key, values := range distinctQueryValues {
+		if len(values) > 1 {
+			queryVariants[key] = true
+		}
 	}
 	bases := make([]string, len(urls))
 	for i := range urls {
+		base := origins[i]
 		if segs[i] != "" && len(distinct[origins[i]]) > 1 {
-			bases[i] = origins[i] + "/" + segs[i]
-		} else {
-			bases[i] = origins[i]
+			base += "/" + segs[i]
 		}
+		variants := url.Values{}
+		for key := range queryVariants {
+			if values, ok := queries[i][key]; ok {
+				variants[key] = values
+			}
+		}
+		if query := variants.Encode(); query != "" {
+			base += "?" + query
+		}
+		bases[i] = base
 	}
 	return bases
 }
@@ -64,12 +94,20 @@ func inferPlainBases(urls []string) []string {
 const navFollowGrace = 2 * time.Second
 
 // mapNavigation translates a primary-page URL onto a follower's variant base:
-// the follower keeps its own scheme, host and (with URL templates) path
-// prefix, while path, query and fragment follow the primary. It returns ""
-// when raw lies outside the primary's variant space, so an external link
-// never drags followers along.
+// the follower keeps its own scheme, host and template path/query variants,
+// while the path, non-template query values and fragment follow the primary.
+// It returns "" when raw lies outside the primary's variant space, so an
+// external link never drags followers along.
 func mapNavigation(primaryBase, followerBase, raw string) string {
-	if primaryBase == "" || !strings.HasPrefix(raw, primaryBase) {
+	if primaryBase == "" || followerBase == "" {
+		return ""
+	}
+	// A base carries a query only when its page has query variants, so the
+	// common host/path-variant case stays on the prefix path without parsing.
+	if strings.IndexByte(primaryBase, '?') >= 0 || strings.IndexByte(followerBase, '?') >= 0 {
+		return mapQueryNavigation(primaryBase, followerBase, raw)
+	}
+	if !strings.HasPrefix(raw, primaryBase) {
 		return ""
 	}
 	rest := raw[len(primaryBase):]
@@ -80,6 +118,86 @@ func mapNavigation(primaryBase, followerBase, raw string) string {
 		return ""
 	}
 	return followerBase + rest
+}
+
+// mapQueryNavigation maps the path between variant bases and keeps each
+// follower's variant query values while carrying unrelated primary query
+// values through. This also handles redirects that drop the initial query.
+func mapQueryNavigation(primaryBase, followerBase, raw string) string {
+	primaryURL, err := url.Parse(primaryBase)
+	if err != nil {
+		return ""
+	}
+	followerURL, err := url.Parse(followerBase)
+	if err != nil {
+		return ""
+	}
+	rawURL, err := url.Parse(raw)
+	if err != nil || originOf(raw) != originOf(primaryBase) {
+		return ""
+	}
+	primaryPath := strings.TrimRight(primaryURL.EscapedPath(), "/")
+	rawPath := rawURL.EscapedPath()
+	if primaryPath != "" && rawPath != primaryPath && !strings.HasPrefix(rawPath, primaryPath+"/") {
+		return ""
+	}
+	pathSuffix := strings.TrimPrefix(rawPath, primaryPath)
+	mappedPath := strings.TrimRight(followerURL.EscapedPath(), "/") + pathSuffix
+	decodedPath, err := url.PathUnescape(mappedPath)
+	if err != nil {
+		return ""
+	}
+
+	primaryQuery, err := url.ParseQuery(primaryURL.RawQuery)
+	if err != nil {
+		return ""
+	}
+	followerQuery, err := url.ParseQuery(followerURL.RawQuery)
+	if err != nil {
+		return ""
+	}
+
+	rawURL.Scheme = followerURL.Scheme
+	rawURL.Host = followerURL.Host
+	rawURL.Path = decodedPath
+	rawURL.RawPath = mappedPath
+	rawURL.RawQuery = mergeFollowQuery(rawURL.RawQuery, primaryQuery, followerQuery)
+	rawURL.ForceQuery = rawURL.RawQuery == "" && rawURL.ForceQuery
+	return rawURL.String()
+}
+
+// mergeFollowQuery rebuilds the primary's query for a follower: pairs whose
+// key is a variant (present in either base's query) are dropped, then the
+// follower's own variant pairs are appended. Other pairs pass through verbatim,
+// keeping the primary's order and encoding — including stray escapes that
+// url.ParseQuery would reject, which must not stop the follow.
+func mergeFollowQuery(rawQuery string, primaryQuery, followerQuery url.Values) string {
+	var kept []string
+	for _, pair := range strings.Split(rawQuery, "&") {
+		if pair == "" {
+			continue
+		}
+		key, _, _ := strings.Cut(pair, "=")
+		if decoded, err := url.QueryUnescape(key); err == nil {
+			key = decoded
+		}
+		if _, ok := primaryQuery[key]; ok {
+			continue
+		}
+		if _, ok := followerQuery[key]; ok {
+			continue
+		}
+		kept = append(kept, pair)
+	}
+	followerPairs := followerQuery.Encode()
+	switch {
+	case len(kept) == 0:
+		return followerPairs
+	case followerPairs == "":
+		return strings.Join(kept, "&")
+	default:
+		return strings.Join(kept, "&") + "&" + followerPairs
+	}
 }
 
 // followTarget is one follower navigation decided under the lock and applied
@@ -123,7 +241,7 @@ func (a *app) followTargets(primary *pageRecord, raw string) []followTarget {
 			f.queue.push(operation{Type: navBarrier})
 			continue
 		}
-		if target == f.url {
+		if sameFollowURL(target, f.url) {
 			f.pendingNav = ""
 			continue
 		}

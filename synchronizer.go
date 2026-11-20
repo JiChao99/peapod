@@ -164,7 +164,7 @@ func (a *app) reconcileNavLocked(p *pageRecord, navigating bool) string {
 	if p.closed || !p.syncOn || p.status == "paused" || p.replaying || p.queue.len() > 0 {
 		return ""
 	}
-	if p.pendingNav == "" || p.pendingNav == p.url {
+	if p.pendingNav == "" || sameFollowURL(p.pendingNav, p.url) {
 		return ""
 	}
 	if navigating && time.Since(p.navPendingAt) < navFollowGrace {
@@ -197,7 +197,7 @@ func (a *app) applyNavBarrier(p *pageRecord) {
 			p.pendingNav = ""
 			p.navPendingAt = time.Time{}
 			view := p.view
-			reached := target == p.url
+			reached := sameFollowURL(target, p.url)
 			a.mu.Unlock()
 			if reached || view == nil {
 				return
@@ -218,7 +218,7 @@ func (a *app) applyNavBarrier(p *pageRecord) {
 func (a *app) waitNavCommit(p *pageRecord, target string, deadline time.Time) {
 	for {
 		a.mu.Lock()
-		done := p.closed || p.status == "paused" || p.url == target
+		done := p.closed || p.status == "paused" || sameFollowURL(p.url, target)
 		a.mu.Unlock()
 		if done || !a.waitNavSignal(p, deadline) {
 			return

@@ -18,9 +18,25 @@ func TestMapNavigation(t *testing.T) {
 		// Same host, different path prefix (template-style bases).
 		{"https://x.com/en", "https://x.com/de", "https://x.com/en/shop?x=1", "https://x.com/de/shop?x=1"},
 		{"https://x.com/en", "https://x.com/de", "https://x.com/en", "https://x.com/de"},
+		// Query variants remain page-specific while other query values follow,
+		// keeping the primary's pair order and raw encoding.
+		{"https://x.com/?lang=0", "https://x.com/?lang=2", "https://x.com/home", "https://x.com/home?lang=2"},
+		{"https://x.com/?lang=0", "https://x.com/?lang=2", "https://x.com/shop?page=2&lang=0#top", "https://x.com/shop?page=2&lang=2#top"},
+		{"https://x.com/en?lang=0", "https://x.com/tr?lang=2", "https://x.com/en/shop?filter=hot", "https://x.com/tr/shop?filter=hot&lang=2"},
+		{"https://a.com/?lang=en", "https://b.com/?lang=tr", "https://a.com/home", "https://b.com/home?lang=tr"},
+		// Stray escapes url.ParseQuery rejects still pass through verbatim.
+		{"https://x.com/?lang=0", "https://x.com/?lang=2", "https://x.com/s?q=100%&lang=0", "https://x.com/s?q=100%&lang=2"},
+		// A variant key only the follower configured still wins over the primary's value.
+		{"https://x.com", "https://x.com/?lang=2", "https://x.com/s?lang=9", "https://x.com/s?lang=2"},
+		// Multi-value variant keys are replaced as a whole.
+		{"https://x.com/?tag=a&tag=b", "https://x.com/?tag=c", "https://x.com/s?tag=a&tag=b&page=1", "https://x.com/s?page=1&tag=c"},
+		// A page that never configured the variant key keeps none on follow.
+		{"https://x.com/?lang=0", "https://x.com", "https://x.com/s?lang=0&page=1", "https://x.com/s?page=1"},
 		// Outside the primary's variant space: no follow.
 		{"https://a.com", "https://b.com", "https://elsewhere.com/x", ""},
 		{"https://a.com", "https://b.com", "https://a.com.evil.com/x", ""},
+		{"https://x.com/?lang=0", "https://x.com/?lang=2", "https://elsewhere.com/home", ""},
+		{"https://x.com/en?lang=0", "https://x.com/tr?lang=2", "https://x.com/english/home", ""},
 		{"https://x.com/en", "https://x.com/de", "https://x.com/english/x", ""},
 		{"", "https://b.com", "https://a.com/x", ""},
 	}
@@ -188,6 +204,30 @@ func TestInferPlainBases(t *testing.T) {
 			[]string{"https://x.com", "https://x.com"},
 		},
 		{
+			// Different query values become per-page variants.
+			"query variants",
+			[]string{"https://x.com/?lang=0", "https://x.com/?lang=2"},
+			[]string{"https://x.com?lang=0", "https://x.com?lang=2"},
+		},
+		{
+			// Identical query values across pages are not variants: full mirroring.
+			"shared query values",
+			[]string{"https://x.com/?lang=0", "https://x.com/?lang=0"},
+			[]string{"https://x.com", "https://x.com"},
+		},
+		{
+			// A page without the variant key keeps an origin-only base.
+			"query variant absent on one page",
+			[]string{"https://x.com/?lang=0", "https://x.com/?lang=2", "https://x.com/"},
+			[]string{"https://x.com?lang=0", "https://x.com?lang=2", "https://x.com"},
+		},
+		{
+			// Path and query variants combine in one base.
+			"path and query variants",
+			[]string{"https://x.com/en?lang=0", "https://x.com/de?lang=2"},
+			[]string{"https://x.com/en?lang=0", "https://x.com/de?lang=2"},
+		},
+		{
 			// Same first segment across pages: still origin-only (no variant to swap).
 			"shared first segment",
 			[]string{"https://x.com/docs/a", "https://x.com/docs/b"},
@@ -238,6 +278,68 @@ func TestBuildRequestPreservesPathVariants(t *testing.T) {
 	got := mapNavigation(req.pages[0].base, req.pages[1].base, "https://x.com/en-us/products?q=1")
 	if got != "https://x.com/zh-cn/products?q=1" {
 		t.Errorf("follower mapped to %q, want its own zh-cn variant", got)
+	}
+}
+
+func TestBuildRequestPreservesQueryVariants(t *testing.T) {
+	a := newApp()
+	a.configs = a.configs[:2]
+	a.configs[0].url = "https://example.com/?lang=0"
+	a.configs[1].url = "https://example.com/?lang=2"
+
+	req, err := a.buildRequest()
+	if err != nil {
+		t.Fatalf("buildRequest: %v", err)
+	}
+	if req.pages[0].url != "https://example.com/?lang=0" ||
+		req.pages[1].url != "https://example.com/?lang=2" {
+		t.Fatalf("configured URLs changed: %q, %q", req.pages[0].url, req.pages[1].url)
+	}
+	if got := mapNavigation(req.pages[0].base, req.pages[1].base, "https://example.com/home"); got != "https://example.com/home?lang=2" {
+		t.Errorf("query variant follow after redirect = %q", got)
+	}
+	if got := mapNavigation(req.pages[0].base, req.pages[1].base, "https://example.com/home?page=3&lang=0"); got != "https://example.com/home?page=3&lang=2" {
+		t.Errorf("query variant follow with route query = %q", got)
+	}
+}
+
+func TestFollowKeepsFollowerSelfNavigationQueryVariants(t *testing.T) {
+	// With query variants the mapped target re-encodes the query while the
+	// follower's own replay lands on the site's query order. Both address the
+	// same page, so follow must not clobber the self-navigation with a reload.
+	a := newApp()
+	a.status = "running"
+	primary := &pageRecord{id: "p1", base: "https://x.com?lang=0", url: "https://x.com/shop?page=2&lang=0", isPrimary: true}
+	f := &pageRecord{id: "p2", base: "https://x.com?lang=2", url: "https://x.com/?lang=2", syncOn: true, status: "ready", queue: newOpQueue(0)}
+	a.pages = map[string]*pageRecord{"p1": primary, "p2": f}
+	a.order = []string{"p1", "p2"}
+	a.primaryID = "p1"
+
+	f.navPendingAt = time.Now()
+	a.followTargets(primary, "https://x.com/shop?page=2&lang=0")
+	if f.pendingNav != "https://x.com/shop?page=2&lang=2" {
+		t.Fatalf("pendingNav = %q, want the follower's own variant", f.pendingNav)
+	}
+	// The follower's replay commits the same page with the site's query order.
+	f.navPendingAt = time.Time{}
+	f.url = "https://x.com/shop?lang=2&page=2"
+	if nav := a.reconcileNavLocked(f, false); nav != "" {
+		t.Errorf("reordered self-navigation must not be clobbered, got %q", nav)
+	}
+	// A later primary move to the same page must also skip the follower.
+	if targets := a.followTargets(primary, "https://x.com/shop?page=2&lang=0"); len(targets) != 0 {
+		t.Errorf("follower already at target (reordered query), got %+v", targets)
+	}
+}
+
+func TestWaitNavCommitAcceptsReorderedQuery(t *testing.T) {
+	a, _ := followFixture()
+	f := a.pages["p2"]
+	f.url = "https://b.com/s?lang=2&page=2"
+	start := time.Now()
+	a.waitNavCommit(f, "https://b.com/s?page=2&lang=2", time.Now().Add(500*time.Millisecond))
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Errorf("waitNavCommit stalled on a reordered query: %v", elapsed)
 	}
 }
 

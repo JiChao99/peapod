@@ -43,18 +43,65 @@ func renderTemplate(t string, vars map[string]string) (string, []string) {
 	return out, missing
 }
 
-// cleanTemplateBase normalizes a rendered variant base. It rejects query and
-// fragment components — including a bare '#' delimiter, whose empty fragment
-// would otherwise swallow an appended path — and trims trailing slashes so
-// base+path never doubles a slash. The origin is normalized like plain mode
-// (originOf) so case/default-port differences still match browser-reported URLs
-// in mapNavigation, while the template's path prefix is preserved. ok is false
-// when the base is unusable as a prefix.
+// cleanTemplateBase normalizes a rendered variant base. Query values are kept
+// as per-page variants; fragments and a bare '?' are rejected. It trims
+// trailing slashes so appending a path never doubles a slash. The origin is
+// normalized like plain mode (originOf), while the template's path prefix and
+// query are preserved.
 func cleanTemplateBase(base string) (string, bool) {
 	u, err := url.Parse(base)
-	if err != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || strings.Contains(base, "#") {
+	if err != nil || u.ForceQuery || u.Fragment != "" || strings.Contains(base, "#") {
 		return "", false
 	}
 	path := strings.TrimRight(u.EscapedPath(), "/")
-	return originOf(base) + path, true
+	clean := originOf(base) + path
+	if u.RawQuery != "" {
+		clean += "?" + u.RawQuery
+	}
+	return clean, true
+}
+
+// appendTemplatePath appends a page's optional path to the rendered template
+// base. Query values from the page path supplement or override template values.
+func appendTemplatePath(base, path string) (string, error) {
+	u, err := url.Parse(base)
+	if err != nil {
+		return "", err
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		path = "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	suffix, err := url.Parse(path)
+	if err != nil {
+		return "", err
+	}
+
+	escapedPath := strings.TrimRight(u.EscapedPath(), "/") + suffix.EscapedPath()
+	decodedPath, err := url.PathUnescape(escapedPath)
+	if err != nil {
+		return "", err
+	}
+	u.Path = decodedPath
+	u.RawPath = escapedPath
+
+	query, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return "", err
+	}
+	pathQuery, err := url.ParseQuery(suffix.RawQuery)
+	if err != nil {
+		return "", err
+	}
+	for key, values := range pathQuery {
+		query[key] = values
+	}
+	u.RawQuery = query.Encode()
+	u.ForceQuery = u.RawQuery == "" && suffix.ForceQuery
+	u.Fragment = suffix.Fragment
+	u.RawFragment = suffix.RawFragment
+	return u.String(), nil
 }

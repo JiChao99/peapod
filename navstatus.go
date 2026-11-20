@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"net/url"
 	"runtime"
+	"slices"
+	"strings"
 
 	"github.com/egoist/mygo"
 )
@@ -163,7 +165,61 @@ func sameDocumentURL(a, b string) bool {
 	}
 	ua.Fragment, ua.RawFragment = "", ""
 	ub.Fragment, ub.RawFragment = "", ""
-	return ua.String() == ub.String()
+	return sameURLDocument(ua, ub)
+}
+
+// sameFollowURL reports whether two URLs address the same document: scheme,
+// host, path and fragment match and the query pairs are equal regardless of
+// order. Follow targets are re-encoded (variant pairs merged in), while the
+// web view reports the site's own query order, so string equality would treat
+// a landed self-navigation as a different page and clobber it with a reload.
+func sameFollowURL(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ua, err := url.Parse(a)
+	if err != nil {
+		return false
+	}
+	ub, err := url.Parse(b)
+	if err != nil {
+		return false
+	}
+	return sameURLDocument(ua, ub)
+}
+
+// sameURLDocument compares two parsed URLs by scheme, host (case-insensitive),
+// escaped path, fragment and query values.
+func sameURLDocument(ua, ub *url.URL) bool {
+	if ua.Scheme != ub.Scheme || !strings.EqualFold(ua.Host, ub.Host) ||
+		ua.EscapedPath() != ub.EscapedPath() || ua.Fragment != ub.Fragment {
+		return false
+	}
+	return sameQueryValues(ua.RawQuery, ub.RawQuery)
+}
+
+// sameQueryValues compares raw queries pair by pair, ignoring pair order but
+// not the order of values within a key. Queries that fail to parse (stray '%'
+// escapes) only match verbatim.
+func sameQueryValues(a, b string) bool {
+	if a == b {
+		return true
+	}
+	qa, errA := url.ParseQuery(a)
+	qb, errB := url.ParseQuery(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	if len(qa) != len(qb) {
+		return false
+	}
+	for key, va := range qa {
+		vb, ok := qb[key]
+		if !ok || !slices.Equal(va, vb) {
+			return false
+		}
+	}
+	return true
 }
 
 // markNavCommittedLocked records a committed navigation (ContentLoading). A new

@@ -493,14 +493,11 @@ func (a *app) buildRequest() (startRequest, error) {
 				return startRequest{}, a.fieldError("page:"+cfg.id, a.tr("err.templateBase", a.cfgName(cfg, i)))
 			}
 			base = clean
-			path := strings.TrimSpace(cfg.url)
-			if path == "" {
-				path = "/"
+			var pathErr error
+			raw, pathErr = appendTemplatePath(base, cfg.url)
+			if pathErr != nil {
+				return startRequest{}, a.fieldError("page:"+cfg.id, a.tr("err.pageURL", a.cfgName(cfg, i), a.tr("err.urlInvalid")))
 			}
-			if !strings.HasPrefix(path, "/") {
-				path = "/" + path
-			}
-			raw = base + path
 			if err := a.validateURL(raw); err != nil {
 				return startRequest{}, a.fieldError("page:"+cfg.id, a.tr("err.pageURL", a.cfgName(cfg, i), err.Error()))
 			}
@@ -1140,7 +1137,7 @@ func (a *app) attachHandlers(p *pageRecord) {
 				// This page navigated; any replay that was expected to cause
 				// it has landed, so follow may act on the next primary move.
 				p.navPendingAt = time.Time{}
-				if p.pendingNav == u {
+				if p.pendingNav != "" && sameFollowURL(p.pendingNav, u) {
 					p.pendingNav = ""
 				} else {
 					nav = a.reconcileNavLocked(p, false)

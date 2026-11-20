@@ -421,14 +421,11 @@ func (a *app) resolveMCPRequest(in startIn) (startRequest, error) {
 				return startRequest{}, fmt.Errorf("%s", a.tr("err.templateBase", mcpName(p, i)))
 			}
 			base = clean
-			path := strings.TrimSpace(p.Path)
-			if path == "" {
-				path = "/"
+			var pathErr error
+			raw, pathErr = appendTemplatePath(base, p.Path)
+			if pathErr != nil {
+				return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", mcpName(p, i), a.tr("err.urlInvalid")))
 			}
-			if !strings.HasPrefix(path, "/") {
-				path = "/" + path
-			}
-			raw = base + path
 			if err := a.validateURL(raw); err != nil {
 				return startRequest{}, fmt.Errorf("%s", a.tr("err.pageURL", mcpName(p, i), err.Error()))
 			}
