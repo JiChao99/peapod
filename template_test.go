@@ -202,10 +202,29 @@ func TestBuildRequestTemplateQuery(t *testing.T) {
 		req.pages[1].url != "https://example.com/?lang=2" {
 		t.Errorf("follower = %+v", req.pages[1])
 	}
-	if got := mapNavigation(req.pages[0].base, req.pages[1].base, "https://example.com/home?page=3&lang=0"); got != "https://example.com/home?lang=2&page=3" {
+	if got := mapNavigation(req.pages[0].base, req.pages[1].base, "https://example.com/home?page=3&lang=0"); got != "https://example.com/home?page=3&lang=2" {
 		t.Errorf("query template follow = %q", got)
 	}
 	if got := mapNavigation(req.pages[0].base, req.pages[1].base, "https://example.com/home"); got != "https://example.com/home?lang=2" {
 		t.Errorf("query template follow after redirect = %q", got)
+	}
+}
+
+func TestAppendTemplatePath(t *testing.T) {
+	cases := []struct{ base, path, want string }{
+		{"https://a.com?lang=0", "", "https://a.com/?lang=0"},
+		{"https://a.com?lang=0", "/shop?page=1", "https://a.com/shop?lang=0&page=1"},
+		{"https://a.com/en?lang=0", "shop", "https://a.com/en/shop?lang=0"},
+		{"https://a.com?lang=0", "?page=1", "https://a.com/?lang=0&page=1"},
+		{"https://a.com?lang=0", "/shop#top", "https://a.com/shop?lang=0#top"},
+		// A path query overrides the template value for the initial URL.
+		{"https://a.com?lang=0", "/shop?lang=9", "https://a.com/shop?lang=9"},
+		{"https://a.com", "/shop?page=1", "https://a.com/shop?page=1"},
+	}
+	for _, c := range cases {
+		got, err := appendTemplatePath(c.base, c.path)
+		if err != nil || got != c.want {
+			t.Errorf("appendTemplatePath(%q, %q) = %q, %v; want %q", c.base, c.path, got, err, c.want)
+		}
 	}
 }

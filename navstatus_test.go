@@ -284,6 +284,34 @@ func TestSameDocumentURL(t *testing.T) {
 	}
 }
 
+func TestSameFollowURL(t *testing.T) {
+	cases := []struct {
+		a, b string
+		want bool
+	}{
+		{"https://x.com/s?lang=2&page=2", "https://x.com/s?lang=2&page=2", true},
+		// Pair order differs between a mapped target and the site-reported URL.
+		{"https://x.com/s?lang=2&page=2", "https://x.com/s?page=2&lang=2", true},
+		{"https://X.com/s", "https://x.com/s", true},
+		{"https://x.com/s?lang=2", "https://x.com/s?lang=0", false},
+		{"https://x.com/s?lang=2", "https://x.com/s", false},
+		{"https://x.com/s", "https://x.com/t", false},
+		{"https://x.com/s#top", "https://x.com/s#bottom", false},
+		{"https://x.com/s#top", "https://x.com/s", false},
+		// Value order within one key is significant.
+		{"https://x.com/?t=a&t=b", "https://x.com/?t=b&t=a", false},
+		// Unparseable queries only match verbatim.
+		{"https://x.com/s?q=100%", "https://x.com/s?q=100%", true},
+		{"https://x.com/s?q=100%&lang=2", "https://x.com/s?lang=2&q=100%", false},
+		{"", "https://x.com", false},
+	}
+	for _, c := range cases {
+		if got := sameFollowURL(c.a, c.b); got != c.want {
+			t.Errorf("sameFollowURL(%q,%q) = %v, want %v", c.a, c.b, got, c.want)
+		}
+	}
+}
+
 func TestResetNavLocked(t *testing.T) {
 	p := &pageRecord{
 		status: "paused", navError: &navFailure{URL: "https://bad.invalid/"},

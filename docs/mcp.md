@@ -166,7 +166,7 @@ Returns the Go-side page state plus an in-page read (via a bounded Eval). Page c
 Each page accepts `name`, and either plain-mode `url` or template-mode `vars` + `path`, plus optional `resW` / `resH` (200–3840).
 
 - **Plain mode** (no `template`): the first page's `url` is required; a later page with an empty `url` inherits it. Query keys with different values across configured URLs are treated as per-page variants during navigation follow.
-- **Template mode** (`template` set, e.g. `https://{host}/{lang}` or `https://{host}/?yplang={lang}`): each page supplies `vars` (`host=dev.example.com, lang=en`) and an optional `path` (default `/`). Path and query variants are supported; navigation follow maps paths and keeps each page's template query values.
+- **Template mode** (`template` set, e.g. `https://{host}/{lang}` or `https://{host}/?yplang={lang}`): each page supplies `vars` (`host=dev.example.com, lang=en`) and an optional `path` (default `/`). Path and query variants are supported; navigation follow maps paths and keeps each page's template query values. A page `path` may carry its own query and fragment; its query values are merged over the template's for the initial URL.
 
 `diagnostics` (default `false`) is a task-level opt-in: when `true`, the console/network/error collector is injected into every page at document start, so activity from the very first load is captured. Leave it `false` for ordinary mirroring — `peapod_diagnostics` still works and installs the collector on demand the first time you call it (capturing activity from that point on). The native panel never injects the collector.
 

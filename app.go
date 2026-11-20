@@ -1137,7 +1137,7 @@ func (a *app) attachHandlers(p *pageRecord) {
 				// This page navigated; any replay that was expected to cause
 				// it has landed, so follow may act on the next primary move.
 				p.navPendingAt = time.Time{}
-				if p.pendingNav == u {
+				if p.pendingNav != "" && sameFollowURL(p.pendingNav, u) {
 					p.pendingNav = ""
 				} else {
 					nav = a.reconcileNavLocked(p, false)
