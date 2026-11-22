@@ -80,8 +80,15 @@ type pageState struct {
 	Status    string      `json:"status"`
 	SyncOn    bool        `json:"syncOn"`
 	IsPrimary bool        `json:"isPrimary"`
-	Error     *syncError  `json:"error"`
-	NavError  *navFailure `json:"navError,omitempty"`
+	ResW      float64     `json:"resW"`
+	ResH      float64     `json:"resH"`
+	// Syncing/Pending expose the replay queue so the panel can show "syncing"
+	// as soon as an operation is queued, instead of leaving the card "ready"
+	// while the follower waits for an anchor.
+	Syncing  bool        `json:"syncing,omitempty"`
+	Pending  int         `json:"pending,omitempty"`
+	Error    *syncError  `json:"error"`
+	NavError *navFailure `json:"navError,omitempty"`
 }
 
 // appState is everything the native panel renders, and the peapod_status payload.
@@ -92,6 +99,11 @@ type appState struct {
 	Errors   []syncError `json:"errors"`
 	Message  string      `json:"message"`
 	Notice   string      `json:"notice"`
+	// NoticeKey/NoticeArgs are set for notices built from an i18n key, so the
+	// panel re-renders them in the current language. Notice keeps the text
+	// already resolved when the notice was published (MCP status contract).
+	NoticeKey  string `json:"noticeKey,omitempty"`
+	NoticeArgs []any  `json:"noticeArgs,omitempty"`
 	// NoticeKind tiers Notice for the panel: info | success | warning | error.
 	NoticeKind string `json:"noticeKind,omitempty"`
 	// NoticePath/NoticePathIsDir drive the notice's open-folder/open-file action.
@@ -99,6 +111,8 @@ type appState struct {
 	NoticePathIsDir bool   `json:"noticePathIsDir,omitempty"`
 	ShotBusy        bool   `json:"shotBusy,omitempty"`
 	DiffBusy        bool   `json:"diffBusy,omitempty"`
+	// Diff is the latest per-page batch-diff result, shown in the runtime panel.
+	Diff *diffReportState `json:"diff,omitempty"`
 
 	// Recording/replay evidence surface (docs/mcp.md). Recording is true while
 	// a recorder is attached; Replay appears once a peapod_replay has started
@@ -111,6 +125,10 @@ type appState struct {
 	// SyncDelayMs is the running task's pace for continuous operations
 	// (input/scroll); 0 replays them instantly.
 	SyncDelayMs float64 `json:"syncDelayMs"`
+
+	// ViewMode is the running task's resolved view mode; the stage and size
+	// warnings read it from this snapshot instead of the guarded app field.
+	ViewMode string `json:"viewMode,omitempty"`
 }
 
 // app holds the task state. mu guards the task/page fields, which services and
@@ -128,6 +146,12 @@ type app struct {
 	// noticeKind tiers the notice for the panel: info | success | warning | error.
 	// Guarded by mu like notice; setNotice* write both together.
 	noticeKind string
+	// noticeKey/noticeArgs let the panel re-render a localized notice after a
+	// language switch; notice keeps the text resolved at publish time.
+	noticeKey  string
+	noticeArgs []any
+	// noticeSeq invalidates the auto-dismiss timer of an older notice.
+	noticeSeq uint64
 	// noticeTag marks a notice tied to a transient activity ("replay") so the
 	// activity's end can replace or clear it instead of leaving it stale.
 	noticeTag string
@@ -180,9 +204,14 @@ type app struct {
 	viewMode        string // desktop | mobile
 	lastViewMode    string
 	resW, resH      float64 // preset seeded by viewMode; each page copies it
-	// resByMode remembers each view mode's last-used resolution so switching
-	// back restores it instead of the factory preset. Main-thread only.
+	// resByMode remembers each view mode's last-used preset resolution so
+	// switching back restores it instead of the factory preset. resByPage
+	// additionally remembers each page's own resolution per mode, so a mode
+	// switch no longer flattens customized page sizes.
 	resByMode map[string][2]float64
+	resByPage map[string]map[string][2]float64
+	// diffReport is the latest per-page diff result, cleared on a new launch.
+	diffReport *diffReportState
 	// advancedOpen expands the advanced-settings group (UA, sync pace, shared
 	// storage, recording); default collapsed. Main-thread only.
 	advancedOpen bool
@@ -214,6 +243,10 @@ type app struct {
 	// profile behind a confirm modal. UI-owned like the fields above.
 	profileOverwriteOpen bool
 	profileOverwriteName string
+	// profileDeleteOpen/profileDeleteName gate deleting a profile behind a
+	// confirm modal, since the file cannot be recovered.
+	profileDeleteOpen bool
+	profileDeleteName string
 
 	themeMode string // system | light | dark
 	// captionTheme is the theme last given to the native caption buttons, so
@@ -223,8 +256,10 @@ type app struct {
 	shotName     string // base name for batch screenshots
 	bulkOpen     bool   // URL-list bulk add area expanded; UI-owned like shotName
 	bulkText     string // pasted URL list, one per line; UI-owned like shotName
-	// pendingDup/pendingRemove defer row mutations clicked during the setup
-	// range loop until after it, so the loop never reads a shifted slice.
+	// pendingAdd/pendingDup/pendingRemove defer row mutations clicked during
+	// the setup range loop until after it, so the loop never reads a shifted
+	// slice.
+	pendingAdd    bool
 	pendingDup    string
 	pendingRemove string
 	// confirmStop gates the irreversible stop behind a confirmation modal;
@@ -258,6 +293,7 @@ func newApp() *app {
 			"desktop": {1280, 800},
 			"mobile":  {390, 844},
 		},
+		resByPage: map[string]map[string][2]float64{},
 		lastStatus: "idle",
 		uaPreset:   uaDefault,
 		themeMode:  "system",
@@ -408,10 +444,41 @@ func parseURLLines(raw string) []string {
 	return out
 }
 
+// defaultPageName derives a setup-row name from a URL. Same-host variants are
+// the common case (example.com/en vs example.com/zh), so the path is part of
+// the name; the host alone cannot tell them apart in cards or screenshots.
+func defaultPageName(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return strings.TrimSpace(raw)
+	}
+	name := u.Host
+	if path := strings.Trim(u.Path, "/"); path != "" {
+		name += "/" + path
+	}
+	return name
+}
+
+// uniquePageName keeps generated names distinct against the rows already in
+// the form (and earlier rows of the same bulk batch).
+func (a *app) uniquePageName(name string) string {
+	used := map[string]bool{}
+	for _, cfg := range a.configs {
+		if n := strings.TrimSpace(cfg.name); n != "" {
+			used[n] = true
+		}
+	}
+	base := name
+	for i := 2; used[name]; i++ {
+		name = fmt.Sprintf("%s-%d", base, i)
+	}
+	return name
+}
+
 // bulkAddURLs appends one setup row per URL line, all or nothing: every line
 // must validate and the total must stay within the ten-page cap. Generated
-// rows inherit the preset resolution and take their host as name, so batch
-// screenshots of ten look-alike pages stay tellable apart.
+// rows inherit the preset resolution and are named host/path, with a numeric
+// suffix when a name would repeat, so same-host variants stay tellable apart.
 func (a *app) bulkAddURLs(raw string) (int, error) {
 	if a.templateMode() {
 		return 0, fmt.Errorf("%s", a.tr("err.bulkPlain"))
@@ -433,11 +500,9 @@ func (a *app) bulkAddURLs(raw string) (int, error) {
 		cfg := &pageConfig{
 			id:   fmt.Sprintf("c%d", a.configSeq),
 			url:  line,
+			name: a.uniquePageName(defaultPageName(line)),
 			resW: a.resW,
 			resH: a.resH,
-		}
-		if u, err := url.Parse(line); err == nil {
-			cfg.name = u.Hostname()
 		}
 		a.configs = append(a.configs, cfg)
 	}
@@ -458,6 +523,9 @@ func (a *app) buildRequest() (startRequest, error) {
 	primaryURL := ""
 	if tmpl == "" {
 		primaryURL = strings.TrimSpace(a.configs[0].url)
+		if primaryURL == "" {
+			return startRequest{}, a.fieldError("page:"+a.configs[0].id, a.tr("err.primaryURLEmpty"))
+		}
 		if err := a.validateURL(primaryURL); err != nil {
 			return startRequest{}, a.fieldError("page:"+a.configs[0].id, a.tr("err.primaryURL", err.Error()))
 		}
@@ -555,7 +623,13 @@ func clampRes(v, fallback float64) float64 {
 func (a *app) startTask() {
 	req, err := a.buildRequest()
 	if err != nil {
-		a.setNoticeErr(err.Error())
+		// Only a field failure is cleared by fixing the form; anything else
+		// (page count) has no field to correct and must stay visible.
+		if len(a.fieldErr) > 0 {
+			a.setNoticeErrTag("form", err.Error())
+		} else {
+			a.setNoticeErr(err.Error())
+		}
 		return
 	}
 	if err := a.launch(req); err != nil {
@@ -580,11 +654,8 @@ func (a *app) launch(req startRequest) error {
 	a.status = "starting"
 	a.startAt = time.Now()
 	a.message = ""
-	a.notice = ""
-	a.noticeKind = ""
-	a.noticeTag = ""
-	a.noticePath = ""
-	a.noticePathIsDir = false
+	a.clearNoticeLocked()
+	a.diffReport = nil
 	a.cancel = make(chan struct{})
 	cancel := a.cancel
 	taskID := a.taskID
@@ -729,7 +800,7 @@ func (a *app) screenshotAll() {
 	a.mu.Lock()
 	if a.status != "running" {
 		a.mu.Unlock()
-		a.setNoticeErr(a.tr("err.notRunning"))
+		a.setNoticeErrKey("err.notRunning")
 		return
 	}
 	if a.shotBusy {
@@ -754,13 +825,12 @@ func (a *app) screenshotAll() {
 		a.mu.Lock()
 		a.shotBusy = false
 		a.mu.Unlock()
-		a.setNoticeErr(a.tr("err.noPages"))
+		a.setNoticeErrKey("err.noPages")
 		return
 	}
 	if base == "" {
 		base = "screenshot"
 	}
-	lang := a.currentLang()
 	a.pushState()
 	go func() {
 		defer func() {
@@ -772,7 +842,7 @@ func (a *app) screenshotAll() {
 		dir, err := screenshotDir(base)
 		if err != nil {
 			if !a.batchStale(taskID) {
-				a.setNoticeErr(trLang(lang, "err.shotDir", err.Error()))
+				a.setNoticeErrKey("err.shotDir", err.Error())
 			}
 			return
 		}
@@ -811,10 +881,10 @@ func (a *app) screenshotAll() {
 			return
 		}
 		if failed > 0 {
-			a.setNoticeOpen(trLang(lang, "notice.shotPartial", saved, failed, dir), "warning", dir, true)
+			a.setNoticeOpenKey("warning", "notice.shotPartial", dir, true, saved, failed, dir)
 			return
 		}
-		a.setNoticeOpen(trLang(lang, "notice.shotDone", saved, dir), "success", dir, true)
+		a.setNoticeOpenKey("success", "notice.shotDone", dir, true, saved, dir)
 	}()
 }
 
@@ -839,32 +909,103 @@ func (a *app) batchStale(taskID string) bool {
 	return a.taskID != taskID || a.status != "running"
 }
 
-func (a *app) setNotice(msg string) { a.setNoticeKind(msg, "info") }
+// setNoticeErr tiers a notice as an error so the panel renders it as an alert
+// instead of undifferentiated gray text.
+func (a *app) setNoticeErr(msg string) { a.setNoticeFull(msg, "error", "", "", false) }
 
-// setNoticeErr/Warn/OK tier a notice so the panel renders it as an error,
-// warning or success alert instead of undifferentiated gray text.
-func (a *app) setNoticeErr(msg string)  { a.setNoticeKind(msg, "error") }
-func (a *app) setNoticeWarn(msg string) { a.setNoticeKind(msg, "warning") }
-func (a *app) setNoticeOK(msg string)   { a.setNoticeKind(msg, "success") }
-
-func (a *app) setNoticeKind(msg, kind string) {
-	a.setNoticeFull(msg, kind, "", "", false)
+// setNoticeTextLocked publishes a literal notice, dropping any keyed notice it
+// replaces and moving the sequence so a pending TTL from an older notice cannot
+// dismiss this one. The caller holds a.mu.
+func (a *app) setNoticeTextLocked(msg, kind, tag string) {
+	a.notice = msg
+	a.noticeKind = kind
+	a.noticeKey = ""
+	a.noticeArgs = nil
+	a.noticeTag = tag
+	a.noticePath = ""
+	a.noticePathIsDir = false
+	a.noticeSeq++
 }
 
-// setNoticeOpen attaches an open-folder/open-file action to a result notice.
-func (a *app) setNoticeOpen(msg, kind, path string, isDir bool) {
-	a.setNoticeFull(msg, kind, "", path, isDir)
+// setNoticeErrTag publishes a literal error tied to a transient form; the
+// setup form clears it once its validation errors are gone.
+func (a *app) setNoticeErrTag(tag, msg string) {
+	a.setNoticeFull(msg, "error", tag, "", false)
+}
+
+// setNoticeKey* publish a notice from an i18n key and arguments, so the panel
+// re-renders it in the language selected later instead of freezing the text.
+func (a *app) setNoticeKey(kind, key string, args ...any) {
+	a.setNoticeKeyFull(kind, key, "", "", false, args...)
+}
+func (a *app) setNoticeOKKey(key string, args ...any)   { a.setNoticeKey("success", key, args...) }
+func (a *app) setNoticeWarnKey(key string, args ...any) { a.setNoticeKey("warning", key, args...) }
+func (a *app) setNoticeErrKey(key string, args ...any)  { a.setNoticeKey("error", key, args...) }
+func (a *app) setNoticeOpenKey(kind, key, path string, isDir bool, args ...any) {
+	a.setNoticeKeyFull(kind, key, "", path, isDir, args...)
 }
 
 func (a *app) setNoticeFull(msg, kind, tag, path string, isDir bool) {
+	a.publishNotice(msg, kind, tag, path, isDir, "", nil)
+}
+
+func (a *app) setNoticeKeyFull(kind, key, tag, path string, isDir bool, args ...any) {
+	a.publishNotice(a.tr(key, args...), kind, tag, path, isDir, key, args)
+}
+
+// noticeTTL is how long a transient success/info notice stays before it
+// auto-dismisses; errors and warnings stay until replaced or closed.
+const noticeTTL = 5 * time.Second
+
+// noticeAutoExpires reports whether a notice may dismiss itself. Result notices
+// that carry an artifact path stay up: the open-folder button is the only
+// in-app route back to the diff/screenshot/recording they produced.
+func noticeAutoExpires(kind, path string) bool {
+	if path != "" {
+		return false
+	}
+	return kind == "success" || kind == "info"
+}
+
+func (a *app) publishNotice(msg, kind, tag, path string, isDir bool, key string, args []any) {
 	a.mu.Lock()
 	a.notice = msg
 	a.noticeKind = kind
+	a.noticeKey = key
+	a.noticeArgs = append([]any(nil), args...)
 	a.noticeTag = tag
 	a.noticePath = path
 	a.noticePathIsDir = isDir
+	a.noticeSeq++
+	seq := a.noticeSeq
+	a.mu.Unlock()
+	if noticeAutoExpires(kind, path) {
+		time.AfterFunc(noticeTTL, func() { a.expireNotice(seq) })
+	}
+	a.pushState()
+}
+
+// expireNotice clears a success/info notice only if it is still the one the
+// timer was scheduled for, so a newer notice is never dismissed early.
+func (a *app) expireNotice(seq uint64) {
+	a.mu.Lock()
+	if a.noticeSeq != seq || (a.noticeKind != "success" && a.noticeKind != "info") {
+		a.mu.Unlock()
+		return
+	}
+	a.clearNoticeLocked()
 	a.mu.Unlock()
 	a.pushState()
+}
+
+func (a *app) clearNoticeLocked() {
+	a.notice = ""
+	a.noticeKind = ""
+	a.noticeKey = ""
+	a.noticeArgs = nil
+	a.noticeTag = ""
+	a.noticePath = ""
+	a.noticePathIsDir = false
 }
 
 // clearNoticeTag drops the notice only if it still carries tag, so a newer
@@ -875,11 +1016,7 @@ func (a *app) clearNoticeTag(tag string) {
 		a.mu.Unlock()
 		return
 	}
-	a.notice = ""
-	a.noticeKind = ""
-	a.noticeTag = ""
-	a.noticePath = ""
-	a.noticePathIsDir = false
+	a.clearNoticeLocked()
 	a.mu.Unlock()
 	a.pushState()
 }
@@ -972,10 +1109,11 @@ func (a *app) countdownProgress() (sec int, pct float32) {
 	return sec, pct
 }
 
-// reseedViewMode applies a view-mode change on the main thread: it remembers
-// the leaving mode's last-used resolution (the primary row's when set, else
-// the preset), restores the entering mode's remembered resolution, and copies
-// it into every page row as before.
+// reseedViewMode applies a view-mode change on the main thread. Each page's
+// resolution is remembered under the mode it was edited in, and restored when
+// the user returns to that mode; pages without a saved value for the entering
+// mode take that mode's preset. Switching modes therefore never flattens the
+// per-page sizes the user configured for the other mode.
 func (a *app) reseedViewMode() {
 	if a.viewMode == a.lastViewMode {
 		return
@@ -983,11 +1121,20 @@ func (a *app) reseedViewMode() {
 	if a.resByMode == nil {
 		a.resByMode = map[string][2]float64{}
 	}
+	if a.resByPage == nil {
+		a.resByPage = map[string]map[string][2]float64{}
+	}
+	if a.resByPage[a.lastViewMode] == nil {
+		a.resByPage[a.lastViewMode] = map[string][2]float64{}
+	}
 	w, h := a.resW, a.resH
 	if len(a.configs) > 0 && a.configs[0].resW > 0 && a.configs[0].resH > 0 {
 		w, h = a.configs[0].resW, a.configs[0].resH
 	}
 	a.resByMode[a.lastViewMode] = [2]float64{w, h}
+	for _, cfg := range a.configs {
+		a.resByPage[a.lastViewMode][cfg.id] = [2]float64{cfg.resW, cfg.resH}
+	}
 	r, ok := a.resByMode[a.viewMode]
 	if !ok {
 		if a.viewMode == "mobile" {
@@ -997,7 +1144,12 @@ func (a *app) reseedViewMode() {
 		}
 	}
 	a.resW, a.resH = r[0], r[1]
+	saved := a.resByPage[a.viewMode]
 	for _, cfg := range a.configs {
+		if p, ok := saved[cfg.id]; ok && p[0] > 0 && p[1] > 0 {
+			cfg.resW, cfg.resH = p[0], p[1]
+			continue
+		}
 		cfg.resW, cfg.resH = a.resW, a.resH
 	}
 	a.lastViewMode = a.viewMode
@@ -1077,7 +1229,7 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 	// Attach the recorder while still starting: once status flips to running,
 	// operations can dispatch, and none may fall into a recording gap.
 	if req.record {
-		a.startRecording(taskID, req, lang)
+		a.startRecording(taskID, req)
 	}
 	a.mu.Lock()
 	if a.taskID != taskID || a.status != "starting" {
@@ -1198,13 +1350,9 @@ func (a *app) cleanup(pages []*pageRecord, lang string) {
 	a.taskSyncDelay = 0
 	// Drop the previous task's result notice so a stale screenshot/diff path does
 	// not linger in the footer after stop; the recorder's save notice (if any)
-	// lands afterwards as a fresh result. Clear the tag/path too, so a replay
+	// lands afterwards as a fresh result. Clear the tag/path/key too, so a replay
 	// finishing concurrently cannot resurrect its result over this reset.
-	a.notice = ""
-	a.noticeKind = ""
-	a.noticeTag = ""
-	a.noticePath = ""
-	a.noticePathIsDir = false
+	a.clearNoticeLocked()
 	// A batch goroutine may outlive the task (capture timeouts); release its
 	// busy flags so the next task's buttons are not disabled by a dead batch.
 	a.shotBusy = false
@@ -1229,6 +1377,8 @@ func (a *app) snapshot() appState {
 		ActiveID:        a.activeID,
 		Message:         a.message,
 		Notice:          a.notice,
+		NoticeKey:       a.noticeKey,
+		NoticeArgs:      append([]any(nil), a.noticeArgs...),
 		NoticeKind:      a.noticeKind,
 		NoticePath:      a.noticePath,
 		NoticePathIsDir: a.noticePathIsDir,
@@ -1237,19 +1387,34 @@ func (a *app) snapshot() appState {
 		Pages:           make([]pageState, 0, len(a.order)),
 		Errors:          []syncError{},
 		SyncDelayMs:     float64(a.taskSyncDelay) / float64(time.Millisecond),
+		ViewMode:        a.taskViewMode,
 	}
 	for _, id := range a.order {
 		p := a.pages[id]
 		if p == nil {
 			continue
 		}
+		pending := 0
+		if p.queue != nil {
+			pending = p.queue.len()
+		}
+		if p.replaying {
+			pending++
+		}
+		syncing := p.status == "ready" && pending > 0
 		st.Pages = append(st.Pages, pageState{
 			ID: p.id, Name: p.name, URL: p.url, Status: p.status,
 			SyncOn: p.syncOn, IsPrimary: p.isPrimary, Error: p.lastError, NavError: p.navError,
+			ResW: p.resW, ResH: p.resH, Syncing: syncing, Pending: pending,
 		})
 		if p.lastError != nil {
 			st.Errors = append(st.Errors, *p.lastError)
 		}
+	}
+	if a.diffReport != nil {
+		rep := *a.diffReport
+		rep.Entries = append([]diffReportEntry(nil), a.diffReport.Entries...)
+		st.Diff = &rep
 	}
 	if r := a.rec; r != nil {
 		st.Recording = true

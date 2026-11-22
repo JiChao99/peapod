@@ -142,11 +142,13 @@ func capturePreload(pageID string) string {
 }
 
 // resolveScript waits until the anchor matches exactly one element, returning
-// {found:true} or {errorCode}.
+// {found:true} or {errorCode}. The wait is short (3s): a missing static target
+// must pause the follower quickly enough for the user to see it, while a
+// re-rendering SPA still gets a brief window to attach the element.
 func resolveScript(anchorJSON string) string {
 	return `(async () => {
     const anchor = ` + anchorJSON + `;
-    const deadline = Date.now() + 10000;
+    const deadline = Date.now() + 3000;
     while (Date.now() <= deadline) {
       let matches;
       try { matches = document.querySelectorAll(anchor.selector); }

@@ -33,10 +33,10 @@ func TestBulkAddURLs(t *testing.T) {
 	if n != 2 || len(a.configs) != 3 {
 		t.Fatalf("added %d, configs %d, want 2 and 3", n, len(a.configs))
 	}
-	for i, want := range []string{"a.example.com", "b.example.com"} {
+	for i, want := range []string{"a.example.com", "b.example.com/x"} {
 		cfg := a.configs[i+1]
 		if cfg.name != want {
-			t.Errorf("page %d name = %q, want host %q", i+1, cfg.name, want)
+			t.Errorf("page %d name = %q, want host/path %q", i+1, cfg.name, want)
 		}
 		if cfg.resW != 390 || cfg.resH != 844 {
 			t.Errorf("page %d resolution = %vx%v, want inherited 390x844", i+1, cfg.resW, cfg.resH)
@@ -44,6 +44,25 @@ func TestBulkAddURLs(t *testing.T) {
 	}
 	if a.configs[1].url != "https://a.example.com" || a.configs[2].url != "https://b.example.com/x" {
 		t.Errorf("urls not kept verbatim: %q, %q", a.configs[1].url, a.configs[2].url)
+	}
+}
+
+func TestBulkAddURLsSameHostVariants(t *testing.T) {
+	a := newApp()
+	a.configs = a.configs[:1]
+	a.configs[0].url = "https://primary.example.com"
+	n, err := a.bulkAddURLs("https://example.com/en\nhttps://example.com/zh\nhttps://example.com/en\n")
+	if err != nil {
+		t.Fatalf("bulkAddURLs: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("added %d, want 3", n)
+	}
+	want := []string{"example.com/en", "example.com/zh", "example.com/en-2"}
+	for i, name := range want {
+		if got := a.configs[i+1].name; got != name {
+			t.Errorf("page %d name = %q, want %q", i+1, got, name)
+		}
 	}
 }
 

@@ -273,7 +273,10 @@ func TestRunBatchDiff(t *testing.T) {
 			return solidPNG(t, 3, 2, white), nil // size mismatch → failed entry
 		}
 	}
-	ok, failed, differ := a.runBatchDiff("task-1", []diffTarget{{name: "Page 2", id: "p2"}, {name: "Page 3", id: "p3"}}, dir, "en", capture)
+	ok, failed, differ := a.runBatchDiff("task-1", []diffTarget{
+		{name: "Page 2", id: "p2", viewport: diffViewport{Width: 1280, Height: 800}},
+		{name: "Page 3", id: "p3", viewport: diffViewport{Width: 1280, Height: 800}},
+	}, dir, "en", capture)
 	if ok != 1 || failed != 1 || differ != 1 {
 		t.Fatalf("counts = %d/%d/%d, want 1/1/1", ok, failed, differ)
 	}
@@ -285,11 +288,18 @@ func TestRunBatchDiff(t *testing.T) {
 		t.Fatalf("diff.json missing: %v", err)
 	}
 	var summary struct {
-		Primary string `json:"primary"`
-		Pages   []struct {
-			Name  string     `json:"name"`
-			Stats *diffStats `json:"stats"`
-			Error string     `json:"error"`
+		Primary         string        `json:"primary"`
+		PrimaryViewport *diffViewport `json:"primaryViewport"`
+		Capture         *struct {
+			Width  int `json:"width"`
+			Height int `json:"height"`
+		} `json:"capture"`
+		Pages []struct {
+			Name     string        `json:"name"`
+			Viewport *diffViewport `json:"viewport"`
+			File     string        `json:"file"`
+			Stats    *diffStats    `json:"stats"`
+			Error    string        `json:"error"`
 		} `json:"pages"`
 	}
 	if err := json.Unmarshal(data, &summary); err != nil {
@@ -298,8 +308,22 @@ func TestRunBatchDiff(t *testing.T) {
 	if summary.Primary != "Primary" || len(summary.Pages) != 2 {
 		t.Fatalf("summary = %+v", summary)
 	}
+	if summary.PrimaryViewport != nil {
+		// The fixture pages carry no configured resolution, so no viewport is
+		// claimed; a fake 0×0 would be worse than omitting it.
+		t.Fatalf("primaryViewport = %+v, want omitted", summary.PrimaryViewport)
+	}
+	if summary.Capture == nil || summary.Capture.Width != 2 || summary.Capture.Height != 2 {
+		t.Fatalf("capture = %+v, want the actual 2×2 capture size", summary.Capture)
+	}
+	if summary.Pages[0].Viewport == nil || summary.Pages[0].Viewport.Width != 1280 {
+		t.Fatalf("page 2 viewport = %+v, want the configured 1280×800", summary.Pages[0].Viewport)
+	}
 	if summary.Pages[0].Stats == nil || summary.Pages[0].Stats.Different != 1 {
 		t.Fatalf("page 2 entry = %+v, want stats with 1 differing pixel", summary.Pages[0])
+	}
+	if summary.Pages[0].File != "Page 2_diff.png" {
+		t.Fatalf("page 2 file = %q, want the highlight name", summary.Pages[0].File)
 	}
 	if summary.Pages[1].Error == "" || summary.Pages[1].Stats != nil {
 		t.Fatalf("page 3 entry = %+v, want an error and no stats", summary.Pages[1])
@@ -307,6 +331,16 @@ func TestRunBatchDiff(t *testing.T) {
 	want := "Page 3: resolution 3×2 differs from Primary (2×2); set the same resolution to diff"
 	if summary.Pages[1].Error != want {
 		t.Fatalf("page 3 error = %q, want %q", summary.Pages[1].Error, want)
+	}
+	rep := a.diffReport
+	if rep == nil || len(rep.Entries) != 2 {
+		t.Fatalf("diff report = %+v, want two per-page entries", rep)
+	}
+	if rep.Entries[0].Fraction != 0.25 || rep.Entries[0].Path != filepath.Join(dir, "Page 2_diff.png") {
+		t.Fatalf("report entry = %+v, want fraction 0.25 and the highlight path", rep.Entries[0])
+	}
+	if rep.Entries[1].Error == "" {
+		t.Fatalf("report entry = %+v, want the failure reason", rep.Entries[1])
 	}
 }
 
@@ -386,6 +420,24 @@ func TestMCPDiffNotRunning(t *testing.T) {
 		if !res.IsError {
 			t.Fatalf("idle task must refuse diff, got %s", resultText(t, res))
 		}
+	}
+}
+
+func TestPublishDiffReportStale(t *testing.T) {
+	a := runningFixture(t)
+	entries := []batchDiffEntry{{Name: "Page 2", PageID: "p2", File: "Page 2_diff.png", Stats: &diffStats{Fraction: 0.5, Width: 2, Height: 2}}}
+	a.publishDiffReport("task-OTHER", "dir", diffViewport{Width: 1280, Height: 800}, 1000, 625, entries)
+	if a.diffReport != nil {
+		t.Fatal("a batch from an older task must not publish a report")
+	}
+	a.publishDiffReport("task-1", "dir", diffViewport{Width: 1280, Height: 800}, 1000, 625, entries)
+	rep := a.diffReport
+	if rep == nil || rep.ViewportW != 1280 || rep.CaptureW != 1000 || len(rep.Entries) != 1 {
+		t.Fatalf("report = %+v, want the current task's batch", rep)
+	}
+	wantPath := filepath.Join("dir", "Page 2_diff.png")
+	if rep.Entries[0].Path != wantPath || rep.Entries[0].Fraction != 0.5 {
+		t.Fatalf("entry = %+v, want path %q and the fraction", rep.Entries[0], wantPath)
 	}
 }
 

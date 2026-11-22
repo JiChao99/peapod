@@ -54,7 +54,7 @@ func recordFixture(t *testing.T) (*app, *recorder) {
 		{name: "Primary", url: "https://a.com/", base: "https://a.com", resW: 1280, resH: 800},
 		{name: "Page 2", url: "https://b.com/", base: "https://b.com", resW: 1280, resH: 800},
 	}, viewMode: "desktop", record: true}
-	a.startRecordingIn(t.TempDir(), "task-1", req, "en")
+	a.startRecordingIn(t.TempDir(), "task-1", req)
 	a.mu.Lock()
 	r := a.rec
 	if r == nil {
@@ -307,16 +307,17 @@ func TestRecorderFolderFailureKeepsTask(t *testing.T) {
 	if err := os.WriteFile(blocker, []byte("x"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	a.startRecordingIn(blocker, "task-1", startRequest{}, "en")
+	a.startRecordingIn(blocker, "task-1", startRequest{})
 	a.mu.Lock()
 	rec := a.rec
 	notice := a.notice
+	noticeKey := a.noticeKey
 	a.mu.Unlock()
 	if rec != nil {
 		t.Fatal("recorder attached despite folder failure")
 	}
-	if !strings.Contains(notice, "recording folder") {
-		t.Fatalf("notice = %q, want the recording-folder failure", notice)
+	if noticeKey != "err.recordDir" || !strings.Contains(notice, "blocker") {
+		t.Fatalf("notice = %q key=%q, want the recording-folder failure", notice, noticeKey)
 	}
 	if st := a.snapshot(); st.Status != "running" {
 		t.Fatalf("task status = %q, want running (recording failure must not fail the task)", st.Status)
@@ -409,7 +410,7 @@ func TestStartRecordingAttachesWhileStarting(t *testing.T) {
 	a.mu.Lock()
 	a.status = "starting"
 	a.mu.Unlock()
-	a.startRecordingIn(t.TempDir(), "task-1", startRequest{}, "en")
+	a.startRecordingIn(t.TempDir(), "task-1", startRequest{})
 	a.mu.Lock()
 	r := a.rec
 	a.mu.Unlock()
