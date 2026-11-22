@@ -551,6 +551,12 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 		ui.Text(c, hint).FontSize(12).TextColor(tk.TextTertiary).Wrap()
 	})
 
+	// The bulk editor opens right under the header that toggled it; rendering it
+	// after the rows would put the result of the click off-screen.
+	if a.bulkOpen && len(a.configs) < 10 && !a.templateMode() {
+		a.bulkBody(c, tk)
+	}
+
 	ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
 		a.fieldLabel(c, tk, a.tr("ui.template"))
 		field.Input(c, &a.template, field.InputProps{Placeholder: a.tr("ui.template.placeholder"), Variant: field.InputFilled})
@@ -585,9 +591,6 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 	if a.pendingDup != "" {
 		a.duplicatePage(a.pendingDup)
 		a.pendingDup = ""
-	}
-	if a.bulkOpen && len(a.configs) < 10 && !a.templateMode() {
-		a.bulkBody(c, tk)
 	}
 
 	a.advancedBody(c, tk)

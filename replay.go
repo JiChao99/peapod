@@ -125,12 +125,9 @@ func (a *app) startReplay(path string, delay time.Duration) (int, error) {
 	a.replay = rp
 	// Tag the "replaying…" notice here, under the same lock that publishes the
 	// run, so a fast run cannot finish before the notice exists (which would
-	// leave a stale tagged notice that finishReplayRun already cleared).
-	a.notice = a.tr("notice.recReplaying", len(ops))
-	a.noticeKind = "info"
-	a.noticeTag = "replay"
-	a.noticePath = ""
-	a.noticePathIsDir = false
+	// leave a stale tagged notice that finishReplayRun already cleared). The
+	// literal write drops any keyed result notice and its pending TTL.
+	a.setNoticeTextLocked(a.tr("notice.recReplaying", len(ops)), "info", "replay")
 	a.mu.Unlock()
 	a.pushState()
 	go a.runReplay(rp, ops, delay)
@@ -241,8 +238,7 @@ func (a *app) finishReplayRun(rp *replayRun, errMsg string) {
 			// Cancel/stop need no notice — the panel's replay result line states them.
 			msg, kind = "", ""
 		}
-		a.notice, a.noticeKind = msg, kind
-		a.noticeTag, a.noticePath, a.noticePathIsDir = "", "", false
+		a.setNoticeTextLocked(msg, kind, "")
 	}
 	a.mu.Unlock()
 	a.pushState()
