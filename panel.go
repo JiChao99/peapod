@@ -68,6 +68,7 @@ func (a *app) view(c *ui.Context) {
 		a.scrollErrField = ""
 		a.lastScrolledErr = ""
 		a.profileOverwriteOpen = false
+		a.profileDeleteOpen = false
 		a.confirmStop = false
 		a.replayConfirmOpen = false
 		a.replayPendingDir = ""
@@ -131,6 +132,7 @@ func (a *app) view(c *ui.Context) {
 
 	a.renderReplayConfirm(c, tk)
 	a.renderProfileOverwrite(c, tk)
+	a.renderProfileDelete(c, tk)
 	a.renderRecLightbox(c, tk)
 
 	// The recordings overlay's Esc lives on its panel subtree; when focus sits
@@ -205,6 +207,13 @@ func (a *app) syncUIFor(ps pageState) *bool {
 
 func (a *app) renderPanel(c *ui.Context, tk *theme.Tokens, st appState) {
 	ui.Column(c).Width(panelWidth).Background(tk.BgContainer).Children(func() {
+		// A sync failure stays pinned above the scrolling content: the recovery
+		// actions must stay reachable no matter how far the page list is scrolled.
+		if (st.Status == "running" || st.Status == "stopping") && len(st.Errors) > 0 {
+			ui.Column(c).Padding(12, 20, 0, 20).Children(func() {
+				a.renderSyncErrorBar(c, tk, st)
+			})
+		}
 		layout.ScrollArea(c, layout.ScrollAreaProps{Direction: layout.Vertical, Fade: true, State: &a.configScroll}, func() {
 			ui.Column(c).Padding(16, 20, 20, 20).Gap(18).AlignItems(ui.Stretch).AlignSelf(ui.Stretch).Children(func() {
 				if st.Status == "running" || st.Status == "stopping" {
@@ -237,11 +246,51 @@ func (a *app) renderPanel(c *ui.Context, tk *theme.Tokens, st appState) {
 	})
 }
 
+// renderSyncErrorBar is the single recovery surface for failed replays: one
+// entry per page with the reason and the three recovery choices (reload, skip
+// this step, back to the variant home), so the user does not have to hunt for
+// scattered buttons on the card, the stage mask and the sidebar.
+func (a *app) renderSyncErrorBar(c *ui.Context, tk *theme.Tokens, st appState) {
+	names := map[string]string{}
+	for _, ps := range st.Pages {
+		names[ps.ID] = ps.Name
+	}
+	ui.Column(c).Gap(6).Padding(10, 12).Radius(tk.BorderRadiusLG).AlignItems(ui.Stretch).
+		Background(tk.ErrorFillTertiary).Border(1, tk.Error).Children(func() {
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, lucide.TriangleAlert()).FontSize(15).TextColor(tk.Error).Shrink(0)
+			ui.Text(c, a.tr("ui.syncErrorsCount", len(st.Errors))).FontSize(13).Bold().TextColor(tk.Error).Grow(1).MinWidth(0)
+		})
+		for _, e := range st.Errors {
+			e := e
+			name := names[e.TargetID]
+			if name == "" {
+				name = e.TargetID
+			}
+			ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+				ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
+					ui.Text(c, name).FontSize(12).Bold().TextColor(tk.Text).SingleLine()
+					ui.Text(c, syncErrorReason(e.Code, a.currentLang())).FontSize(12).TextColor(tk.TextSecondary).Wrap()
+				})
+				a.iconButton(c, tk, lucide.RefreshCw(), a.tr("ui.reload"), func() { a.reloadPage(e.TargetID) })
+				a.iconButton(c, tk, lucide.Play(), a.tr("ui.skipStep"), func() { a.resumePage(e.TargetID) })
+				a.iconButton(c, tk, lucide.House(), a.tr("ui.gotoHome"), func() { a.gotoPageHome(e.TargetID) })
+			})
+		}
+	})
+}
+
 // renderNotice tiers the footer notice by severity (error/warning/success/info)
 // so a validation failure, a partial result and a success no longer share one
-// gray line. The text wraps so a long artifact path stays readable.
+// gray line. The text wraps so a long artifact path stays readable. Keyed
+// notices are re-localized here, so switching the language retranslates a
+// notice that is still showing instead of leaving the old text frozen.
 func (a *app) renderNotice(c *ui.Context, tk *theme.Tokens, st appState) {
-	if st.Notice == "" {
+	text := st.Notice
+	if st.NoticeKey != "" {
+		text = a.tr(st.NoticeKey, st.NoticeArgs...)
+	}
+	if text == "" {
 		return
 	}
 	accent, icon := tk.Info, lucide.Info()
@@ -258,7 +307,7 @@ func (a *app) renderNotice(c *ui.Context, tk *theme.Tokens, st appState) {
 		ui.Row(c).Height(18).AlignItems(ui.Center).Shrink(0).Children(func() {
 			ui.Icon(c, icon).FontSize(15).TextColor(accent)
 		})
-		ui.Text(c, st.Notice).FontSize(12).TextColor(tk.Text).Wrap().Grow(1).MinWidth(0)
+		ui.Text(c, text).FontSize(12).TextColor(tk.Text).Wrap().Grow(1).MinWidth(0)
 		if st.NoticePath != "" {
 			label := a.tr("ui.openReport")
 			if st.NoticePathIsDir {
@@ -347,7 +396,7 @@ func (a *app) renderReplayConfirm(c *ui.Context, tk *theme.Tokens) {
 					if err := a.navigatePage("", entry); err != nil {
 						a.setNoticeErr(err.Error())
 					} else {
-						a.setNotice(a.tr("notice.replayReturned"))
+						a.setNoticeKey("info", "notice.replayReturned")
 					}
 				}
 			})
@@ -371,6 +420,26 @@ func (a *app) renderProfileOverwrite(c *ui.Context, tk *theme.Tokens) {
 	}) {
 		a.profileOverwriteOpen = false
 		a.saveProfile(a.profileOverwriteName)
+	}
+}
+
+// renderProfileDelete confirms before removing a saved profile; the JSON file
+// cannot be recovered once deleted.
+func (a *app) renderProfileDelete(c *ui.Context, tk *theme.Tokens) {
+	if !a.profileDeleteOpen {
+		return
+	}
+	if feedback.Modal(c, &a.profileDeleteOpen, feedback.ModalProps{
+		Title:      a.tr("ui.profiles.delete.title"),
+		OkText:     a.tr("ui.profiles.delete.ok"),
+		CancelText: a.tr("ui.cancel"),
+		Width:      420,
+	}, func() {
+		ui.Text(c, a.tr("ui.profiles.delete.body", a.profileDeleteName)).FontSize(13).TextColor(tk.TextSecondary).Wrap()
+	}) {
+		a.profileDeleteOpen = false
+		a.profileSel = a.profileDeleteName
+		a.deleteProfile()
 	}
 }
 
@@ -431,7 +500,14 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 			if action.Button(c, a.tr("ui.profiles.load"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).Clicked() {
 				a.loadProfileIntoForm()
 			}
-			a.iconButton(c, tk, lucide.Trash2(), a.tr("ui.profiles.remove"), a.deleteProfile)
+			a.iconButton(c, tk, lucide.Trash2(), a.tr("ui.profiles.remove"), func() {
+				if a.profileSel == "" {
+					a.setNoticeErrKey("err.profilesPick")
+					return
+				}
+				a.profileDeleteName = a.profileSel
+				a.profileDeleteOpen = true
+			})
 		})
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Column(c).Grow(1).AlignItems(ui.Stretch).Children(func() {
@@ -455,14 +531,31 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 
 	// Primary workflow first: pages + URL template + start stay reachable
 	// without scrolling; the advanced knobs live in a collapsed group below.
+	// Add/bulk sit on the section header so they stay visible no matter how far
+	// the row list grows.
 	ui.Column(c).Gap(2).Children(func() {
-		a.fieldLabel(c, tk, a.tr("ui.pages", len(a.configs)))
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			a.fieldLabel(c, tk, a.tr("ui.pages", len(a.configs)))
+			ui.Row(c).Grow(1)
+			if len(a.configs) < 10 {
+				a.iconButton(c, tk, lucide.Plus(), a.tr("ui.addPage"), func() { a.pendingAdd = true })
+			}
+			if !a.templateMode() && len(a.configs) < 10 {
+				a.iconButton(c, tk, lucide.ListPlus(), a.tr("ui.bulk"), func() { a.bulkOpen = !a.bulkOpen })
+			}
+		})
 		hint := a.tr("ui.pages.hint")
 		if a.templateMode() {
 			hint = a.tr("ui.pages.hintTemplate")
 		}
 		ui.Text(c, hint).FontSize(12).TextColor(tk.TextTertiary).Wrap()
 	})
+
+	// The bulk editor opens right under the header that toggled it; rendering it
+	// after the rows would put the result of the click off-screen.
+	if a.bulkOpen && len(a.configs) < 10 && !a.templateMode() {
+		a.bulkBody(c, tk)
+	}
 
 	ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
 		a.fieldLabel(c, tk, a.tr("ui.template"))
@@ -477,11 +570,20 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 			a.lastScrolledErr = ""
 		}
 	}
+	if len(a.fieldErr) == 0 {
+		// The submit-time validation notice goes stale once every field is
+		// corrected; waiting for the next submit would keep the red banner up.
+		a.clearNoticeTag("form")
+	}
 	for i, cfg := range a.configs {
 		a.setupRow(c, tk, cfg, i)
 	}
 	// Apply row mutations clicked during the loop only now: mutating configs
 	// mid-iteration shifts the backing array the range loop still reads.
+	if a.pendingAdd {
+		a.pendingAdd = false
+		a.addPage()
+	}
 	if a.pendingRemove != "" {
 		a.removePage(a.pendingRemove)
 		a.pendingRemove = ""
@@ -489,21 +591,6 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 	if a.pendingDup != "" {
 		a.duplicatePage(a.pendingDup)
 		a.pendingDup = ""
-	}
-	if len(a.configs) < 10 {
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			if action.Button(c, a.tr("ui.addPage"), action.ButtonProps{Variant: action.Dashed}).Grow(1).Clicked() {
-				a.addPage()
-			}
-			if !a.templateMode() {
-				if action.Button(c, a.tr("ui.bulk"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).Clicked() {
-					a.bulkOpen = !a.bulkOpen
-				}
-			}
-		})
-	}
-	if a.bulkOpen && len(a.configs) < 10 && !a.templateMode() {
-		a.bulkBody(c, tk)
 	}
 
 	a.advancedBody(c, tk)
@@ -634,7 +721,7 @@ func (a *app) bulkBody(c *ui.Context, tk *theme.Tokens) {
 				} else {
 					a.bulkText = ""
 					a.bulkOpen = false
-					a.setNoticeOK(a.tr("notice.bulkDone", n))
+					a.setNoticeOKKey("notice.bulkDone", n)
 				}
 			}
 		})
@@ -675,25 +762,29 @@ func (a *app) setupRow(c *ui.Context, tk *theme.Tokens, cfg *pageConfig, i int) 
 				}
 			}
 		})
-		field.Input(c, &cfg.name, field.InputProps{Placeholder: a.tr("ui.page.name"), Variant: field.InputFilled})
+		field.Input(c, &cfg.name, field.InputProps{Placeholder: a.tr("ui.page.name"), Variant: field.InputFilled}).
+			Label(a.tr("ui.page.name"))
 		if a.templateMode() {
 			field.Input(c, &cfg.vars, field.InputProps{Placeholder: a.tr("ui.vars.placeholder"), Variant: field.InputFilled,
-				Invalid: a.fieldErr["vars:"+cfg.id] != ""})
+				Invalid: a.fieldErr["vars:"+cfg.id] != ""}).Label(a.tr("ui.vars"))
 			a.fieldErrorText(c, tk, "vars:"+cfg.id)
 		}
 		field.Input(c, &cfg.url, field.InputProps{Placeholder: a.urlPlaceholder(i), Variant: field.InputFilled,
-			Invalid: a.fieldErr["page:"+cfg.id] != ""})
+			Invalid: a.fieldErr["page:"+cfg.id] != ""}).Label(a.tr("ui.page.urlLabel"))
 		a.fieldErrorText(c, tk, "page:"+cfg.id)
 		if a.templateMode() {
 			ui.Text(c, a.templatePreview(cfg)).FontSize(12).TextColor(tk.TextTertiary).SingleLine()
 		}
+		ui.Text(c, a.tr("ui.res")).FontSize(12).TextColor(tk.TextTertiary)
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Column(c).Grow(1).AlignItems(ui.Stretch).Children(func() {
-				field.InputNumber(c, &cfg.resW, field.InputNumberProps{Min: 200, Max: 3840, Step: 10, Placeholder: a.tr("ui.res.w"), Variant: field.InputFilled})
+				field.InputNumber(c, &cfg.resW, field.InputNumberProps{Min: 200, Max: 3840, Step: 10, Placeholder: a.tr("ui.res.w"), Variant: field.InputFilled}).
+					Label(a.tr("ui.res.w"))
 			})
 			ui.Text(c, "×").TextColor(tk.TextTertiary)
 			ui.Column(c).Grow(1).AlignItems(ui.Stretch).Children(func() {
-				field.InputNumber(c, &cfg.resH, field.InputNumberProps{Min: 200, Max: 3840, Step: 10, Placeholder: a.tr("ui.res.h"), Variant: field.InputFilled})
+				field.InputNumber(c, &cfg.resH, field.InputNumberProps{Min: 200, Max: 3840, Step: 10, Placeholder: a.tr("ui.res.h"), Variant: field.InputFilled}).
+					Label(a.tr("ui.res.h"))
 			})
 		})
 	})
@@ -777,10 +868,9 @@ func (a *app) runtimeBody(c *ui.Context, tk *theme.Tokens, st appState) {
 	if st.Replay != nil {
 		a.renderReplay(c, tk, st.Replay)
 	}
-	for _, ps := range st.Pages {
-		a.pageCard(c, tk, ps, st.ActiveID)
-	}
 
+	// Batch actions come before the page cards: with ten variants the cards can
+	// fill the whole sidebar, and shot/diff would otherwise sit below the fold.
 	ui.Column(c).Gap(8).Padding(12).Radius(tk.BorderRadiusLG).AlignItems(ui.Stretch).
 		Background(tk.BgContainerSecondary).Border(1, tk.BorderSecondary).Children(func() {
 		a.fieldLabel(c, tk, a.tr("ui.shot"))
@@ -805,7 +895,10 @@ func (a *app) runtimeBody(c *ui.Context, tk *theme.Tokens, st appState) {
 				feedback.Spin(c, feedback.SpinProps{Size: theme.Small}, nil)
 			}
 		})
-		ui.Text(c, a.tr("ui.shot.hint")).FontSize(12).TextColor(tk.TextTertiary)
+		if warn := a.shotSizeWarning(c, st); warn != "" {
+			ui.Text(c, warn).FontSize(12).TextColor(tk.Warning).Wrap()
+		}
+		ui.Text(c, a.tr("ui.shot.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
 	})
 
 	ui.Column(c).Gap(8).Padding(12).Radius(tk.BorderRadiusLG).AlignItems(ui.Stretch).
@@ -821,32 +914,110 @@ func (a *app) runtimeBody(c *ui.Context, tk *theme.Tokens, st appState) {
 				feedback.Spin(c, feedback.SpinProps{Size: theme.Small}, nil)
 			}
 		})
-		ui.Text(c, a.tr("ui.diff.hint")).FontSize(12).TextColor(tk.TextTertiary)
+		ui.Text(c, a.tr("ui.diff.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
+		if st.Diff != nil {
+			a.renderDiffReport(c, tk, st.Diff)
+		}
 	})
 
-	if len(st.Errors) > 0 {
-		names := map[string]string{}
-		for _, ps := range st.Pages {
-			names[ps.ID] = ps.Name
-		}
-		ui.Column(c).Gap(8).Padding(12).Radius(tk.BorderRadiusLG).Background(tk.ErrorFillTertiary).Children(func() {
-			ui.Text(c, a.tr("ui.syncErrors")).FontSize(13).Bold().TextColor(tk.Error)
-			for _, e := range st.Errors {
-				name := names[e.TargetID]
-				if name == "" {
-					name = e.TargetID
-				}
-				ui.Row(c).Gap(8).AlignItems(ui.Start).Children(func() {
-					ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
-						ui.Text(c, name).FontSize(12).Bold().TextColor(tk.Text).SingleLine()
-						ui.Text(c, syncErrorReason(e.Code, a.currentLang())).FontSize(12).TextColor(tk.TextSecondary).Wrap()
-						ui.Text(c, e.Code).FontSize(11).TextColor(tk.TextTertiary).SingleLine()
-					})
-					a.iconButton(c, tk, lucide.RefreshCw(), a.tr("ui.reload"), func() { a.reloadPage(e.TargetID) })
-				})
+	for _, ps := range st.Pages {
+		a.pageCard(c, tk, ps, st.ActiveID)
+	}
+}
+
+// shotSizeWarning explains why a capture's pixels can be smaller than the
+// configured resolution: WebView2 captures the placed surface, and the stage
+// scales a page down to fit the window. Without this, the evidence looks like a
+// resolution bug.
+func (a *app) shotSizeWarning(c *ui.Context, st appState) string {
+	if len(st.Pages) == 0 {
+		return ""
+	}
+	tw, th := float32(st.Pages[0].ResW), float32(st.Pages[0].ResH)
+	if tw < 1 || th < 1 {
+		return ""
+	}
+	winW, winH := c.Size()
+	barH := c.TitleBar().Height
+	regionW := winW - panelWidth - 2*stagePadding
+	regionH := winH - barH - toolbarHeight - 2*stagePadding
+	if regionW < 1 || regionH < 1 {
+		return ""
+	}
+	var fit float32
+	if st.ViewMode == "mobile" {
+		n := len(st.Pages)
+		cols := min(n, 5)
+		rows := (n + cols - 1) / cols
+		gap := float32(stagePadding)
+		slotW := (regionW - gap*float32(cols-1)) / float32(cols)
+		const labelH = 24
+		slotH := max((regionH-gap*float32(rows-1))/float32(rows)-labelH, 0)
+		fit = min(slotW/tw, slotH/th, 1)
+	} else {
+		fit = min(regionW/tw, regionH/th, 1)
+	}
+	if fit >= 1 {
+		return ""
+	}
+	cfg := fmt.Sprintf("%.0f×%.0f", tw, th)
+	stage := fmt.Sprintf("%.0f×%.0f", tw*fit, th*fit)
+	return a.tr("ui.shot.sizeWarn", cfg, stage)
+}
+
+// renderDiffReport lists the latest batch diff page by page: change ratio,
+// captured size and a link to each highlight image, plus the folder for the
+// JSON evidence. The summary notice alone cannot answer "which variant
+// changed?".
+func (a *app) renderDiffReport(c *ui.Context, tk *theme.Tokens, d *diffReportState) {
+	viewport := ""
+	if d.ViewportW > 0 && d.ViewportH > 0 {
+		viewport = fmt.Sprintf("%.0f×%.0f", d.ViewportW, d.ViewportH)
+	}
+	capture := ""
+	if d.CaptureW > 0 && d.CaptureH > 0 {
+		capture = fmt.Sprintf("%d×%d", d.CaptureW, d.CaptureH)
+	}
+	ui.Column(c).Gap(6).Padding(10).Radius(tk.BorderRadius).AlignItems(ui.Stretch).
+		Background(tk.FillTertiary).Children(func() {
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Text(c, a.tr("ui.diff.report")).FontSize(13).Bold().TextColor(tk.TextHeading).Grow(1).MinWidth(0)
+			if action.Button(c, a.tr("ui.openFolder"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).Clicked() {
+				c.OpenURL(fileURL(d.Dir))
 			}
 		})
-	}
+		if viewport != "" || capture != "" {
+			ui.Text(c, a.tr("ui.diff.meta", viewport, capture)).FontSize(11).TextColor(tk.TextTertiary).Wrap()
+		}
+		for _, e := range d.Entries {
+			e := e
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
+					ui.Text(c, e.Name).FontSize(12).Bold().TextColor(tk.Text).SingleLine()
+					if e.Error != "" {
+						ui.Text(c, e.Error).FontSize(11).TextColor(tk.Error).Wrap()
+						return
+					}
+					detail := a.tr("ui.diff.none")
+					if e.Fraction > 0 {
+						detail = a.tr("ui.diff.changed", e.Fraction*100)
+					}
+					if e.Width > 0 && e.Height > 0 {
+						detail += a.tr("ui.diff.size", e.Width, e.Height)
+					}
+					color := tk.TextSecondary
+					if e.Fraction > 0 {
+						color = tk.Warning
+					}
+					ui.Text(c, detail).FontSize(11).TextColor(color).Wrap()
+				})
+				if e.Path != "" {
+					path := e.Path
+					a.iconButton(c, tk, lucide.Image(), a.tr("ui.diff.open"), func() { c.OpenURL(fileURL(path)) })
+				}
+			})
+		}
+	})
 }
 
 func (a *app) pageCard(c *ui.Context, tk *theme.Tokens, ps pageState, activeID string) {
@@ -859,12 +1030,19 @@ func (a *app) pageCard(c *ui.Context, tk *theme.Tokens, ps pageState, activeID s
 			if ps.IsPrimary {
 				display.Tag(c, a.tr("ui.primaryTag"), display.TagProps{Color: display.TagProcessing, Size: theme.Small, Round: true})
 			}
+			if ps.Syncing {
+				label := a.tr("ui.syncing")
+				if ps.Pending > 1 {
+					label = a.tr("ui.syncing.pending", ps.Pending)
+				}
+				display.Tag(c, label, display.TagProps{Color: display.TagProcessing, Size: theme.Small, Round: true, Icon: lucide.RefreshCw()})
+			}
 			display.Tag(c, a.pageStatusLabel(ps.Status), display.TagProps{Color: pageStatusColor(ps.Status), Size: theme.Small, Round: true})
 		})
 		ui.Text(c, ps.URL).FontSize(12).TextColor(tk.TextTertiary).SingleLine()
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, a.tr("ui.sync")).FontSize(13).TextColor(tk.TextSecondary)
-			choice.Switch(c, a.syncUIFor(ps), choice.SwitchProps{Size: theme.Small})
+			choice.Switch(c, a.syncUIFor(ps), choice.SwitchProps{Size: theme.Small}).Label(a.tr("ui.sync"))
 			ui.Row(c).Grow(1)
 			a.iconButton(c, tk, lucide.RefreshCw(), a.tr("ui.reload"), func() { a.reloadPage(ps.ID) })
 		})
@@ -873,16 +1051,6 @@ func (a *app) pageCard(c *ui.Context, tk *theme.Tokens, ps pageState, activeID s
 		}
 		if ps.NavError != nil {
 			ui.Text(c, navErrorReason(ps.NavError.Name, a.currentLang())).FontSize(12).TextColor(tk.Error).Wrap()
-		}
-		if ps.Status == "paused" {
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				if action.Button(c, a.tr("ui.resume"), action.ButtonProps{Variant: action.Primary, Size: theme.Small}).Clicked() {
-					a.resumePage(ps.ID)
-				}
-				if action.Button(c, a.tr("ui.gotoHome"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).Clicked() {
-					a.gotoPageHome(ps.ID)
-				}
-			})
 		}
 	})
 }
@@ -1079,9 +1247,12 @@ func (a *app) renderRecordingsOverlay(c *ui.Context, tk *theme.Tokens, barH floa
 }
 
 // renderMobileStage shows every page side by side, each fitted to an equal slot
-// at its own resolution, so mobile layouts can be compared at a glance.
+// at its own resolution, so mobile layouts can be compared at a glance. Beyond
+// five pages the grid wraps into rows instead of squeezing every column thin.
 func (a *app) renderMobileStage(c *ui.Context, tk *theme.Tokens, pages []*pageRecord, zoom float64, barH float32, st appState) {
 	n := len(pages)
+	cols := min(n, 5)
+	rows := (n + cols - 1) / cols
 	winW, winH := c.Size()
 	regionW := winW - panelWidth - 2*stagePadding
 	regionH := winH - barH - toolbarHeight - 2*stagePadding
@@ -1092,41 +1263,50 @@ func (a *app) renderMobileStage(c *ui.Context, tk *theme.Tokens, pages []*pageRe
 		regionH = 1
 	}
 	gap := float32(stagePadding)
-	slotW := (regionW - gap*float32(n-1)) / float32(n)
+	slotW := (regionW - gap*float32(cols-1)) / float32(cols)
 	if slotW < 1 {
 		slotW = 1
 	}
 	const labelH = 24
-	slotH := regionH - labelH
+	slotH := (regionH-gap*float32(rows-1))/float32(rows) - labelH
 	if slotH < 1 {
 		slotH = 1
 	}
 
-	ui.Row(c).Grow(1).MinHeight(0).Gap(stagePadding).Padding(stagePadding).AlignItems(ui.Stretch).Children(func() {
-		for _, p := range pages {
-			p := p
-			ui.Column(c).Grow(1).MinWidth(0).Gap(4).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, p.name).FontSize(12).TextColor(tk.TextSecondary).SingleLine()
-				tw, th := float32(p.resW), float32(p.resH)
-				if tw < 1 {
-					tw = 390
+	ui.Column(c).Grow(1).MinHeight(0).Gap(stagePadding).Padding(stagePadding).AlignItems(ui.Stretch).Children(func() {
+		for start := 0; start < n; start += cols {
+			rowPages := pages[start:min(start+cols, n)]
+			ui.Row(c).Grow(1).MinHeight(0).Gap(stagePadding).Justify(ui.Center).Children(func() {
+				for _, p := range rowPages {
+					a.mobileSlot(c, tk, p, slotW, slotH, zoom, st)
 				}
-				if th < 1 {
-					th = 844
-				}
-				fit := min(slotW/tw, slotH/th, 1)
-				if fit <= 0 {
-					fit = 0.05
-				}
-				ui.Box(c).Width(tw * fit).Height(th * fit).Clip().Radius(8).Children(func() {
-					ui.WebView(c, p.view).Absolute().Left(0).Top(0).Width(tw*fit).Height(th*fit).Radius(8).Border(1, tk.Border)
-					a.applyPageZoom(p.view, p, fit, zoom)
-					if ps, ok := pageStateByID(st.Pages, p.id); ok && ps.Status == "paused" {
-						a.pausedMask(c, tk, ps, slotW < 160)
-					}
-				})
 			})
 		}
+	})
+}
+
+// mobileSlot renders one page in a fixed-width mobile grid cell.
+func (a *app) mobileSlot(c *ui.Context, tk *theme.Tokens, p *pageRecord, slotW, slotH float32, zoom float64, st appState) {
+	ui.Column(c).Width(slotW).Gap(4).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, p.name).FontSize(12).TextColor(tk.TextSecondary).SingleLine()
+		tw, th := float32(p.resW), float32(p.resH)
+		if tw < 1 {
+			tw = 390
+		}
+		if th < 1 {
+			th = 844
+		}
+		fit := min(slotW/tw, slotH/th, 1)
+		if fit <= 0 {
+			fit = 0.05
+		}
+		ui.Box(c).Width(tw * fit).Height(th * fit).Clip().Radius(8).Children(func() {
+			ui.WebView(c, p.view).Absolute().Left(0).Top(0).Width(tw*fit).Height(th*fit).Radius(8).Border(1, tk.Border)
+			a.applyPageZoom(p.view, p, fit, zoom)
+			if ps, ok := pageStateByID(st.Pages, p.id); ok && ps.Status == "paused" {
+				a.pausedMask(c, tk, ps, slotW < 160)
+			}
+		})
 	})
 }
 
@@ -1222,7 +1402,7 @@ func (a *app) mcpIndicator(c *ui.Context, tk *theme.Tokens) {
 			a.setNoticeErr(err.Error())
 			return
 		}
-		a.setNoticeOK(a.tr("notice.mcpCopied"))
+		a.setNoticeOKKey("notice.mcpCopied")
 	}, !on)
 }
 

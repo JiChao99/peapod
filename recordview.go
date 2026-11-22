@@ -845,7 +845,7 @@ func (a *app) exportRecording(c *ui.Context, dir string) {
 		a.setNoticeErr(err.Error())
 		return
 	}
-	a.setNoticeOpen(a.tr("notice.recExported", path), "success", path, false)
+	a.setNoticeOpenKey("success", "notice.recExported", path, false, path)
 	c.OpenURL(fileURL(path))
 }
 
@@ -959,7 +959,7 @@ func (a *app) renderRecCard(c *ui.Context, tk *theme.Tokens, m recSessionMeta) {
 					}
 					a.recView.renameDir = ""
 					a.refreshRecList()
-					a.setNoticeOK(a.tr("notice.recRenamed"))
+					a.setNoticeOKKey("notice.recRenamed")
 					a.invalidate()
 				})
 				a.recSmallIcon(ck, tk, lucide.X(), a.tr("rec.rename.cancel"), func() {
@@ -1050,7 +1050,7 @@ func (a *app) renderRecDeleteConfirm(c *ui.Context, tk *theme.Tokens) {
 // recording is refused again here even if the UI somehow offered it.
 func (a *app) deleteRecSession(dir string) {
 	if dir == "" || dir == a.liveRecDir() {
-		a.setNoticeWarn(a.tr("rec.delete.refused"))
+		a.setNoticeWarnKey("rec.delete.refused")
 		return
 	}
 	if err := os.RemoveAll(dir); err != nil {
@@ -1071,7 +1071,7 @@ func (a *app) deleteRecSession(dir string) {
 		}
 	}
 	a.refreshRecList()
-	a.setNoticeOK(a.tr("notice.recDeleted"))
+	a.setNoticeOKKey("notice.recDeleted")
 	a.invalidate()
 }
 

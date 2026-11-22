@@ -74,7 +74,13 @@ func (a *app) enqueueOp(p *pageRecord, op operation) {
 	}
 	// Full queue: drop rather than block the capture path. Consecutive
 	// input/scroll on one anchor coalesces inside the queue instead.
-	p.queue.push(op)
+	wasIdle := p.queue.len() == 0 && !p.replaying
+	if p.queue.push(op) && wasIdle {
+		// Flip the card from ready to syncing as soon as work is queued; the
+		// frame is cheap and coalesced, and it prevents duplicate clicks while
+		// a follower is waiting on its anchor.
+		a.invalidate()
+	}
 }
 
 // replayWorker drains a page's queue in order, one operation at a time, so
@@ -84,6 +90,7 @@ func (a *app) replayWorker(p *pageRecord) {
 	for {
 		op, ok := p.queue.pop()
 		if !ok {
+			a.invalidate()
 			return
 		}
 		if op.Type == navBarrier {
@@ -91,6 +98,10 @@ func (a *app) replayWorker(p *pageRecord) {
 			continue
 		}
 		a.replayOnce(p, op)
+		if p.queue.len() == 0 && !p.replaying {
+			// The last queued step finished: let the panel drop the syncing tag.
+			a.invalidate()
+		}
 	}
 }
 
@@ -240,13 +251,13 @@ func (a *app) waitNavSignal(p *pageRecord, deadline time.Time) bool {
 }
 
 // resolveAnchor waits for the selector to match exactly one element, with a
-// 10s budget.
+// 3s budget matching resolveScript.
 func (a *app) resolveAnchor(view *mygo.WebView, an anchor) error {
 	anchorJSON, err := json.Marshal(an)
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	result, err := view.Page().EvalContext(ctx, resolveScript(string(anchorJSON)))
 	if err != nil {

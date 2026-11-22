@@ -168,7 +168,7 @@ func (a *app) applyProfile(p profileData) error {
 func (a *app) requestSaveProfile(name string) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		a.setNoticeErr(a.tr("err.profilesName"))
+		a.setNoticeErrKey("err.profilesName")
 		return
 	}
 	if _, err := os.Stat(profilePath(name)); err == nil {
@@ -184,48 +184,49 @@ func (a *app) requestSaveProfile(name string) {
 func (a *app) saveProfile(name string) {
 	name = strings.TrimSpace(name)
 	if name == "" {
-		a.setNoticeErr(a.tr("err.profilesName"))
+		a.setNoticeErrKey("err.profilesName")
 		return
 	}
 	if err := writeProfileFile(name, a.currentProfile()); err != nil {
-		a.setNoticeErr(a.tr("err.profilesWrite", err.Error()))
+		a.setNoticeErrKey("err.profilesWrite", err.Error())
 		return
 	}
 	a.profiles = listProfiles()
 	a.profileSel = sanitizeFileName(name)
-	a.setNoticeOK(a.tr("notice.profilesSaved", name))
+	a.setNoticeOKKey("notice.profilesSaved", name)
 }
 
 // loadProfileIntoForm applies the selected profile to the setup form.
 func (a *app) loadProfileIntoForm() {
 	if a.profileSel == "" {
-		a.setNoticeErr(a.tr("err.profilesPick"))
+		a.setNoticeErrKey("err.profilesPick")
 		return
 	}
 	p, err := readProfileFile(a.profileSel)
 	if err != nil {
-		a.setNoticeErr(a.tr("err.profilesRead", err.Error()))
+		a.setNoticeErrKey("err.profilesRead", err.Error())
 		return
 	}
 	if err := a.applyProfile(p); err != nil {
 		a.setNoticeErr(err.Error())
 		return
 	}
-	a.setNoticeOK(a.tr("notice.profilesLoaded", a.profileSel))
+	a.setNoticeOKKey("notice.profilesLoaded", a.profileSel)
 }
 
 // deleteProfile removes the selected profile file.
 func (a *app) deleteProfile() {
 	if a.profileSel == "" {
-		a.setNoticeErr(a.tr("err.profilesPick"))
+		a.setNoticeErrKey("err.profilesPick")
 		return
 	}
 	name := a.profileSel
 	if err := os.Remove(profilePath(name)); err != nil {
-		a.setNoticeErr(a.tr("err.profilesDelete", err.Error()))
+		a.setNoticeErrKey("err.profilesDelete", err.Error())
 		return
 	}
 	a.profileSel = ""
+	a.profileName = ""
 	a.profiles = listProfiles()
-	a.setNoticeOK(a.tr("notice.profilesDeleted", name))
+	a.setNoticeOKKey("notice.profilesDeleted", name)
 }

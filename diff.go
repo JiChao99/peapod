@@ -123,6 +123,37 @@ type pageDiff struct {
 	PNG         []byte    `json:"-"`
 }
 
+// diffViewport is the CSS viewport a page was configured with. Captures can be
+// smaller when the stage scales a page to fit the window; keeping both values
+// in the evidence makes that difference explicit.
+type diffViewport struct {
+	Width  float64 `json:"width"`
+	Height float64 `json:"height"`
+}
+
+// diffReportEntry is one row of the runtime panel's per-page diff result.
+type diffReportEntry struct {
+	Name     string  `json:"name"`
+	PageID   string  `json:"pageId"`
+	Fraction float64 `json:"fraction"`
+	Width    int     `json:"width,omitempty"`
+	Height   int     `json:"height,omitempty"`
+	Error    string  `json:"error,omitempty"`
+	Path     string  `json:"path,omitempty"`
+}
+
+// diffReportState is the latest batch diff, shown in the runtime panel and
+// kept until the next diff or a new task.
+type diffReportState struct {
+	Dir         string            `json:"dir"`
+	ViewportW   float64           `json:"viewportW,omitempty"`
+	ViewportH   float64           `json:"viewportH,omitempty"`
+	CaptureW    int               `json:"captureW,omitempty"`
+	CaptureH    int               `json:"captureH,omitempty"`
+	Entries     []diffReportEntry `json:"entries"`
+	GeneratedAt time.Time         `json:"generatedAt"`
+}
+
 // diffPair captures two running pages and compares them (idA inspected, idB
 // reference). capture is injectable so tests run without a GUI; production
 // passes p.view.CapturePage. Both captures share the batch path's coalesced
@@ -179,15 +210,20 @@ func diffError(lang, pageName, againstName string, err error) error {
 }
 
 // diffTarget is one follower queued for a batch diff.
-type diffTarget struct{ name, id string }
+type diffTarget struct {
+	name, id string
+	viewport diffViewport
+}
 
 // batchDiffEntry is one page's line in diff.json: stats on success, the
 // reason on failure — the evidence stays honest about what was compared.
 type batchDiffEntry struct {
-	Name   string     `json:"name"`
-	PageID string     `json:"pageId"`
-	Stats  *diffStats `json:"stats,omitempty"`
-	Error  string     `json:"error,omitempty"`
+	Name     string        `json:"name"`
+	PageID   string        `json:"pageId"`
+	Viewport *diffViewport `json:"viewport,omitempty"`
+	File     string        `json:"file,omitempty"`
+	Stats    *diffStats    `json:"stats,omitempty"`
+	Error    string        `json:"error,omitempty"`
 }
 
 // diffAll compares every follower against the primary and saves the evidence
@@ -196,7 +232,7 @@ func (a *app) diffAll() {
 	a.mu.Lock()
 	if a.status != "running" {
 		a.mu.Unlock()
-		a.setNoticeErr(a.tr("err.notRunning"))
+		a.setNoticeErrKey("err.notRunning")
 		return
 	}
 	if a.diffBusy {
@@ -210,7 +246,9 @@ func (a *app) diffAll() {
 			continue
 		}
 		if p := a.pages[id]; p != nil && !p.closed {
-			targets = append(targets, diffTarget{name: p.name, id: id})
+			targets = append(targets, diffTarget{
+				name: p.name, id: id, viewport: diffViewport{Width: p.resW, Height: p.resH},
+			})
 		}
 	}
 	taskID := a.taskID
@@ -219,7 +257,7 @@ func (a *app) diffAll() {
 		a.mu.Lock()
 		a.diffBusy = false
 		a.mu.Unlock()
-		a.setNoticeErr(a.tr("err.noPages"))
+		a.setNoticeErrKey("err.noPages")
 		return
 	}
 	lang := a.currentLang()
@@ -234,7 +272,7 @@ func (a *app) diffAll() {
 		dir, err := batchDir(filepath.Join(userArtifactRoot(), "diffs"), "diff")
 		if err != nil {
 			if !a.batchStale(taskID) {
-				a.setNoticeErr(trLang(lang, "err.diffDir", err.Error()))
+				a.setNoticeErrKey("err.diffDir", err.Error())
 			}
 			return
 		}
@@ -245,10 +283,10 @@ func (a *app) diffAll() {
 			return
 		}
 		if failed > 0 {
-			a.setNoticeOpen(trLang(lang, "notice.diffPartial", ok, failed, dir), "warning", dir, true)
+			a.setNoticeOpenKey("warning", "notice.diffPartial", dir, true, ok, failed, dir)
 			return
 		}
-		a.setNoticeOpen(trLang(lang, "notice.diffDone", len(targets), differ, dir), "success", dir, true)
+		a.setNoticeOpenKey("success", "notice.diffDone", dir, true, len(targets), differ, dir)
 	}()
 }
 
@@ -258,12 +296,23 @@ func (a *app) diffAll() {
 func (a *app) runBatchDiff(taskID string, targets []diffTarget, dir, lang string, capture func(*pageRecord) ([]byte, error)) (ok, failed, differ int) {
 	entries := make([]batchDiffEntry, 0, len(targets))
 	used := map[string]bool{}
-	writeSummary := func(primaryName, primaryErr string) {
+	var primaryName string
+	var primaryViewport diffViewport
+	var captureW, captureH int
+	writeSummary := func(primaryErr string) {
 		summary := map[string]any{
 			"generatedAt": time.Now().Format(time.RFC3339Nano),
 			"primary":     primaryName,
 			"tolerance":   0,
 			"pages":       entries,
+		}
+		if primaryViewport.Width > 0 || primaryViewport.Height > 0 {
+			summary["primaryViewport"] = primaryViewport
+		}
+		if captureW > 0 && captureH > 0 {
+			// Actual pixel size of the captures. It can be smaller than the
+			// configured viewport when the stage scales the page to fit.
+			summary["capture"] = map[string]int{"width": captureW, "height": captureH}
 		}
 		if primaryErr != "" {
 			summary["primaryError"] = primaryErr
@@ -271,31 +320,42 @@ func (a *app) runBatchDiff(taskID string, targets []diffTarget, dir, lang string
 		data, _ := json.MarshalIndent(summary, "", "  ")
 		_ = os.WriteFile(filepath.Join(dir, "diff.json"), data, 0o644)
 	}
-	failAll := func(primaryName, reason string) {
+	failAll := func(reason string) {
 		for _, t := range targets {
-			entries = append(entries, batchDiffEntry{Name: t.name, PageID: t.id, Error: reason})
+			entries = append(entries, batchDiffEntry{Name: t.name, PageID: t.id, Viewport: viewportPtr(t.viewport), Error: reason})
 		}
-		writeSummary(primaryName, reason)
+		writeSummary(reason)
 		failed = len(targets)
+		// A failed batch must not leave the previous run's report card next to
+		// the new error notice; its open button would point at stale evidence.
+		a.mu.Lock()
+		if a.taskID == taskID {
+			a.diffReport = nil
+		}
+		a.mu.Unlock()
+		a.pushState()
 	}
 
 	a.mu.Lock()
 	var pf *captureFlight
-	primaryName := ""
 	if a.batchShotValidLocked(taskID, a.primaryID) {
 		p := a.pages[a.primaryID]
 		primaryName = p.name
+		primaryViewport = diffViewport{Width: p.resW, Height: p.resH}
 		pf = a.capturePageFlight(p, func() ([]byte, error) { return capture(p) })
 	}
 	a.mu.Unlock()
 	if pf == nil {
-		failAll("", "task stopped")
+		failAll("task stopped")
 		return
 	}
 	refPNG, err := waitCapture(pf, captureTimeout)
 	if err != nil {
-		failAll(primaryName, err.Error())
+		failAll(err.Error())
 		return
+	}
+	if cfg, cfgErr := png.DecodeConfig(bytes.NewReader(refPNG)); cfgErr == nil {
+		captureW, captureH = cfg.Width, cfg.Height
 	}
 
 	for _, t := range targets {
@@ -307,19 +367,19 @@ func (a *app) runBatchDiff(taskID string, targets []diffTarget, dir, lang string
 		}
 		a.mu.Unlock()
 		if f == nil {
-			entries = append(entries, batchDiffEntry{Name: t.name, PageID: t.id, Error: "task stopped"})
+			entries = append(entries, batchDiffEntry{Name: t.name, PageID: t.id, Viewport: viewportPtr(t.viewport), Error: "task stopped"})
 			failed++
 			continue
 		}
 		png, err := waitCapture(f, captureTimeout)
 		if err != nil {
-			entries = append(entries, batchDiffEntry{Name: t.name, PageID: t.id, Error: err.Error()})
+			entries = append(entries, batchDiffEntry{Name: t.name, PageID: t.id, Viewport: viewportPtr(t.viewport), Error: err.Error()})
 			failed++
 			continue
 		}
 		st, diff, err := diffPNG(refPNG, png, 0)
 		if err != nil {
-			entries = append(entries, batchDiffEntry{Name: t.name, PageID: t.id, Error: diffError(lang, t.name, primaryName, err).Error()})
+			entries = append(entries, batchDiffEntry{Name: t.name, PageID: t.id, Viewport: viewportPtr(t.viewport), Error: diffError(lang, t.name, primaryName, err).Error()})
 			failed++
 			continue
 		}
@@ -330,16 +390,56 @@ func (a *app) runBatchDiff(taskID string, targets []diffTarget, dir, lang string
 		}
 		used[fname] = true
 		if err := os.WriteFile(filepath.Join(dir, fname), diff, 0o644); err != nil {
-			entries = append(entries, batchDiffEntry{Name: t.name, PageID: t.id, Error: err.Error()})
+			entries = append(entries, batchDiffEntry{Name: t.name, PageID: t.id, Viewport: viewportPtr(t.viewport), Error: err.Error()})
 			failed++
 			continue
 		}
-		entries = append(entries, batchDiffEntry{Name: t.name, PageID: t.id, Stats: &st})
+		entries = append(entries, batchDiffEntry{Name: t.name, PageID: t.id, Viewport: viewportPtr(t.viewport), File: fname, Stats: &st})
 		ok++
 		if st.Different > 0 {
 			differ++
 		}
 	}
-	writeSummary(primaryName, "")
+	writeSummary("")
+	a.publishDiffReport(taskID, dir, primaryViewport, captureW, captureH, entries)
 	return
+}
+
+// viewportPtr keeps a zero viewport out of the evidence instead of writing
+// 0×0 for pages whose resolution was never seeded.
+func viewportPtr(v diffViewport) *diffViewport {
+	if v.Width <= 0 || v.Height <= 0 {
+		return nil
+	}
+	return &v
+}
+
+// publishDiffReport stores the finished batch for the runtime panel, but only
+// while the task that launched it is still current: a stale batch must not
+// overwrite the report of a newer task.
+func (a *app) publishDiffReport(taskID, dir string, viewport diffViewport, captureW, captureH int, entries []batchDiffEntry) {
+	rep := &diffReportState{
+		Dir:         dir,
+		ViewportW:   viewport.Width,
+		ViewportH:   viewport.Height,
+		CaptureW:    captureW,
+		CaptureH:    captureH,
+		GeneratedAt: time.Now(),
+	}
+	for _, e := range entries {
+		re := diffReportEntry{Name: e.Name, PageID: e.PageID, Error: e.Error}
+		if e.File != "" {
+			re.Path = filepath.Join(dir, e.File)
+		}
+		if e.Stats != nil {
+			re.Fraction = e.Stats.Fraction
+			re.Width, re.Height = e.Stats.Width, e.Stats.Height
+		}
+		rep.Entries = append(rep.Entries, re)
+	}
+	a.mu.Lock()
+	if a.taskID == taskID && a.status == "running" {
+		a.diffReport = rep
+	}
+	a.mu.Unlock()
 }

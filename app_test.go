@@ -115,6 +115,125 @@ func TestBuildRequestRejectsBadForm(t *testing.T) {
 	}
 }
 
+func TestBuildRequestEmptyPrimaryMessage(t *testing.T) {
+	a := newApp()
+	_, err := a.buildRequest()
+	if err == nil || !strings.Contains(err.Error(), "主页面 URL 不能为空") {
+		t.Fatalf("empty primary error = %v, want the required-URL message", err)
+	}
+}
+
+// TestStartTaskNonFieldErrorKeepsNotice: a submit failure without a flagged
+// field must not be tagged "form", or the setup body would clear it on the next
+// frame (that tag is dropped as soon as every field validates again).
+func TestStartTaskNonFieldErrorKeepsNotice(t *testing.T) {
+	a := newApp()
+	a.configs = a.configs[:1]
+	a.startTask()
+	a.mu.Lock()
+	notice, tag := a.notice, a.noticeTag
+	a.mu.Unlock()
+	if notice == "" {
+		t.Fatal("page-count failure left no notice")
+	}
+	if tag != "" {
+		t.Fatalf("noticeTag = %q, want empty so the banner is not auto-cleared", tag)
+	}
+}
+
+// TestNoticeAutoExpires: transient notices dismiss themselves, but a result
+// notice with an artifact path stays so its open-folder action remains reachable.
+func TestNoticeAutoExpires(t *testing.T) {
+	cases := []struct {
+		kind, path string
+		want       bool
+	}{
+		{"success", "", true},
+		{"info", "", true},
+		{"error", "", false},
+		{"warning", "", false},
+		{"success", "/tmp/diff", false},
+		{"info", "/tmp/shot.png", false},
+	}
+	for _, c := range cases {
+		if got := noticeAutoExpires(c.kind, c.path); got != c.want {
+			t.Errorf("noticeAutoExpires(%q, %q) = %v, want %v", c.kind, c.path, got, c.want)
+		}
+	}
+}
+
+// TestStaleNoticeTTLCannotClearLiteral: a literal notice (replay progress)
+// writes a new sequence, so a TTL armed for an older keyed notice is a no-op.
+func TestStaleNoticeTTLCannotClearLiteral(t *testing.T) {
+	a := newApp()
+	a.setNoticeKey("success", "notice.bulkDone", 3)
+	a.mu.Lock()
+	oldSeq := a.noticeSeq
+	a.setNoticeTextLocked("replaying…", "info", "replay")
+	a.mu.Unlock()
+	a.expireNotice(oldSeq)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.notice != "replaying…" || a.noticeKey != "" {
+		t.Fatalf("stale TTL cleared the replay notice: %q key=%q", a.notice, a.noticeKey)
+	}
+}
+
+// TestFinishReplayRunReplacesKeyedNotice: the final replay result must be
+// visible even when a keyed result notice preceded the run.
+func TestFinishReplayRunReplacesKeyedNotice(t *testing.T) {
+	a := runningFixture(t)
+	a.setNoticeKey("success", "notice.bulkDone", 2)
+	a.mu.Lock()
+	a.setNoticeTextLocked(a.tr("notice.recReplaying", 3), "info", "replay")
+	rp := &replayRun{taskID: "task-1", active: true, total: 3, done: 3}
+	a.mu.Unlock()
+	a.finishReplayRun(rp, "")
+	a.mu.Lock()
+	notice, key, tag := a.notice, a.noticeKey, a.noticeTag
+	a.mu.Unlock()
+	if key != "" {
+		t.Fatalf("replay result still masked by key %q (%q)", key, notice)
+	}
+	if notice == "" || tag != "" {
+		t.Fatalf("replay result notice = %q tag=%q, want the literal result", notice, tag)
+	}
+}
+
+// TestSnapshotSyncing: the card's syncing tag derives from queued depth plus
+// the in-flight op, and the running view mode comes from the snapshot.
+func TestSnapshotSyncing(t *testing.T) {
+	a := runningFixture(t)
+	a.mu.Lock()
+	a.taskViewMode = "mobile"
+	p := a.pages["p2"]
+	p.queue.push(operation{Type: "click", Anchor: anchor{Type: "id", Selector: "#a"}})
+	p.queue.push(operation{Type: "click", Anchor: anchor{Type: "id", Selector: "#b"}})
+	a.mu.Unlock()
+	st := a.snapshot()
+	var ps *pageState
+	for i := range st.Pages {
+		if st.Pages[i].ID == "p2" {
+			ps = &st.Pages[i]
+		}
+	}
+	if ps == nil || !ps.Syncing || ps.Pending != 2 {
+		t.Fatalf("queued page = %+v, want syncing with 2 pending", ps)
+	}
+	a.mu.Lock()
+	a.pages["p2"].replaying = true
+	a.mu.Unlock()
+	st = a.snapshot()
+	for i := range st.Pages {
+		if st.Pages[i].ID == "p2" && st.Pages[i].Pending != 3 {
+			t.Fatalf("pending = %d, want 3 (queue + in-flight)", st.Pages[i].Pending)
+		}
+	}
+	if st.ViewMode != "mobile" {
+		t.Fatalf("snapshot viewMode = %q, want mobile", st.ViewMode)
+	}
+}
+
 func TestUiZoom(t *testing.T) {
 	cases := []struct {
 		pct  string
@@ -239,8 +358,9 @@ func TestBatchDirSanitizesAndCreates(t *testing.T) {
 }
 
 // TestViewModeResolutionMemory checks that each view mode remembers its
-// last-used resolution: switching away and back restores the custom values
-// instead of the factory preset, and every row is reseeded as before.
+// last-used resolution per page: switching away and back restores the custom
+// values instead of the factory preset, while untouched rows keep the preset
+// they had in that mode.
 func TestViewModeResolutionMemory(t *testing.T) {
 	a := newApp()
 	// desktop → mobile seeds the mobile default.
@@ -257,21 +377,74 @@ func TestViewModeResolutionMemory(t *testing.T) {
 	if a.resW != 1280 || a.resH != 800 {
 		t.Fatalf("desktop restore = %v×%v, want 1280×800", a.resW, a.resH)
 	}
-	// desktop → mobile restores the custom mobile values, not 390×844.
+	// desktop → mobile restores the custom mobile values, not 390×844, per row.
 	a.viewMode = "mobile"
 	a.reseedViewMode()
 	if a.resW != 414 || a.resH != 896 {
 		t.Fatalf("mobile memory = %v×%v, want the custom 414×896", a.resW, a.resH)
 	}
-	for i, cfg := range a.configs {
-		if cfg.resW != 414 || cfg.resH != 896 {
-			t.Fatalf("row %d res = %v×%v, want reseeded 414×896", i, cfg.resW, cfg.resH)
+	if a.configs[0].resW != 414 || a.configs[0].resH != 896 {
+		t.Fatalf("primary row res = %v×%v, want the custom 414×896", a.configs[0].resW, a.configs[0].resH)
+	}
+	// Rows that were never customized keep the mobile preset they had.
+	for i := 1; i < len(a.configs); i++ {
+		if cfg := a.configs[i]; cfg.resW != 390 || cfg.resH != 844 {
+			t.Fatalf("row %d res = %v×%v, want the untouched mobile preset 390×844", i, cfg.resW, cfg.resH)
 		}
 	}
 	// A no-op call must not clobber anything.
 	a.reseedViewMode()
 	if a.resW != 414 || a.resH != 896 || a.lastViewMode != "mobile" {
 		t.Fatalf("no-op reseed changed state: %v×%v mode=%q", a.resW, a.resH, a.lastViewMode)
+	}
+}
+
+func TestViewModeResolutionPerRowMemory(t *testing.T) {
+	a := newApp()
+	a.viewMode = "mobile"
+	a.reseedViewMode()
+	a.configs[0].resW, a.configs[0].resH = 414, 896
+	a.configs[1].resW, a.configs[1].resH = 360, 780
+	a.viewMode = "desktop"
+	a.reseedViewMode()
+	for i, cfg := range a.configs {
+		if cfg.resW != 1280 || cfg.resH != 800 {
+			t.Fatalf("row %d desktop res = %v×%v, want the preset 1280×800", i, cfg.resW, cfg.resH)
+		}
+	}
+	a.viewMode = "mobile"
+	a.reseedViewMode()
+	if a.configs[0].resW != 414 || a.configs[0].resH != 896 {
+		t.Fatalf("row 0 mobile res = %v×%v, want the custom 414×896", a.configs[0].resW, a.configs[0].resH)
+	}
+	if a.configs[1].resW != 360 || a.configs[1].resH != 780 {
+		t.Fatalf("row 1 mobile res = %v×%v, want the custom 360×780", a.configs[1].resW, a.configs[1].resH)
+	}
+}
+
+// TestNoticeKeyRetranslates checks that keyed notices keep their key and args
+// through the snapshot, so the panel can re-render them in a newly selected
+// language instead of leaving the old text frozen.
+func TestNoticeKeyRetranslates(t *testing.T) {
+	a := newApp()
+	a.setNoticeOKKey("notice.bulkDone", 3)
+	st := a.snapshot()
+	if st.NoticeKey != "notice.bulkDone" || len(st.NoticeArgs) != 1 {
+		t.Fatalf("snapshot key/args = %q/%v, want the notice key and one arg", st.NoticeKey, st.NoticeArgs)
+	}
+	if st.Notice != trLang("zh", "notice.bulkDone", 3) {
+		t.Fatalf("zh notice = %q", st.Notice)
+	}
+	a.langVal.Store("en")
+	if got := a.tr(st.NoticeKey, st.NoticeArgs...); got != trLang("en", "notice.bulkDone", 3) {
+		t.Fatalf("en notice = %q, want the retranslated text", got)
+	}
+
+	// A correction in the form drops the tagged validation notice entirely.
+	a.setNoticeErrTag("form", "bad input")
+	a.clearNoticeTag("form")
+	if a.notice != "" || a.noticeKey != "" || a.noticeTag != "" {
+		t.Fatalf("tagged notice survived its clear: %q key=%q tag=%q", a.notice, a.noticeKey, a.noticeTag)
 	}
 }
 

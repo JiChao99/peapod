@@ -59,7 +59,6 @@ type recorder struct {
 	a      *app
 	taskID string
 	dir    string
-	lang   string
 	script *os.File
 	seq    int // guarded by a.mu; assigned in recordOpLocked
 	steps  chan recStep
@@ -85,24 +84,24 @@ type recorder struct {
 // startRecording opens a session folder under the user's recordings root and
 // starts the recorder goroutine. A folder failure disables recording for this
 // task (with a notice) instead of failing the task itself.
-func (a *app) startRecording(taskID string, req startRequest, lang string) {
-	a.startRecordingIn(filepath.Join(userArtifactRoot(), "recordings"), taskID, req, lang)
+func (a *app) startRecording(taskID string, req startRequest) {
+	a.startRecordingIn(filepath.Join(userArtifactRoot(), "recordings"), taskID, req)
 }
 
 // startRecordingIn is startRecording with an explicit root, for tests.
-func (a *app) startRecordingIn(root, taskID string, req startRequest, lang string) {
+func (a *app) startRecordingIn(root, taskID string, req startRequest) {
 	dir, err := batchDir(root, "recording")
 	if err != nil {
-		a.setNoticeWarn(trLang(lang, "err.recordDir", err.Error()))
+		a.setNoticeWarnKey("err.recordDir", err.Error())
 		return
 	}
 	f, err := os.Create(filepath.Join(dir, "script.jsonl"))
 	if err != nil {
-		a.setNoticeWarn(trLang(lang, "err.recordDir", err.Error()))
+		a.setNoticeWarnKey("err.recordDir", err.Error())
 		return
 	}
 	r := &recorder{
-		a: a, taskID: taskID, dir: dir, lang: lang, script: f,
+		a: a, taskID: taskID, dir: dir, script: f,
 		steps: make(chan recStep, recordQueueSize),
 		quit:  make(chan struct{}),
 		done:  make(chan struct{}),
@@ -370,7 +369,7 @@ func (r *recorder) finish() {
 		_ = os.WriteFile(filepath.Join(r.dir, "summary.json"), data, 0o644)
 	}
 	if dispatched > 0 {
-		r.a.setNoticeOpen(trLang(r.lang, "notice.recordSaved", dispatched, r.dir), "success", r.dir, true)
+		r.a.setNoticeOpenKey("success", "notice.recordSaved", r.dir, true, dispatched, r.dir)
 	}
 }
 
