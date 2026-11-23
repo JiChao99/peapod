@@ -62,8 +62,8 @@ It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with it
 ### Evidence
 - **Batch screenshots.** One click saves a PNG of every running page, including pages that aren't currently on screen.
 - **Variant diff.** One click compares every page against the primary pixel by pixel, saving a red-highlight diff PNG per page plus a `diff.json` stats summary under `Pictures/Peapod/diffs`. Pages must share the primary's resolution; a per-channel tolerance absorbs anti-aliasing noise.
-- **Operation recording.** When turned on, every operation goes into a replayable `script.jsonl`, and all pages are screenshotted once the task settles.
-- **Recordings browser.** Lists past sessions with a step-by-step timeline and per-page thumbnails. You can replay a session on a running task or export a self-contained HTML report.
+- **Operation recording.** When turned on, every operation goes into a replayable `script.jsonl`, and all pages are screenshotted once the task settles. Popups (DOM dialogs, floating toasts, native `alert`/`confirm`/`prompt`) are captured with their text and, for DOM popups, a screenshot — useful for asserting localized copy.
+- **Recordings browser.** Lists past sessions with a step-by-step timeline, per-page thumbnails and popups inline with the steps. You can replay a session on a running task or export a self-contained HTML report that includes popup text and shots.
 
 ### Automation
 - **MCP server.** A local [Model Context Protocol](https://modelcontextprotocol.io) endpoint, protected by a token, lets an AI agent start, navigate, operate, replay, screenshot, diff, diagnose and stop tasks without using the UI.

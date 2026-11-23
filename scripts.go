@@ -141,6 +141,199 @@ func capturePreload(pageID string) string {
 })();`, pageID)
 }
 
+// dialogPreload reports popups that appear while a task is recording. It is
+// injected only for recording tasks, so ordinary mirroring pays nothing.
+//
+// Two kinds of popups are reported through Sync.Dialog:
+//   - DOM popups: <dialog open>, [role=dialog], [role=alertdialog] and
+//     [aria-modal=true]; floating live regions ([role=alert]/[role=status]
+//     inside a fixed/sticky container) are reported as toasts. The observer
+//     waits for a short quiet window so async content can render, and reports
+//     an element again only when its text changes or it reopens.
+//   - native alert/confirm/prompt: the message is reported before the native
+//     dialog blocks the page. The dialog itself is not page pixels, so Go
+//     records the text without a screenshot.
+//
+// Shadow roots and iframes are not observed: Peapod's preload runs in the main
+// frame only, and a closed shadow root is not reachable.
+func dialogPreload(pageID string) string {
+	return fmt.Sprintf(`(() => {
+  try {
+    if (window.__peapodDialog) return;
+    window.__peapodDialog = true;
+    const PAGE_ID = %q;
+    const MAX_TEXT = 4000;
+    const MAX_SEL = 512;
+    const QUIET = 220;
+    const MAX_DELAY = 900;
+    const MIN_GAP = 800;
+    const DIALOGS = 'dialog[open],[role="dialog"],[role="alertdialog"],[aria-modal="true"],[role="alert"],[role="status"]';
+    const FLOAT_ROLES = new Set(['alert', 'status']);
+    const states = new WeakMap();
+    // Elements actually reported. A tracked element that closes or stops
+    // matching has its state cleared on the next scan, so reopening it with the
+    // same text (e.g. a repeated confirm) is reported again.
+    const tracked = new Set();
+    let timer = 0;
+    let firstAt = 0;
+
+    const clip = (s, n) => {
+      const v = String(s == null ? '' : s);
+      return v.length > n ? v.slice(0, n) : v;
+    };
+
+    const visible = (el) => {
+      try {
+        if (!el || !el.isConnected) return false;
+        const r = el.getBoundingClientRect();
+        if (r.width < 2 || r.height < 2) return false;
+        const s = getComputedStyle(el);
+        if (s.display === 'none' || s.visibility === 'hidden' || s.visibility === 'collapse') return false;
+        if (parseFloat(s.opacity || '1') < 0.05) return false;
+        if (el.hidden || el.getAttribute('aria-hidden') === 'true') return false;
+        return true;
+      } catch { return false; }
+    };
+
+    // A live region only counts when it floats over the page: inline role=alert
+    // validation text must not spawn popup evidence on every keystroke.
+    const floating = (el) => {
+      try {
+        let n = el;
+        for (let i = 0; n && n.nodeType === 1 && i < 6; i++, n = n.parentElement) {
+          const p = getComputedStyle(n).position;
+          if (p === 'fixed' || p === 'sticky') return true;
+        }
+      } catch {}
+      return false;
+    };
+
+    // A live region nested in a modal belongs to that popup (e.g. inline
+    // validation text); reporting it separately would duplicate the evidence.
+    const inModal = (el) => {
+      try {
+        return !!el.closest('dialog[open],[role="dialog"],[role="alertdialog"],[aria-modal="true"]');
+      } catch { return false; }
+    };
+
+    const isCandidate = (el) => {
+      if (!el || el.nodeType !== 1) return false;
+      const tag = String(el.localName || '').toLowerCase();
+      const role = String(el.getAttribute('role') || '').toLowerCase();
+      if (tag === 'dialog' && el.hasAttribute('open')) return true;
+      if (role === 'dialog' || role === 'alertdialog' || el.getAttribute('aria-modal') === 'true') return true;
+      if (FLOAT_ROLES.has(role)) return floating(el) && !inModal(el);
+      return false;
+    };
+
+    const describe = (el) => {
+      const tag = String(el.localName || el.tagName || '').toLowerCase();
+      const role = String(el.getAttribute('role') || '').toLowerCase();
+      let kind = 'modal';
+      if (tag === 'dialog' || role === 'dialog' || role === 'alertdialog') kind = 'dialog';
+      else if (FLOAT_ROLES.has(role)) kind = 'toast';
+      const id = el.id ? '#' + el.id : '';
+      const cls = typeof el.className === 'string'
+        ? el.className.trim().split(/\s+/).filter(Boolean).slice(0, 3).join('.')
+        : '';
+      let text = '';
+      try { text = (el.innerText || el.textContent || '').trim(); } catch {}
+      return {
+        kind,
+        role,
+        text: clip(text, MAX_TEXT),
+        selector: clip(tag + id + (cls ? '.' + cls : ''), MAX_SEL),
+      };
+    };
+
+    const send = (kind, role, text, selector, value) => {
+      try {
+        if (window.mygo && typeof window.mygo.call === 'function') {
+          window.mygo.call('Sync.Dialog', {
+            pageId: PAGE_ID, kind, role: role || '', text: text || '',
+            selector: selector || '', value: value || '',
+          }).catch(() => {});
+        }
+      } catch {}
+    };
+
+    const consider = (el) => {
+      if (!isCandidate(el)) return;
+      if (!visible(el)) {
+        const prev = states.get(el);
+        if (prev && prev.text !== '') states.set(el, { text: '', at: 0 });
+        return;
+      }
+      const d = describe(el);
+      const prev = states.get(el);
+      if (prev && prev.text === d.text) return;
+      const now = Date.now();
+      if (prev && now - prev.at < MIN_GAP) {
+        setTimeout(schedule, MIN_GAP - (now - prev.at));
+        return;
+      }
+      states.set(el, { text: d.text, at: now });
+      if (!d.text && d.kind !== 'dialog') return;
+      tracked.add(el);
+      send(d.kind, d.role, d.text, d.selector, '');
+    };
+
+    const scan = () => {
+      // Forget popups that closed, detached or stopped matching, so a reopen
+      // with the same copy is a new report.
+      for (const el of tracked) {
+        if (!el.isConnected || !isCandidate(el) || !visible(el)) {
+          tracked.delete(el);
+          states.delete(el);
+        }
+      }
+      let nodes;
+      try { nodes = document.querySelectorAll(DIALOGS); } catch { return; }
+      for (const el of nodes) consider(el);
+    };
+
+    function schedule() {
+      const now = Date.now();
+      if (!firstAt) firstAt = now;
+      clearTimeout(timer);
+      const wait = Math.max(0, Math.min(QUIET, MAX_DELAY - (now - firstAt)));
+      timer = setTimeout(() => { firstAt = 0; scan(); }, wait);
+    }
+
+    try {
+      // Observe the document, not documentElement: it exists even at document
+      // start, and it survives a document.write that replaces the root.
+      new MutationObserver(schedule).observe(document, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true,
+        attributeFilter: ['class', 'style', 'open', 'role', 'aria-modal', 'aria-hidden', 'hidden'],
+      });
+    } catch {}
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', schedule, { once: true });
+    } else {
+      schedule();
+    }
+
+    const wrapNative = (name, kind) => {
+      const orig = window[name];
+      if (typeof orig !== 'function') return;
+      try {
+        window[name] = function (message) {
+          send(kind, '', clip(message, MAX_TEXT), '', arguments.length > 1 ? clip(arguments[1], 200) : '');
+          return orig.apply(window, arguments);
+        };
+      } catch {}
+    };
+    wrapNative('alert', 'alert');
+    wrapNative('confirm', 'confirm');
+    wrapNative('prompt', 'prompt');
+  } catch {}
+})();`, pageID)
+}
+
 // resolveScript waits until the anchor matches exactly one element, returning
 // {found:true} or {errorCode}. The wait is short (3s): a missing static target
 // must pause the follower quickly enough for the user to see it, while a

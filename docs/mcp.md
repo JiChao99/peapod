@@ -64,7 +64,7 @@ Because the port/token rotate per launch, either regenerate this config from `mc
 | Tool | Arguments | Effect |
 | --- | --- | --- |
 | `peapod_status` | — | Task status plus every page's `id`, `name`, `url`, `status`, `syncOn`, `isPrimary`, last error. |
-| `peapod_start` | `pages[]` (2–10), optional `template`, `shareStorage`, `viewMode`, `userAgent`, `diagnostics`, `record`, `syncDelayMs` | Open pages and start mirroring. Returns `starting`; poll `peapod_status` until `running` (3 s grace). `diagnostics:true` injects the opt-in collector at document start (see below). `record:true` saves a replayable script plus per-step screenshots (see [Recording & replay](#recording--replay)). `syncDelayMs` paces input/scroll mirroring (see [Sync pace](#sync-pace)). |
+| `peapod_start` | `pages[]` (2–10), optional `template`, `shareStorage`, `viewMode`, `userAgent`, `diagnostics`, `record`, `syncDelayMs` | Open pages and start mirroring. Returns `starting`; poll `peapod_status` until `running` (3 s grace). `diagnostics:true` injects the opt-in collector at document start (see below). `record:true` saves a replayable script, per-step screenshots and popup evidence (see [Recording & replay](#recording--replay)). `syncDelayMs` paces input/scroll mirroring (see [Sync pace](#sync-pace)). |
 | `peapod_stop` | — | Tear down every page and wipe its session data. |
 | `peapod_navigate` | `url`, optional `pageId` (default primary) | Load a URL. A primary move propagates to followers via navigation follow. A fragment-only (same-document) move keeps the page's current status. |
 | `peapod_reload` | optional `pageId` (default primary) | Reload a page; a running follower re-aligns to the primary's current URL and clears a pause. |
@@ -98,10 +98,10 @@ Keys are lower camelCase, matching `peapod_start` / `peapod_stop`:
 
 `status` is one of `idle`, `starting`, `running`, `stopping`, `cleanup-error`. After a failed data wipe the task stays in `cleanup-error`: `peapod_start` and `peapod_stop` both report the lockout until the app is restarted, so a new task can never run on un-wiped session data.
 
-`recording` is always present (`true` while an opt-in recording is active). When recording, `recordSteps` (operations dispatched so far) and `recordDir` (the session folder) are added. `syncDelayMs` reports the running task's input/scroll pace (0 when idle or instant). While a `peapod_replay` run exists, `replay` reports its progress:
+`recording` is always present (`true` while an opt-in recording is active). When recording, `recordSteps` (operations dispatched so far), `recordDialogs` (popups reported so far) and `recordDir` (the session folder) are added. `syncDelayMs` reports the running task's input/scroll pace (0 when idle or instant). While a `peapod_replay` run exists, `replay` reports its progress:
 
 ```json
-{ "recording": true, "recordSteps": 12, "recordDir": "C:\\Users\\me\\Pictures\\Peapod\\recordings\\recording_20261117-101500",
+{ "recording": true, "recordSteps": 12, "recordDialogs": 3, "recordDir": "C:\\Users\\me\\Pictures\\Peapod\\recordings\\recording_20261117-101500",
   "replay": { "active": true, "done": 5, "total": 12 } }
 ```
 
@@ -223,6 +223,9 @@ recording_20261117-101500/
     Primary.png
     Page 2.png
   steps/0004/…
+  dialogs.jsonl     # every popup seen, with its text, kind and screenshot path
+  dialogs/          # one PNG per DOM popup as it appeared
+    0001-Primary.png
   summary.json      # counts and errors, written when recording ends (task stop)
 ```
 
@@ -236,6 +239,20 @@ Each `script.jsonl` line is one operation plus its evidence context:
 - `url` is the primary's URL at dispatch time; `operation` has exactly the `peapod_send_operation` shape.
 - Password and file inputs are never captured, so they never appear in a script. Other typed text **does** — treat recordings as sensitive local artifacts. Unlike ephemeral session data (wiped on stop), recordings are deliberately kept.
 
+### Popup evidence
+
+Recording also captures page popups, so localized dialog copy can be asserted per variant. Each popup is one `dialogs.jsonl` line plus, for DOM popups, a `dialogs/*.png` of the page as the popup appeared:
+
+```json
+{"seq":1,"at":"2026-11-17T10:15:06.1234567Z","pageId":"p2","pageName":"Page 2","pageUrl":"https://prod.example.com/cart","kind":"dialog","role":"dialog","text":"确定要删除吗？","selector":"div.confirm","shot":"dialogs/0001-Page 2.png"}
+```
+
+- Detected DOM popups: `<dialog open>`, `[role=dialog]`, `[role=alertdialog]`, `[aria-modal=true]`, plus floating `[role=alert]` / `[role=status]` live regions (reported as `toast`). A live region inside a modal is treated as part of that popup, not a second report. Hidden nodes are ignored; the observer waits for a short quiet window so async content can render, and reports an element again when its text changes or it is reopened.
+- Native `alert` / `confirm` / `prompt` calls are reported before they block the page. The line is marked `"native":true` with `shotSkipped` instead of `shot`: WebView2 draws the native dialog outside the page bitmap, so a screenshot would only show the page behind it. The `text` (and a prompt's default `value`) is still recorded, but a confirm's outcome and a prompt's typed answer are not.
+- Any page may report its own popup, so each locale variant's copy is recorded separately; a page cannot report another page's popup. Popups never enter `script.jsonl`, so `peapod_replay` still sees operations only.
+- `at` is the report time after the quiet window, not necessarily the instant the popup appeared; the recordings browser orders popups and steps by it.
+- Popup text is untrusted page content, clipped to 4000 UTF-8 bytes (role 64, selector 512, prompt default 200). Treat it as sensitive local evidence, like recorded input values. Shadow roots and iframes are not observed.
+
 ### Capture semantics (honest evidence)
 
 Every dispatched operation gets a JSONL line. Screenshots are taken only after the task **settles** — no page loading, every synced page's replay queue drained — so a step's shots show that step's result, not a half-replayed state. Operations that pile up during a capture are coalesced: each still gets its line, but only the burst's **latest** step is captured (a mid-burst shot would show later operations under an earlier step's label). The settle wait is bounded (8 s, then a best-effort capture), and each page's capture reuses the batch path's 10 s timeout and coalesced capture flights.
@@ -246,12 +263,14 @@ Scrolls the page produces itself — load animations, scroll anchoring after a r
 
 ```json
 { "endedAt": "…", "operations": 12, "dispatched": 12, "stepsCaptured": 5,
-  "shotsSaved": 10, "shotsFailed": 0, "superseded": 7, "dropped": 0 }
+  "shotsSaved": 10, "shotsFailed": 0, "superseded": 7, "dropped": 0,
+  "dialogs": 3, "dialogShots": 2, "dialogShotsFailed": 0, "nativeDialogs": 1, "dialogsDropped": 0 }
 ```
 
 - `operations` — JSONL lines persisted; `dispatched` — operations handed to the recorder (differs when steps were dropped by a full queue, or on a write error reported as `writeError`).
 - `stepsCaptured` — step folders captured; `superseded` — steps absorbed into a later step's capture; `dropped` — steps lost to a full queue (1024-step buffer; recording never blocks the sync path).
 - `shotsSaved` / `shotsFailed` — per-page PNG outcomes. A minimized/hidden window — or one fully covered by another window — makes WebView2 stop rendering, so captures time out; those shots are counted as failed and the recording continues. While occluded, the layout viewport can also drift, so replayed scrolls may no-op. Restore the window to keep the visual evidence complete.
+- `dialogs` — popup reports received (a line may be missing after a `dialogError`); `dialogShots` / `dialogShotsFailed` — DOM popup PNG outcomes; `nativeDialogs` — text-only native alert/confirm/prompt lines; `dialogsDropped` — reports lost to a full queue (256-event buffer). A dialogs write error is reported as `dialogError`; it does not stop the recording. Popup captures do not wait for task settle (a toast may vanish) and use a 3 s budget; a popup captured after a stop keeps its text with a "recording stopped" note instead of a shot. The recordings browser reads up to the first 4 MiB of `dialogs.jsonl`.
 
 ### `peapod_replay`
 
@@ -266,8 +285,8 @@ Scrolls the page produces itself — load animations, scroll anchoring after a r
 
 ## Example agent workflow
 
-1. `peapod_start` with a template and two pages (dev + prod); add `record:true` to keep a replayable script and per-step screenshots.
+1. `peapod_start` with a template and two pages (dev + prod); add `record:true` to keep a replayable script, per-step screenshots and popup evidence.
 2. Poll `peapod_status` until both pages are `ready`. A page stuck in `error` with a `navError` (e.g. `NAME_NOT_RESOLVED`) is unreachable — fix the URL/host rather than waiting.
 3. `peapod_navigate` the primary to a route; followers follow on their own host.
 4. `peapod_send_operation` to type into a field; `peapod_diff` to compare variants pixel by pixel (stats + red-highlight PNG), or `peapod_screenshot` each page and `peapod_diagnostics` to assert HTTP status, text and console/network errors.
-5. `peapod_stop` to clean up. With recording on, the session folder now holds `script.jsonl` + step shots + `summary.json`; later, start a fresh task at the same entry URL and `peapod_replay` the script to re-enact the flow.
+5. `peapod_stop` to clean up. With recording on, the session folder now holds `script.jsonl` + step shots + `dialogs.jsonl`/`dialogs/` + `summary.json`; the recordings browser shows popups inline with the steps and exports them into the HTML report. Later, start a fresh task at the same entry URL and `peapod_replay` the script to re-enact the flow.
