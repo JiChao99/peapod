@@ -388,6 +388,21 @@ func clipUTF8(s string, n int) string {
 	return s[:cut]
 }
 
+// canRecordDialogsLocked reports whether popup reports may be queued in the
+// current state. Reports are accepted from the moment pages start loading
+// (the recorder attaches before createPages loads them), so a load-time
+// consent modal or alert is not lost. Idle and cleanup-error have no recorder.
+func (a *app) canRecordDialogsLocked() bool {
+	if a.rec == nil {
+		return false
+	}
+	switch a.status {
+	case "starting", "running", "stopping":
+		return true
+	}
+	return false
+}
+
 // Dialog accepts a popup report from a guest page. Any page may report its own
 // popup (unlike Capture, which is primary-only): each variant's popup is
 // recorded separately. It is a no-op when no recording is attached.
@@ -399,7 +414,7 @@ func (s *SyncService) Dialog(ctx context.Context, payload dialogPayload) error {
 	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.status != "running" || a.rec == nil {
+	if !a.canRecordDialogsLocked() {
 		return nil
 	}
 	p := a.pages[payload.PageID]
@@ -1225,10 +1240,18 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 	if req.shareStorage {
 		shared = mygo.NewEphemeralSession()
 	}
+	// Attach the recorder before any page loads: a load-time alert or consent
+	// modal on the first page must not fall into a recording gap.
+	if req.record {
+		a.startRecording(taskID, req)
+	}
 
 	for i, rp := range req.pages {
 		a.mu.Lock()
 		if a.taskID != taskID || a.status != "starting" {
+			if a.rec != nil && a.rec.taskID == taskID {
+				a.stopRecordingLocked()
+			}
 			a.mu.Unlock()
 			return
 		}
@@ -1279,6 +1302,9 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 
 		a.mu.Lock()
 		if a.taskID != taskID || a.status != "starting" {
+			if a.rec != nil && a.rec.taskID == taskID {
+				a.stopRecordingLocked()
+			}
 			a.mu.Unlock()
 			view.Destroy()
 			return
@@ -1292,11 +1318,6 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 		go a.replayWorker(p)
 	}
 
-	// Attach the recorder while still starting: once status flips to running,
-	// operations can dispatch, and none may fall into a recording gap.
-	if req.record {
-		a.startRecording(taskID, req)
-	}
 	a.mu.Lock()
 	if a.taskID != taskID || a.status != "starting" {
 		if a.rec != nil && a.rec.taskID == taskID {

@@ -414,6 +414,74 @@ func TestRecorderDialogStopSkipsQueuedShots(t *testing.T) {
 	}
 }
 
+// TestCanRecordDialogsStates: popup reports are accepted while a recording is
+// attached, including the starting phase (pages load before status is running)
+// and the stopping phase (queued text is still evidence).
+func TestCanRecordDialogsStates(t *testing.T) {
+	a := newApp()
+	a.rec = &recorder{}
+	for status, want := range map[string]bool{
+		"idle": false, "starting": true, "running": true, "stopping": true, "cleanup-error": false,
+	} {
+		a.status = status
+		if got := a.canRecordDialogsLocked(); got != want {
+			t.Errorf("status %q: canRecordDialogsLocked = %v, want %v", status, got, want)
+		}
+	}
+	a.rec = nil
+	a.status = "running"
+	if a.canRecordDialogsLocked() {
+		t.Error("no recorder: reports must be ignored")
+	}
+}
+
+// TestRecorderDialogStartingCaptures: pages raise popups while the task is still
+// starting (the recorder attaches before they load); those get a shot too.
+func TestRecorderDialogStartingCaptures(t *testing.T) {
+	a, r := recordFixture(t)
+	a.mu.Lock()
+	a.status = "starting"
+	a.mu.Unlock()
+	dispatchDialog(t, a, "p1", dialogPayload{Kind: "modal", Text: "本地化启动弹窗"})
+	waitFor(t, "dialog line", func() bool { return len(readDialogsQuiet(r)) == 1 })
+	stopRecorder(t, a, r)
+
+	line := readDialogs(t, r)[0]
+	if line.Shot == "" || line.ShotError != "" {
+		t.Fatalf("starting popup shot = %q error = %q, want a shot", line.Shot, line.ShotError)
+	}
+	summary := readSummary(t, r)
+	if got, _ := summary["dialogShots"].(float64); got != 1 {
+		t.Errorf("dialogShots = %v, want 1", summary["dialogShots"])
+	}
+}
+
+// TestRecorderDialogStoppingSkipsShots: stopTask flips the status to stopping
+// before pages are destroyed. A popup queued at that moment must be recorded as
+// "stopped" (text kept, no shot), not as a capture failure against a page that
+// cleanup is about to close.
+func TestRecorderDialogStoppingSkipsShots(t *testing.T) {
+	a, r := recordFixture(t)
+	a.mu.Lock()
+	a.status = "stopping"
+	a.mu.Unlock()
+	dispatchDialog(t, a, "p1", dialogPayload{Kind: "toast", Text: "closed now"})
+	waitFor(t, "dialog line", func() bool { return len(readDialogsQuiet(r)) == 1 })
+	stopRecorder(t, a, r)
+
+	line := readDialogs(t, r)[0]
+	if line.Text != "closed now" || line.Shot != "" || line.ShotSkipped != dialogSkipStopped || line.ShotError != "" {
+		t.Fatalf("stopping popup line = %+v", line)
+	}
+	summary := readSummary(t, r)
+	if got, _ := summary["dialogShots"].(float64); got != 0 {
+		t.Errorf("dialogShots = %v, want 0", summary["dialogShots"])
+	}
+	if got, _ := summary["dialogShotsFailed"].(float64); got != 0 {
+		t.Errorf("dialogShotsFailed = %v, want 0 on a stop", summary["dialogShotsFailed"])
+	}
+}
+
 // TestLoadRecDialogsToleratesTornAndOversized: a live write and a file over the
 // read cap both yield the readable prefix instead of nothing.
 func TestLoadRecDialogsToleratesTornAndOversized(t *testing.T) {

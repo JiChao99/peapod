@@ -290,6 +290,23 @@ func (r *recorder) runDialogs() {
 	}
 }
 
+// stopped reports whether a new popup shot must be skipped. Recording is
+// winding down when the task left running/starting (stopTask flips the status
+// before pages are torn down) or when the recorder was detached after a write
+// error. Without the status check, a popup already queued at stop time would be
+// processed after the page was destroyed and counted as a screenshot failure.
+func (r *recorder) stopped() bool {
+	if r.stopping.Load() {
+		return true
+	}
+	r.a.mu.Lock()
+	defer r.a.mu.Unlock()
+	if r.a.rec != r {
+		return true
+	}
+	return r.a.status != "running" && r.a.status != "starting"
+}
+
 // captureDialog writes one popup's evidence line and, for DOM popups, a PNG of
 // the page as the popup appeared. Native alerts are text-only: WebView2 renders
 // them outside the page bitmap, so CapturePage would only show the page behind.
@@ -306,11 +323,17 @@ func (r *recorder) captureDialog(d dialogEvent) {
 		line.ShotSkipped = dialogSkipNative
 		r.dialogNative++
 	default:
-		if r.stopping.Load() {
+		if r.stopped() {
 			line.ShotSkipped = dialogSkipStopped
 			break
 		}
 		line.Shot, line.ShotError = r.dialogShot(d)
+		if line.ShotError != "" && r.stopped() {
+			// The stop landed while this capture was waiting; that is not a
+			// screenshot failure of a page the user just closed.
+			line.ShotError = ""
+			line.ShotSkipped = dialogSkipStopped
+		}
 		switch {
 		case line.Shot != "":
 			r.dialogSaved++
@@ -328,6 +351,17 @@ func (r *recorder) captureDialog(d dialogEvent) {
 	}
 }
 
+// popupShotValidLocked mirrors batchShotValidLocked but also accepts a task
+// that is still starting: pages load (and can raise alerts) before the status
+// flips to running, and their popup evidence still belongs to this recording.
+func (a *app) popupShotValidLocked(taskID, id string) bool {
+	if a.taskID != taskID || (a.status != "running" && a.status != "starting") {
+		return false
+	}
+	p := a.pages[id]
+	return p != nil && !p.closed
+}
+
 // dialogShot captures the reporting page for one popup. It never reuses an
 // in-flight step capture (that frame may predate the popup), but waits for it
 // within the dialog budget, then takes a fresh frame. Shares the batch path's
@@ -336,7 +370,7 @@ func (r *recorder) captureDialog(d dialogEvent) {
 func (r *recorder) dialogShot(d dialogEvent) (string, string) {
 	a := r.a
 	a.mu.Lock()
-	if !a.batchShotValidLocked(r.taskID, d.pageID) {
+	if !a.popupShotValidLocked(r.taskID, d.pageID) {
 		a.mu.Unlock()
 		return "", "page is no longer running"
 	}
@@ -349,7 +383,7 @@ func (r *recorder) dialogShot(d dialogEvent) (string, string) {
 		}
 	}
 	a.mu.Lock()
-	if !a.batchShotValidLocked(r.taskID, d.pageID) {
+	if !a.popupShotValidLocked(r.taskID, d.pageID) {
 		a.mu.Unlock()
 		return "", "page is no longer running"
 	}
