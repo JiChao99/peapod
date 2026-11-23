@@ -39,12 +39,14 @@ const (
 	recLightboxDim = 1600 // decode downscale bound for the full-size lightbox
 	recImgCacheMax = 512  // decoded thumbnails kept before the cache is cleared
 	recMaxSteps    = 100  // steps rendered in the timeline; export includes all
+	recMaxDialogs  = 200  // popup entries rendered; export includes all
 
-	recShotMaxBytes  = 32 << 20 // one screenshot read cap, so corrupt files stay bounded
-	recShotMaxPixels = 32 << 20 // width*height cap before decode: a crafted IHDR must not OOM
-	recMetaMaxBytes  = 1 << 20  // session.json / summary.json read cap
-	recNameMaxBytes  = 4096     // name.txt read cap: a custom session name is short
-	recNameMaxRunes  = 80       // custom name length bound, so list rows stay tidy
+	recShotMaxBytes   = 32 << 20 // one screenshot read cap, so corrupt files stay bounded
+	recShotMaxPixels  = 32 << 20 // width*height cap before decode: a crafted IHDR must not OOM
+	recMetaMaxBytes   = 1 << 20  // session.json / summary.json read cap
+	recDialogMaxBytes = 4 << 20  // dialogs.jsonl read cap
+	recNameMaxBytes   = 4096     // name.txt read cap: a custom session name is short
+	recNameMaxRunes   = 80       // custom name length bound, so list rows stay tidy
 )
 
 // recBrowser is the viewer's UI-owned state, touched only on the main thread
@@ -80,16 +82,22 @@ type recLightbox struct {
 
 // recSummary mirrors summary.json (record.go finish).
 type recSummary struct {
-	EndedAt       string `json:"endedAt"`
-	Operations    int    `json:"operations"`
-	Dispatched    int    `json:"dispatched"`
-	StepsCaptured int    `json:"stepsCaptured"`
-	ShotsSaved    int    `json:"shotsSaved"`
-	ShotsFailed   int    `json:"shotsFailed"`
-	Superseded    int    `json:"superseded"`
-	Dropped       int    `json:"dropped"`
-	WriteError    string `json:"writeError"`
-	SessionError  string `json:"sessionError"`
+	EndedAt           string `json:"endedAt"`
+	Operations        int    `json:"operations"`
+	Dispatched        int    `json:"dispatched"`
+	StepsCaptured     int    `json:"stepsCaptured"`
+	ShotsSaved        int    `json:"shotsSaved"`
+	ShotsFailed       int    `json:"shotsFailed"`
+	Superseded        int    `json:"superseded"`
+	Dropped           int    `json:"dropped"`
+	Dialogs           int    `json:"dialogs"`
+	DialogShots       int    `json:"dialogShots"`
+	DialogShotsFailed int    `json:"dialogShotsFailed"`
+	NativeDialogs     int    `json:"nativeDialogs"`
+	DialogsDropped    int    `json:"dialogsDropped"`
+	WriteError        string `json:"writeError"`
+	DialogError       string `json:"dialogError"`
+	SessionError      string `json:"sessionError"`
 }
 
 // recSessionInfo mirrors session.json (record.go writeSessionJSON).
@@ -118,6 +126,7 @@ type recSessionMeta struct {
 	steps     int
 	shots     int
 	failed    int
+	dialogs   int
 	pages     []string
 	urls      []string // page URLs, for the list search
 	viewMode  string
@@ -200,10 +209,30 @@ type recDetailStep struct {
 	shots []recStepShot
 }
 
+// recDialog is one popup read back from dialogs.jsonl. shotPath is absolute
+// when the recorded relative path stays inside the session folder.
+type recDialog struct {
+	seq         int
+	at          string
+	pageID      string
+	pageName    string
+	pageURL     string
+	kind        string
+	role        string
+	text        string
+	selector    string
+	value       string
+	native      bool
+	shotPath    string
+	shotError   string
+	shotSkipped string
+}
+
 // recDetail is a session's full step timeline, loaded on selection.
 type recDetail struct {
-	meta  recSessionMeta
-	steps []recDetailStep
+	meta    recSessionMeta
+	steps   []recDetailStep
+	dialogs []recDialog
 }
 
 // recordingsRoot is where the recorder writes sessions (record.go).
@@ -259,7 +288,14 @@ func readSessionMeta(dir string) (recSessionMeta, bool) {
 		var s recSummary
 		if json.Unmarshal(sumData, &s) == nil {
 			m.ops, m.steps, m.shots, m.failed = s.Operations, s.StepsCaptured, s.ShotsSaved, s.ShotsFailed
+			m.dialogs = s.Dialogs
 			m.writeErr, m.sessErr = s.WriteError, s.SessionError
+			if s.DialogError != "" {
+				if m.writeErr != "" {
+					m.writeErr += "; "
+				}
+				m.writeErr += s.DialogError
+			}
 			m.endedAt = parseRecTime(s.EndedAt)
 		}
 	} else {
@@ -317,7 +353,63 @@ func loadRecDetail(dir string, shotLimit int) (*recDetail, error) {
 		}
 		d.steps = append(d.steps, step)
 	}
+	d.dialogs = loadRecDialogs(dir)
 	return d, nil
+}
+
+// loadRecDialogs reads dialogs.jsonl, tolerating an absent file (older
+// recordings), a torn last line (the recorder is mid-write) and a file over the
+// read cap (the prefix up to the cap is still shown). A shot path is only
+// accepted when it stays inside the session folder.
+func loadRecDialogs(dir string) []recDialog {
+	f, err := os.Open(filepath.Join(dir, "dialogs.jsonl"))
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, recDialogMaxBytes))
+	if err != nil {
+		return nil
+	}
+	var out []recDialog
+	for _, raw := range strings.Split(string(data), "\n") {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		var dl dialogLine
+		if json.Unmarshal([]byte(raw), &dl) != nil || dl.Seq <= 0 {
+			continue
+		}
+		d := recDialog{
+			seq: dl.Seq, at: dl.At,
+			pageID: dl.PageID, pageName: dl.PageName, pageURL: dl.PageURL,
+			kind: dl.Kind, role: dl.Role, text: dl.Text, selector: dl.Selector, value: dl.Value,
+			native: dl.Native, shotError: dl.ShotError, shotSkipped: dl.ShotSkipped,
+		}
+		if rel := cleanRecRelPath(dl.Shot); rel != "" {
+			d.shotPath = filepath.Join(dir, rel)
+		}
+		if d.pageName == "" {
+			d.pageName = d.pageID
+		}
+		out = append(out, d)
+	}
+	return out
+}
+
+// cleanRecRelPath sanitizes a folder-relative artifact path from dialogs.jsonl
+// so a crafted line cannot point the viewer at a file outside the session.
+func cleanRecRelPath(rel string) string {
+	rel = strings.TrimSpace(rel)
+	if rel == "" {
+		return ""
+	}
+	p := filepath.Clean(filepath.FromSlash(rel))
+	if filepath.IsAbs(p) || p == ".." || strings.HasPrefix(p, ".."+string(filepath.Separator)) {
+		return ""
+	}
+	return p
 }
 
 // readAllBounded reads up to limit bytes, failing if the file is larger.
@@ -388,6 +480,9 @@ func recMetaLine(m recSessionMeta, lang string) string {
 			trLang(lang, "rec.steps", m.steps),
 			trLang(lang, "rec.shots", m.shots),
 		)
+		if m.dialogs > 0 {
+			parts = append(parts, trLang(lang, "rec.popups", m.dialogs))
+		}
 		if m.failed > 0 {
 			parts = append(parts, trLang(lang, "rec.failed", m.failed))
 		}
@@ -477,17 +572,46 @@ func recOpIcon(op operation) *ui.SVG {
 // The underlying recDetail steps are untouched, so the lightbox still opens
 // and navigates the real per-step screenshots.
 type recTimelineEntry struct {
-	steps []recDetailStep
-	run   bool // a scroll group (rendered coalesced only when len(steps) > 1)
+	steps  []recDetailStep
+	dialog *recDialog // a popup entry; steps is empty
+	run    bool       // a scroll group (rendered coalesced only when len(steps) > 1)
 }
 
-// groupRecSteps builds the timeline entries. Steps without screenshots are
-// dropped unless showNoShots is set; consecutive scrolls among the remaining
-// steps merge into one entry.
+// groupRecSteps builds an operations-only timeline. Steps without screenshots
+// are dropped unless showNoShots is set; consecutive scrolls among the
+// remaining steps merge into one entry.
 func groupRecSteps(steps []recDetailStep, showNoShots bool) []recTimelineEntry {
+	return groupRecTimeline(steps, nil, showNoShots)
+}
+
+// groupRecTimeline merges popup entries into the step timeline by time. A
+// popup always shows (its text is evidence even without a screenshot) and
+// breaks a scroll run, so two separate scroll bursts never read as one.
+func groupRecTimeline(steps []recDetailStep, dialogs []recDialog, showNoShots bool) []recTimelineEntry {
+	dl := append([]recDialog(nil), dialogs...)
+	sort.SliceStable(dl, func(i, j int) bool {
+		ti, tj := parseRecTime(dl[i].at), parseRecTime(dl[j].at)
+		if ti.IsZero() || tj.IsZero() {
+			return dl[i].seq < dl[j].seq
+		}
+		return ti.Before(tj)
+	})
 	var out []recTimelineEntry
+	di := 0
+	flushBefore := func(t time.Time) {
+		for di < len(dl) {
+			dt := parseRecTime(dl[di].at)
+			if !t.IsZero() && !dt.IsZero() && !dt.Before(t) {
+				break
+			}
+			d := dl[di]
+			out = append(out, recTimelineEntry{dialog: &d})
+			di++
+		}
+	}
 	gap := false
 	for _, st := range steps {
+		flushBefore(parseRecTime(st.line.At))
 		scroll := st.line.Operation.Type == "scroll"
 		if !showNoShots && len(st.shots) == 0 {
 			// A hidden non-scroll op breaks consecutiveness: merging across it
@@ -504,7 +628,31 @@ func groupRecSteps(steps []recDetailStep, showNoShots bool) []recTimelineEntry {
 		}
 		gap = false
 	}
+	flushBefore(time.Time{})
 	return out
+}
+
+// recDialogKindLabel names a popup kind for the timeline and report.
+func recDialogKindLabel(kind, lang string) string {
+	switch kind {
+	case "dialog", "modal", "toast", "alert", "confirm", "prompt":
+		return trLang(lang, "rec.popup.kind."+kind)
+	default:
+		return kind
+	}
+}
+
+// recDialogIcon picks the kind's icon: a floating toast, a native script
+// dialog, or a DOM modal.
+func recDialogIcon(d recDialog) *ui.SVG {
+	switch d.kind {
+	case "toast":
+		return lucide.BellRing()
+	case "alert", "confirm", "prompt":
+		return lucide.MessageCircleAlert()
+	default:
+		return lucide.AppWindow()
+	}
 }
 
 func truncateRunes(s string, n int) string {
@@ -586,14 +734,29 @@ func (a *app) recImage(path string) ui.ImageSource {
 
 // openRecLightbox opens the full-size viewer on one step's shots at index.
 func (a *app) openRecLightbox(st recDetailStep, index int) {
-	if index < 0 || index >= len(st.shots) {
+	a.openRecLightboxFor(describeOp(st.line.Operation, a.currentLang()), st.line.Seq, st.line.At, st.shots, index)
+}
+
+// openRecDialogLightbox opens a popup's single screenshot. Native dialogs have
+// no page shot, so their card has no thumbnail to click.
+func (a *app) openRecDialogLightbox(d recDialog) {
+	if d.shotPath == "" {
 		return
 	}
-	a.recView.lightbox = &recLightbox{
-		shots: st.shots, index: index,
-		desc: describeOp(st.line.Operation, a.currentLang()), seq: st.line.Seq,
-		at: st.line.At,
+	name := d.pageName
+	if name == "" {
+		name = d.pageID
 	}
+	desc := recDialogKindLabel(d.kind, a.currentLang()) + " · " + name
+	a.openRecLightboxFor(desc, d.seq, d.at, []recStepShot{{name: name, path: d.shotPath}}, 0)
+}
+
+// openRecLightboxFor publishes the lightbox state and decodes the first shot.
+func (a *app) openRecLightboxFor(desc string, seq int, at string, shots []recStepShot, index int) {
+	if index < 0 || index >= len(shots) {
+		return
+	}
+	a.recView.lightbox = &recLightbox{shots: shots, index: index, desc: desc, seq: seq, at: at}
 	a.loadLightboxImage()
 	a.invalidate()
 }
@@ -1135,7 +1298,11 @@ func (a *app) renderRecDetail(c *ui.Context, tk *theme.Tokens) {
 				})
 			})
 			shown := min(len(d.steps), recMaxSteps)
-			entries := groupRecSteps(d.steps[:shown], a.recView.showNoShots)
+			dialogs := d.dialogs
+			if len(dialogs) > recMaxDialogs {
+				dialogs = dialogs[:recMaxDialogs]
+			}
+			entries := groupRecTimeline(d.steps[:shown], dialogs, a.recView.showNoShots)
 			if !a.recView.showNoShots {
 				hidden := 0
 				for _, st := range d.steps[:shown] {
@@ -1148,10 +1315,17 @@ func (a *app) renderRecDetail(c *ui.Context, tk *theme.Tokens) {
 				}
 			}
 			for _, e := range entries {
+				if e.dialog != nil {
+					a.renderRecDialogEntry(c, tk, *e.dialog)
+					continue
+				}
 				a.renderRecEntry(c, tk, e)
 			}
 			if len(d.steps) > shown {
 				ui.Text(c, a.tr("rec.truncated", shown, len(d.steps))).FontSize(12).TextColor(tk.TextTertiary)
+			}
+			if len(d.dialogs) > len(dialogs) {
+				ui.Text(c, a.tr("rec.dialogTruncated", len(dialogs), len(d.dialogs))).FontSize(12).TextColor(tk.TextTertiary)
 			}
 		})
 	})
@@ -1232,6 +1406,80 @@ func (a *app) renderRecEntry(c *ui.Context, tk *theme.Tokens, e recTimelineEntry
 	})
 }
 
+// renderRecDialogEntry draws one popup in the timeline: its kind, page, time,
+// captured text, and screenshot thumbnail (DOM popups only). The text is the
+// i18n assertion evidence; the shot shows how the popup rendered.
+func (a *app) renderRecDialogEntry(c *ui.Context, tk *theme.Tokens, d recDialog) {
+	c = c.Key("d" + strconv.Itoa(d.seq))
+	card := layout.Block(c, layout.BlockProps{Variant: layout.BlockOutlined})
+	card.AlignSelf(ui.Stretch).Padding(12).Gap(10)
+	card.Children(func() {
+		ui.Row(c).Gap(10).AlignItems(ui.Start).Children(func() {
+			ui.Column(c).Size(26, 26).Center().Radius(13).Background(tk.FillTertiary).Shrink(0).Children(func() {
+				ui.Icon(c, recDialogIcon(d)).FontSize(15).TextColor(tk.TextSecondary)
+			})
+			ui.Column(c).Grow(1).MinWidth(0).Gap(3).Children(func() {
+				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+					display.Tag(c, a.tr("rec.popup"), display.TagProps{Color: display.TagWarning, Size: theme.Small, Round: true})
+					ui.Text(c, recDialogKindLabel(d.kind, a.currentLang())).FontSize(14).Bold().TextColor(tk.TextHeading).SingleLine()
+					ui.Text(c, recClock(parseRecTime(d.at))).FontSize(12).TextColor(tk.TextTertiary).Shrink(0)
+				})
+				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+					if d.pageName != "" {
+						ui.Text(c, d.pageName).FontSize(12).TextColor(tk.TextSecondary).Shrink(0)
+					}
+					ui.Text(c, d.pageURL).FontSize(12).TextColor(tk.TextTertiary).Grow(1).MinWidth(0).SingleLine()
+				})
+			})
+		})
+		if d.text != "" {
+			ui.Text(c, truncateRunes(d.text, 600)).FontSize(12).TextColor(tk.Text).Wrap()
+		} else {
+			ui.Text(c, a.tr("rec.popup.empty")).FontSize(12).TextColor(tk.TextQuaternary)
+		}
+		if d.value != "" {
+			ui.Text(c, a.tr("rec.popup.value", truncateRunes(d.value, 120))).FontSize(12).TextColor(tk.TextTertiary).Wrap()
+		}
+		switch {
+		case d.shotPath != "":
+			ui.ScrollHorizontal(c).AlignSelf(ui.Stretch).Children(func() {
+				ui.Row(c).Gap(10).Children(func() {
+					ui.Column(c).Gap(4).AlignItems(ui.Center).Children(func() {
+						btn := ui.ButtonBase(c).Label(d.pageName).Tooltip(a.tr("rec.zoom")).
+							Size(recThumbW, recThumbH).Center().Radius(4).Clip().Cursor(ui.CursorPointer).
+							Border(1, tk.BorderSecondary).Background(tk.BgContainerSecondary)
+						if src := a.recImage(d.shotPath); src != nil {
+							btn.Children(func() { ui.Image(c, src).Size(recThumbW, recThumbH).Fit(ui.Contain) })
+						} else {
+							btn.Children(func() {
+								ui.Text(c, a.tr("rec.shotMissing")).FontSize(11).TextColor(tk.TextQuaternary)
+							})
+						}
+						if btn.Clicked() {
+							a.openRecDialogLightbox(d)
+						}
+						if d.pageName != "" {
+							ui.Text(c, d.pageName).FontSize(11).TextColor(tk.TextTertiary).SingleLine().MaxWidth(recThumbW)
+						}
+					})
+				})
+			})
+		case d.native:
+			ui.Text(c, a.tr("rec.popup.native")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
+		case d.shotError != "":
+			ui.Text(c, a.tr("rec.popup.shotFailed", d.shotError)).FontSize(12).TextColor(tk.Warning).Wrap()
+		case d.shotSkipped != "":
+			note := a.tr("rec.popup.skipped")
+			if d.shotSkipped == dialogSkipStopped {
+				note = a.tr("rec.popup.stopped")
+			}
+			ui.Text(c, note).FontSize(12).TextColor(tk.TextTertiary).Wrap()
+		default:
+			ui.Text(c, a.tr("rec.popup.noShot")).FontSize(12).TextColor(tk.TextQuaternary)
+		}
+	})
+}
+
 // reportData is the HTML report's template payload. Image data URIs are
 // template.URL so html/template embeds them verbatim; all text is escaped.
 type reportData struct {
@@ -1241,7 +1489,22 @@ type reportData struct {
 	Generated   string
 	NoShots     string
 	ShotMissing string
+	DialogTitle string
 	Steps       []reportStep
+	Dialogs     []reportDialog
+}
+
+// reportDialog is one popup entry in the HTML report. Note explains a missing
+// shot (native dialog, capture failure); Text is the recorded popup copy.
+type reportDialog struct {
+	Kind  string
+	Time  string
+	Page  string
+	URL   string
+	Text  string
+	Value string // localized "default: …" line, empty when absent
+	Note  string
+	Shot  reportShot
 }
 
 type reportStep struct {
@@ -1280,7 +1543,9 @@ h1{font-size:22px;margin:0 0 4px}
 .shot img{max-width:220px;max-height:300px;border:1px solid #d0d7de;border-radius:6px;display:block;background:#fff}
 .shot figcaption{font-size:11px;color:#656d76;text-align:center;margin-top:4px;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .none{color:#8c959f;font-size:12px}
-@media (prefers-color-scheme:dark){body{background:#0d1117;color:#e6edf3}.step{background:#161b22;border-color:#30363d}.seq,.tag{background:#21262d;color:#adbac7}.meta,.sub,.shot figcaption{color:#768390}.shot img{border-color:#30363d;background:#0d1117}.none{color:#636e7b}}
+h2{font-size:16px;margin:28px 0 10px}
+.popuptext{white-space:pre-wrap;word-break:break-word;background:#f6f8fa;border:1px solid #d0d7de;border-radius:6px;padding:8px 10px;font-size:13px;margin-bottom:10px}
+@media (prefers-color-scheme:dark){body{background:#0d1117;color:#e6edf3}.step{background:#161b22;border-color:#30363d}.seq,.tag{background:#21262d;color:#adbac7}.meta,.sub,.shot figcaption{color:#768390}.shot img{border-color:#30363d;background:#0d1117}.none{color:#636e7b}.popuptext{background:#0d1117;border-color:#30363d}}
 </style>
 </head>
 <body><div class="wrap">
@@ -1290,7 +1555,15 @@ h1{font-size:22px;margin:0 0 4px}
 <div class="stephead"><div class="seq">{{.Seq}}</div><div><div class="desc">{{.Desc}}</div><div class="sub"><span class="tag">{{.Source}}</span>{{.Time}} · {{.URL}}</div></div></div>
 {{if .Shots}}<div class="shots">{{range .Shots}}<figure class="shot">{{if .Src}}<img src="{{.Src}}" alt="{{.Name}}" loading="lazy" decoding="async">{{else}}<div class="none">{{$.ShotMissing}}</div>{{end}}<figcaption>{{.Name}}</figcaption></figure>{{end}}</div>{{else}}<div class="none">{{$.NoShots}}</div>{{end}}
 </div>
-{{end}}</div></body></html>
+{{end}}
+{{if .Dialogs}}<h2>{{.DialogTitle}}</h2>
+{{range .Dialogs}}<div class="step">
+<div class="stephead"><div class="seq">●</div><div><div class="desc">{{.Kind}}</div><div class="sub">{{.Page}} · {{.Time}} · {{.URL}}</div></div></div>
+{{if .Text}}<div class="popuptext">{{.Text}}</div>{{end}}
+{{if .Value}}<div class="none">{{.Value}}</div>{{end}}
+{{if .Shot.Src}}<div class="shots"><figure class="shot"><img src="{{.Shot.Src}}" alt="{{.Shot.Name}}" loading="lazy" decoding="async"><figcaption>{{.Shot.Name}}</figcaption></figure></div>{{else}}<div class="none">{{.Note}}</div>{{end}}
+</div>
+{{end}}{{end}}</div></body></html>
 `))
 
 // exportReport writes report.html into the session folder, referencing each
@@ -1309,6 +1582,7 @@ func exportReport(dir, lang string) (string, error) {
 		Generated:   trLang(lang, "rec.report.generated", formatRecTitle(time.Now())),
 		NoShots:     trLang(lang, "rec.noShots"),
 		ShotMissing: trLang(lang, "rec.shotMissing"),
+		DialogTitle: trLang(lang, "rec.popup.title"),
 	}
 	for _, st := range d.steps {
 		rs := reportStep{
@@ -1319,23 +1593,37 @@ func exportReport(dir, lang string) (string, error) {
 			URL:    st.line.URL,
 		}
 		for _, sh := range st.shots {
-			shot := reportShot{Name: sh.name}
-			raw, err := readBoundedFile(sh.path, recShotMaxBytes)
-			if err == nil {
-				_, err = png.DecodeConfig(bytes.NewReader(raw))
-			}
-			if err == nil {
-				if rel, rerr := filepath.Rel(dir, sh.path); rerr == nil {
-					parts := strings.Split(filepath.ToSlash(rel), "/")
-					for i, p := range parts {
-						parts[i] = url.PathEscape(p)
-					}
-					shot.Src = template.URL(strings.Join(parts, "/"))
-				}
-			}
-			rs.Shots = append(rs.Shots, shot)
+			rs.Shots = append(rs.Shots, reportShotFor(dir, sh.path, sh.name))
 		}
 		data.Steps = append(data.Steps, rs)
+	}
+	for _, dl := range d.dialogs {
+		rd := reportDialog{
+			Kind: recDialogKindLabel(dl.kind, lang),
+			Time: recClock(parseRecTime(dl.at)),
+			Page: dl.pageName,
+			URL:  dl.pageURL,
+			Text: dl.text,
+		}
+		if dl.value != "" {
+			rd.Value = trLang(lang, "rec.popup.value", dl.value)
+		}
+		if dl.shotPath != "" {
+			rd.Shot = reportShotFor(dir, dl.shotPath, dl.pageName)
+		}
+		switch {
+		case rd.Shot.Src != "":
+		case dl.native:
+			rd.Note = trLang(lang, "rec.popup.native")
+		case dl.shotError != "":
+			rd.Note = trLang(lang, "rec.popup.shotFailed", dl.shotError)
+		case dl.shotSkipped == dialogSkipStopped:
+			rd.Note = trLang(lang, "rec.popup.stopped")
+		case dl.shotSkipped != "":
+		default:
+			rd.Note = trLang(lang, "rec.popup.noShot")
+		}
+		data.Dialogs = append(data.Dialogs, rd)
 	}
 	out := filepath.Join(dir, "report.html")
 	tmp := out + ".tmp"
@@ -1357,4 +1645,28 @@ func exportReport(dir, lang string) (string, error) {
 		return "", err
 	}
 	return out, nil
+}
+
+// reportShotFor resolves a screenshot into a report figure: the PNG is
+// validated and referenced by an escaped folder-relative path, so the HTML
+// stays small and travels with its session folder.
+func reportShotFor(dir, path, name string) reportShot {
+	shot := reportShot{Name: name}
+	raw, err := readBoundedFile(path, recShotMaxBytes)
+	if err == nil {
+		_, err = png.DecodeConfig(bytes.NewReader(raw))
+	}
+	if err != nil {
+		return shot
+	}
+	rel, err := filepath.Rel(dir, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return shot
+	}
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	for i, p := range parts {
+		parts[i] = url.PathEscape(p)
+	}
+	shot.Src = template.URL(strings.Join(parts, "/"))
+	return shot
 }

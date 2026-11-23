@@ -5,11 +5,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"time"
 )
 
 // Recorder tunables.
+// Reasons recorded in dialogs.jsonl shotSkipped. The viewer maps them to
+// localized notes; any other reason falls back to the generic skipped text.
+const (
+	dialogSkipNative  = "native dialog is not part of the page bitmap"
+	dialogSkipStopped = "recording stopped before the popup could be captured"
+)
+
 const (
 	// recordQueueSize buffers dispatched steps; overflow is dropped (and
 	// counted) so the capture path never blocks on recording.
@@ -21,6 +29,13 @@ const (
 	recordBurstTimeout = 8 * time.Second
 	// recordRenderSettle lets the settled state paint before CapturePage.
 	recordRenderSettle = 300 * time.Millisecond
+	// recordDialogQueueSize buffers popup reports; overflow is dropped (and
+	// counted) so a page's IPC path never blocks on recording.
+	recordDialogQueueSize = 256
+	// dialogCaptureTimeout is shorter than captureTimeout: a popup is only
+	// evidence while it is on screen, so a shot that cannot land quickly is
+	// skipped rather than delaying the popup's own line or the stop summary.
+	dialogCaptureTimeout = 3 * time.Second
 )
 
 // recStep is one dispatched operation awaiting its step screenshots.
@@ -42,15 +57,56 @@ type scriptLine struct {
 	Operation operation `json:"operation"`
 }
 
+// dialogEvent is one popup reported by a page while recording. It is kept out of
+// script.jsonl so the replayable script stays operations-only.
+type dialogEvent struct {
+	seq      int
+	at       time.Time
+	pageID   string
+	pageName string
+	pageURL  string
+	kind     string
+	role     string
+	text     string
+	selector string
+	value    string
+}
+
+// dialogLine is one line of dialogs.jsonl: the popup's text and type, plus the
+// screenshot captured for it. Native alert/confirm/prompt dialogs are recorded
+// text-only (shotSkipped names the reason): the native dialog is not part of
+// the page bitmap CapturePage returns.
+type dialogLine struct {
+	Seq         int    `json:"seq"`
+	At          string `json:"at"`
+	PageID      string `json:"pageId"`
+	PageName    string `json:"pageName"`
+	PageURL     string `json:"pageUrl"`
+	Kind        string `json:"kind"`
+	Role        string `json:"role,omitempty"`
+	Text        string `json:"text"`
+	Selector    string `json:"selector,omitempty"`
+	Value       string `json:"value,omitempty"`
+	Native      bool   `json:"native,omitempty"`
+	Shot        string `json:"shot,omitempty"`        // folder-relative PNG path
+	ShotError   string `json:"shotError,omitempty"`   // capture/write failure
+	ShotSkipped string `json:"shotSkipped,omitempty"` // why no shot was taken
+}
+
 // recorder writes one task's evidence chain into a session folder:
 //
 //	session.json   — the task setup (pages, UA, mode) at start
 //	script.jsonl   — every dispatched operation, in order, replayable
 //	steps/NNNN/    — one PNG per page after step NNNN settles
+//	dialogs.jsonl  — every popup seen, with its text and a screenshot
+//	dialogs/       — one PNG per DOM popup as it appeared
 //	summary.json   — counts and errors, written when recording ends
 //
-// One goroutine owns every file write and capture, so steps never interleave.
-// Operations that pile up while a capture is in flight are coalesced: each
+// The run goroutine owns the script, step captures and summary; a second
+// goroutine owns dialog reports, so an ephemeral popup is captured at once
+// instead of waiting behind a step's settle. Both share the coalesced capture
+// flights, so concurrent shots of one page still collapse to one CapturePage.
+// Operations that pile up while a step capture is in flight are coalesced: each
 // still gets its JSONL line, but only the burst's latest step is captured —
 // a mid-burst shot would show later operations under an earlier step's label.
 // Superseded and dropped counts land in summary.json so the evidence is honest
@@ -67,6 +123,13 @@ type recorder struct {
 
 	dropped atomic.Int64 // steps lost to a full queue
 
+	dialogSeq     int // guarded by a.mu; assigned in recordDialogLocked
+	dialogs       chan dialogEvent
+	dialogFile    *os.File
+	dialogDone    chan struct{} // closed when runDialogs exits
+	dialogDropped atomic.Int64  // popup reports lost to a full queue
+	stopping      atomic.Bool   // set on stop: queued popups keep text, skip shots
+
 	// captureFn is p.view.CapturePage in production; tests inject a fake so
 	// the whole recorder runs without a GUI.
 	captureFn func(p *pageRecord) ([]byte, error)
@@ -79,6 +142,13 @@ type recorder struct {
 	failed     int
 	writeErr   error
 	sessionErr error // set before run starts; metadata is best-effort
+
+	// Dialog stats are touched only by the dialog goroutine.
+	dialogSeen   int
+	dialogSaved  int
+	dialogFailed int
+	dialogNative int
+	dialogErr    error
 }
 
 // startRecording opens a session folder under the user's recordings root and
@@ -100,11 +170,21 @@ func (a *app) startRecordingIn(root, taskID string, req startRequest) {
 		a.setNoticeWarnKey("err.recordDir", err.Error())
 		return
 	}
+	dialogFile, err := os.Create(filepath.Join(dir, "dialogs.jsonl"))
+	if err != nil {
+		f.Close()
+		os.RemoveAll(dir)
+		a.setNoticeWarnKey("err.recordDir", err.Error())
+		return
+	}
 	r := &recorder{
 		a: a, taskID: taskID, dir: dir, script: f,
-		steps: make(chan recStep, recordQueueSize),
-		quit:  make(chan struct{}),
-		done:  make(chan struct{}),
+		steps:      make(chan recStep, recordQueueSize),
+		dialogs:    make(chan dialogEvent, recordDialogQueueSize),
+		dialogFile: dialogFile,
+		quit:       make(chan struct{}),
+		done:       make(chan struct{}),
+		dialogDone: make(chan struct{}),
 		captureFn: func(p *pageRecord) ([]byte, error) {
 			return p.view.CapturePage()
 		},
@@ -115,11 +195,13 @@ func (a *app) startRecordingIn(root, taskID string, req startRequest) {
 		// The task stopped while the folder was being created.
 		a.mu.Unlock()
 		f.Close()
+		dialogFile.Close()
 		os.RemoveAll(dir)
 		return
 	}
 	a.rec = r
 	a.mu.Unlock()
+	go r.runDialogs()
 	go r.run()
 }
 
@@ -143,7 +225,27 @@ func (a *app) recordOpLocked(op operation, source string) {
 	}
 }
 
-// stopRecordingLocked detaches the recorder and tells its goroutine to finish.
+// recordDialogLocked appends one page-reported popup to the active recording.
+// The caller holds a.mu. Like recordOpLocked the send never blocks; overflow
+// is counted in the summary.
+func (a *app) recordDialogLocked(p *pageRecord, d dialogPayload) {
+	r := a.rec
+	if r == nil {
+		return
+	}
+	r.dialogSeq++
+	select {
+	case r.dialogs <- dialogEvent{
+		seq: r.dialogSeq, at: time.Now(),
+		pageID: p.id, pageName: p.name, pageURL: p.url,
+		kind: d.Kind, role: d.Role, text: d.Text, selector: d.Selector, value: d.Value,
+	}:
+	default:
+		r.dialogDropped.Add(1)
+	}
+}
+
+// stopRecordingLocked detaches the recorder and tells its goroutines to finish.
 // The caller holds a.mu; clearing a.rec under the same lock guarantees no
 // sender can race the channel closes.
 func (a *app) stopRecordingLocked() {
@@ -152,7 +254,13 @@ func (a *app) stopRecordingLocked() {
 		return
 	}
 	a.rec = nil
+	// Queued popups still get their text line, but must not each burn a capture
+	// budget after the user stopped the task (or the script became unwritable).
+	r.stopping.Store(true)
 	close(r.quit)
+	if r.dialogs != nil {
+		close(r.dialogs)
+	}
 	close(r.steps)
 }
 
@@ -169,6 +277,135 @@ func (r *recorder) run() {
 			return
 		}
 	}
+}
+
+// runDialogs owns dialogs.jsonl and every popup screenshot. It runs apart from
+// the step runner so a popup is captured the moment its text settles, not after
+// a burst's settle wait. CapturePage flights are shared with the step path, so
+// overlapping shots of one page still collapse into one capture.
+func (r *recorder) runDialogs() {
+	defer close(r.dialogDone)
+	for d := range r.dialogs {
+		r.captureDialog(d)
+	}
+}
+
+// stopped reports whether a new popup shot must be skipped. Recording is
+// winding down when the task left running/starting (stopTask flips the status
+// before pages are torn down) or when the recorder was detached after a write
+// error. Without the status check, a popup already queued at stop time would be
+// processed after the page was destroyed and counted as a screenshot failure.
+func (r *recorder) stopped() bool {
+	if r.stopping.Load() {
+		return true
+	}
+	r.a.mu.Lock()
+	defer r.a.mu.Unlock()
+	if r.a.rec != r {
+		return true
+	}
+	return r.a.status != "running" && r.a.status != "starting"
+}
+
+// captureDialog writes one popup's evidence line and, for DOM popups, a PNG of
+// the page as the popup appeared. Native alerts are text-only: WebView2 renders
+// them outside the page bitmap, so CapturePage would only show the page behind.
+func (r *recorder) captureDialog(d dialogEvent) {
+	r.dialogSeen++
+	line := dialogLine{
+		Seq: d.seq, At: d.at.Format(time.RFC3339Nano),
+		PageID: d.pageID, PageName: d.pageName, PageURL: d.pageURL,
+		Kind: d.kind, Role: d.role, Text: d.text, Selector: d.selector, Value: d.value,
+	}
+	switch d.kind {
+	case "alert", "confirm", "prompt":
+		line.Native = true
+		line.ShotSkipped = dialogSkipNative
+		r.dialogNative++
+	default:
+		if r.stopped() {
+			line.ShotSkipped = dialogSkipStopped
+			break
+		}
+		line.Shot, line.ShotError = r.dialogShot(d)
+		if line.ShotError != "" && r.stopped() {
+			// The stop landed while this capture was waiting; that is not a
+			// screenshot failure of a page the user just closed.
+			line.ShotError = ""
+			line.ShotSkipped = dialogSkipStopped
+		}
+		switch {
+		case line.Shot != "":
+			r.dialogSaved++
+		case line.ShotError != "":
+			r.dialogFailed++
+		}
+	}
+	data, err := json.Marshal(line)
+	if err != nil {
+		r.dialogErr = err
+		return
+	}
+	if _, err := r.dialogFile.Write(append(data, '\n')); err != nil {
+		r.dialogErr = err
+	}
+}
+
+// popupShotValidLocked mirrors batchShotValidLocked but also accepts a task
+// that is still starting: pages load (and can raise alerts) before the status
+// flips to running, and their popup evidence still belongs to this recording.
+func (a *app) popupShotValidLocked(taskID, id string) bool {
+	if a.taskID != taskID || (a.status != "running" && a.status != "starting") {
+		return false
+	}
+	p := a.pages[id]
+	return p != nil && !p.closed
+}
+
+// dialogShot captures the reporting page for one popup. It never reuses an
+// in-flight step capture (that frame may predate the popup), but waits for it
+// within the dialog budget, then takes a fresh frame. Shares the batch path's
+// task guard, coalesced flight and timeout; a page that stopped or stopped
+// rendering yields an error in the line instead of stalling forever.
+func (r *recorder) dialogShot(d dialogEvent) (string, string) {
+	a := r.a
+	a.mu.Lock()
+	if !a.popupShotValidLocked(r.taskID, d.pageID) {
+		a.mu.Unlock()
+		return "", "page is no longer running"
+	}
+	p := a.pages[d.pageID]
+	prior := p.capture
+	a.mu.Unlock()
+	if prior != nil {
+		if _, err := waitCapture(prior, dialogCaptureTimeout); err != nil {
+			return "", "another capture was still in flight"
+		}
+	}
+	a.mu.Lock()
+	if !a.popupShotValidLocked(r.taskID, d.pageID) {
+		a.mu.Unlock()
+		return "", "page is no longer running"
+	}
+	f := a.capturePageFlight(p, func() ([]byte, error) { return r.captureFn(p) })
+	a.mu.Unlock()
+	png, err := waitCapture(f, dialogCaptureTimeout)
+	if err != nil {
+		return "", err.Error()
+	}
+	dir := filepath.Join(r.dir, "dialogs")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err.Error()
+	}
+	stem := sanitizeFileName(d.pageName)
+	if strings.TrimSpace(stem) == "" {
+		stem = d.pageID
+	}
+	name := fmt.Sprintf("%04d-%s.png", d.seq, stem)
+	if err := os.WriteFile(filepath.Join(dir, name), png, 0o644); err != nil {
+		return "", err.Error()
+	}
+	return "dialogs/" + name, ""
 }
 
 func (r *recorder) writeLine(step recStep) error {
@@ -346,21 +583,37 @@ func (r *recorder) finish() {
 	r.a.mu.Lock()
 	dispatched := r.seq
 	r.a.mu.Unlock()
+	// The dialog goroutine may be mid-capture (up to the capture timeout); the
+	// summary must not be written while it still owns dialogs.jsonl.
+	if r.dialogDone != nil {
+		<-r.dialogDone
+	}
 	if r.script != nil {
 		r.script.Close()
 	}
+	if r.dialogFile != nil {
+		r.dialogFile.Close()
+	}
 	summary := map[string]any{
-		"endedAt":       time.Now().Format(time.RFC3339Nano),
-		"operations":    r.written,
-		"dispatched":    dispatched,
-		"stepsCaptured": r.captured,
-		"shotsSaved":    r.saved,
-		"shotsFailed":   r.failed,
-		"superseded":    r.superseded,
-		"dropped":       r.dropped.Load(),
+		"endedAt":           time.Now().Format(time.RFC3339Nano),
+		"operations":        r.written,
+		"dispatched":        dispatched,
+		"stepsCaptured":     r.captured,
+		"shotsSaved":        r.saved,
+		"shotsFailed":       r.failed,
+		"superseded":        r.superseded,
+		"dropped":           r.dropped.Load(),
+		"dialogs":           r.dialogSeen,
+		"dialogShots":       r.dialogSaved,
+		"dialogShotsFailed": r.dialogFailed,
+		"nativeDialogs":     r.dialogNative,
+		"dialogsDropped":    r.dialogDropped.Load(),
 	}
 	if r.writeErr != nil {
 		summary["writeError"] = r.writeErr.Error()
+	}
+	if r.dialogErr != nil {
+		summary["dialogError"] = r.dialogErr.Error()
 	}
 	if r.sessionErr != nil {
 		summary["sessionError"] = r.sessionErr.Error()

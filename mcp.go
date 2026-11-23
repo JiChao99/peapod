@@ -25,8 +25,9 @@ to see a page, peapod_diff to compare two pages' screenshots (same resolution) a
 stats plus a red-highlight diff PNG, peapod_diagnostics to read a page's HTTP status, text and console/network
 activity (its collector is opt-in: installed on demand, or at document start when
 peapod_start sets diagnostics:true), peapod_set_sync to toggle a follower, peapod_reload and peapod_stop.
-peapod_start with record:true saves every dispatched operation to a replayable script.jsonl
-plus per-step screenshots of all pages (peapod_status reports recording/recordSteps/recordDir);
+peapod_start with record:true saves every dispatched operation to a replayable script.jsonl,
+per-step screenshots of all pages, and popup evidence (text plus a DOM-popup screenshot;
+peapod_status reports recording/recordSteps/recordDialogs/recordDir);
 peapod_replay re-enacts such a script on every page of a running task — poll peapod_status.replay until done.
 peapod_start's syncDelayMs (default 100) paces input/scroll mirroring: bursts coalesce to the
 latest value/position; clicks stay instant. 0 mirrors every event as it arrives.
@@ -58,7 +59,7 @@ func (a *app) startMCP() error {
 	}
 	token := hex.EncodeToString(buf)
 
-	srv := sdk.NewServer(&sdk.Implementation{Name: "peapod", Title: "Peapod", Version: "0.7.0"},
+	srv := sdk.NewServer(&sdk.Implementation{Name: "peapod", Title: "Peapod", Version: "0.8.0"},
 		&sdk.ServerOptions{Instructions: mcpInstructions})
 	a.registerMCPTools(srv)
 
@@ -163,7 +164,7 @@ type startIn struct {
 	ViewMode     string    `json:"viewMode,omitempty" jsonschema:"desktop (single) or mobile (side by side); default desktop."`
 	UserAgent    string    `json:"userAgent,omitempty" jsonschema:"Full User-Agent string applied to every page, for device-sniffing tests. Empty = follow viewMode (mobile -> iPhone Safari, desktop -> engine default). Changes the UA only, not the rendering engine."`
 	Diagnostics  bool      `json:"diagnostics,omitempty" jsonschema:"Inject the console/network/error collector at document start (default false). peapod_diagnostics also enables it on demand; this flag captures early page-load activity."`
-	Record       bool      `json:"record,omitempty" jsonschema:"Record every dispatched operation to a replayable script.jsonl and capture all pages after each step settles (default false). Artifacts land in the user's Pictures/Peapod/recordings folder; peapod_status reports recording/recordSteps/recordDir, and peapod_replay can re-enact the script later."`
+	Record       bool      `json:"record,omitempty" jsonschema:"Record every dispatched operation to a replayable script.jsonl, capture all pages after each step settles, and save popup evidence (DOM dialog/toast text + screenshot; native alert/confirm/prompt text only) (default false). Artifacts land in the user's Pictures/Peapod/recordings folder; peapod_status reports recording/recordSteps/recordDialogs/recordDir, and peapod_replay can re-enact the script later."`
 	SyncDelayMs  *float64  `json:"syncDelayMs,omitempty" jsonschema:"Minimum gap in ms between continuous operations (input/scroll) replayed on followers, 0-2000; default 100. Bursts coalesce to the latest value/position; clicks and other discrete actions stay instant. 0 replays every event as it arrives."`
 }
 

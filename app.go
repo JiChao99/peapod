@@ -74,14 +74,14 @@ type pageRecord struct {
 // pageState is the panel's read-only view of one page. The json tags are the
 // MCP peapod_status contract (docs/mcp.md); the panel reads the Go fields.
 type pageState struct {
-	ID        string      `json:"id"`
-	Name      string      `json:"name"`
-	URL       string      `json:"url"`
-	Status    string      `json:"status"`
-	SyncOn    bool        `json:"syncOn"`
-	IsPrimary bool        `json:"isPrimary"`
-	ResW      float64     `json:"resW"`
-	ResH      float64     `json:"resH"`
+	ID        string  `json:"id"`
+	Name      string  `json:"name"`
+	URL       string  `json:"url"`
+	Status    string  `json:"status"`
+	SyncOn    bool    `json:"syncOn"`
+	IsPrimary bool    `json:"isPrimary"`
+	ResW      float64 `json:"resW"`
+	ResH      float64 `json:"resH"`
 	// Syncing/Pending expose the replay queue so the panel can show "syncing"
 	// as soon as an operation is queued, instead of leaving the card "ready"
 	// while the follower waits for an anchor.
@@ -117,10 +117,11 @@ type appState struct {
 	// Recording/replay evidence surface (docs/mcp.md). Recording is true while
 	// a recorder is attached; Replay appears once a peapod_replay has started
 	// and keeps its final result until the task stops or a new replay begins.
-	Recording   bool         `json:"recording"`
-	RecordSteps int          `json:"recordSteps,omitempty"`
-	RecordDir   string       `json:"recordDir,omitempty"`
-	Replay      *replayState `json:"replay,omitempty"`
+	Recording     bool         `json:"recording"`
+	RecordSteps   int          `json:"recordSteps,omitempty"`
+	RecordDialogs int          `json:"recordDialogs,omitempty"`
+	RecordDir     string       `json:"recordDir,omitempty"`
+	Replay        *replayState `json:"replay,omitempty"`
 
 	// SyncDelayMs is the running task's pace for continuous operations
 	// (input/scroll); 0 replays them instantly.
@@ -293,7 +294,7 @@ func newApp() *app {
 			"desktop": {1280, 800},
 			"mobile":  {390, 844},
 		},
-		resByPage: map[string]map[string][2]float64{},
+		resByPage:  map[string]map[string][2]float64{},
 		lastStatus: "idle",
 		uaPreset:   uaDefault,
 		themeMode:  "system",
@@ -345,6 +346,83 @@ type startRequest struct {
 type capturePayload struct {
 	PageID    string    `json:"pageId"`
 	Operation operation `json:"operation"`
+}
+
+// dialogPayload is what a guest page's recording-only preload sends when a
+// popup appears. Text is untrusted page content, bounded at the source and
+// again here.
+type dialogPayload struct {
+	PageID   string `json:"pageId"`
+	Kind     string `json:"kind"` // dialog | modal | toast | alert | confirm | prompt
+	Role     string `json:"role,omitempty"`
+	Text     string `json:"text"`
+	Selector string `json:"selector,omitempty"`
+	Value    string `json:"value,omitempty"` // prompt() default, otherwise empty
+}
+
+// validateDialog mirrors validateOperation's bounds for popup evidence. Text
+// and metadata are clipped by UTF-8 bytes, not rejected: the in-page clip counts
+// UTF-16 units, so a long CJK message would otherwise be dropped silently.
+func validateDialog(d *dialogPayload) error {
+	switch d.Kind {
+	case "dialog", "modal", "toast", "alert", "confirm", "prompt":
+	default:
+		return fmt.Errorf("unknown dialog kind %q", d.Kind)
+	}
+	d.Text = clipUTF8(d.Text, 4000)
+	d.Role = clipUTF8(d.Role, 64)
+	d.Selector = clipUTF8(d.Selector, 512)
+	d.Value = clipUTF8(d.Value, 200)
+	return nil
+}
+
+// clipUTF8 cuts s to at most n bytes without splitting a UTF-8 sequence.
+func clipUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := n
+	for cut > 0 && s[cut]&0xC0 == 0x80 {
+		cut--
+	}
+	return s[:cut]
+}
+
+// canRecordDialogsLocked reports whether popup reports may be queued in the
+// current state. Reports are accepted from the moment pages start loading
+// (the recorder attaches before createPages loads them), so a load-time
+// consent modal or alert is not lost. Idle and cleanup-error have no recorder.
+func (a *app) canRecordDialogsLocked() bool {
+	if a.rec == nil {
+		return false
+	}
+	switch a.status {
+	case "starting", "running", "stopping":
+		return true
+	}
+	return false
+}
+
+// Dialog accepts a popup report from a guest page. Any page may report its own
+// popup (unlike Capture, which is primary-only): each variant's popup is
+// recorded separately. It is a no-op when no recording is attached.
+func (s *SyncService) Dialog(ctx context.Context, payload dialogPayload) error {
+	a := s.a
+	caller := mygo.CallerPage(ctx)
+	if err := validateDialog(&payload); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.canRecordDialogsLocked() {
+		return nil
+	}
+	p := a.pages[payload.PageID]
+	if p == nil || p.closed || caller != p.view.Page() {
+		return fmt.Errorf("forbidden")
+	}
+	a.recordDialogLocked(p, payload)
+	return nil
 }
 
 // SyncService is the bridge guest pages call to report a captured operation.
@@ -1162,10 +1240,18 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 	if req.shareStorage {
 		shared = mygo.NewEphemeralSession()
 	}
+	// Attach the recorder before any page loads: a load-time alert or consent
+	// modal on the first page must not fall into a recording gap.
+	if req.record {
+		a.startRecording(taskID, req)
+	}
 
 	for i, rp := range req.pages {
 		a.mu.Lock()
 		if a.taskID != taskID || a.status != "starting" {
+			if a.rec != nil && a.rec.taskID == taskID {
+				a.stopRecordingLocked()
+			}
 			a.mu.Unlock()
 			return
 		}
@@ -1183,6 +1269,9 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 			UserAgent:            req.userAgent,
 		}
 		preload := capturePreload(id)
+		if req.record {
+			preload += "\n" + dialogPreload(id)
+		}
 		if req.diagnostics {
 			preload += "\n" + diagPreload()
 		}
@@ -1213,6 +1302,9 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 
 		a.mu.Lock()
 		if a.taskID != taskID || a.status != "starting" {
+			if a.rec != nil && a.rec.taskID == taskID {
+				a.stopRecordingLocked()
+			}
 			a.mu.Unlock()
 			view.Destroy()
 			return
@@ -1226,11 +1318,6 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 		go a.replayWorker(p)
 	}
 
-	// Attach the recorder while still starting: once status flips to running,
-	// operations can dispatch, and none may fall into a recording gap.
-	if req.record {
-		a.startRecording(taskID, req)
-	}
 	a.mu.Lock()
 	if a.taskID != taskID || a.status != "starting" {
 		if a.rec != nil && a.rec.taskID == taskID {
@@ -1419,6 +1506,7 @@ func (a *app) snapshot() appState {
 	if r := a.rec; r != nil {
 		st.Recording = true
 		st.RecordSteps = r.seq
+		st.RecordDialogs = r.dialogSeq
 		st.RecordDir = r.dir
 	}
 	if rp := a.replay; rp != nil {
