@@ -341,6 +341,27 @@ func TestNavigatePageClearsDeferredFollow(t *testing.T) {
 	}
 }
 
+func TestManualNavWaitsForLoadFinish(t *testing.T) {
+	a := newApp()
+	p := &pageRecord{url: "https://old.example/", manualNav: true, manualNavFrom: "https://old.example/"}
+	p.url = "https://old.example/"
+	a.finishManualNavLocked(p)
+	if !p.manualNav {
+		t.Fatal("stale commit cleared the pending manual navigation")
+	}
+	p.url = "https://new.example/"
+	a.finishManualNavLocked(p)
+	if p.manualNav || p.manualNavFrom != "" {
+		t.Fatalf("finished manual navigation was not cleared: %+v", p)
+	}
+	p.manualNav = true
+	p.manualNavFrom = "https://old.example/"
+	a.clearManualNavLocked(p)
+	if p.manualNav {
+		t.Fatal("failed or superseded manual navigation was not cleared")
+	}
+}
+
 func TestSnapshotIncludesNavError(t *testing.T) {
 	a := newApp()
 	a.mu.Lock()

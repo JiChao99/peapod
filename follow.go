@@ -232,6 +232,9 @@ func (a *app) followTargets(primary *pageRecord, raw string) []followTarget {
 			f.pendingNav = ""
 			continue
 		}
+		// A new primary navigation supersedes any explicit follower move.
+		f.manualNav = false
+		f.manualNavFrom = ""
 		// Busy replaying (or about to navigate on its own): remember the latest
 		// destination even when it matches the current URL — a replay still in
 		// flight may commit a different URL, and the saved target reconciles it.

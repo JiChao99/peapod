@@ -291,6 +291,17 @@ func (a *app) markNavSucceededLocked(p *pageRecord) {
 	a.markReadyLocked(p)
 }
 
+func (a *app) finishManualNavLocked(p *pageRecord) {
+	if p.manualNav && !sameFollowURL(p.url, p.manualNavFrom) {
+		a.clearManualNavLocked(p)
+	}
+}
+
+func (a *app) clearManualNavLocked(p *pageRecord) {
+	p.manualNav = false
+	p.manualNavFrom = ""
+}
+
 // resetNavLocked clears a page's failures and marks it loading for an explicit
 // navigate or reload, which also lifts a pause: a fresh document supersedes the
 // desync that paused it. The caller holds a.mu.

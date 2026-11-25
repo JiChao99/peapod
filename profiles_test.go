@@ -23,6 +23,7 @@ func sampleProfile() profileData {
 		ViewMode:     "mobile",
 		UAPreset:     "iphone",
 		ShareStorage: true,
+		PrimaryOnly:  true,
 		Record:       true,
 		Pages: []profilePage{
 			{Name: "primary", Vars: "host=example.com, lang=en-us", ResW: 390, ResH: 844},
@@ -42,7 +43,7 @@ func TestProfileFileRoundTrip(t *testing.T) {
 		t.Fatalf("readProfileFile: %v", err)
 	}
 	if got.Template != want.Template || got.ViewMode != want.ViewMode || got.UAPreset != want.UAPreset ||
-		got.ShareStorage != want.ShareStorage || got.Record != want.Record || len(got.Pages) != 2 ||
+		got.ShareStorage != want.ShareStorage || got.PrimaryOnly != want.PrimaryOnly || got.Record != want.Record || len(got.Pages) != 2 ||
 		got.Pages[0].Vars != want.Pages[0].Vars || got.Pages[1].ResH != 844 {
 		t.Fatalf("round trip mismatch: %+v vs %+v", got, want)
 	}
@@ -81,6 +82,22 @@ func TestProfileSaveSanitizesName(t *testing.T) {
 	}
 	if a.profileSel != "a_b" {
 		t.Fatalf("profileSel = %q, want a_b", a.profileSel)
+	}
+	if a.profileName != "a_b" {
+		t.Fatalf("profileName = %q, want the sanitized selection", a.profileName)
+	}
+}
+
+func TestApplyProfileFreeCanvas(t *testing.T) {
+	pinProfileHome(t)
+	a := newApp()
+	p := sampleProfile()
+	p.ViewMode = "free"
+	if err := a.applyProfile(p); err != nil {
+		t.Fatal(err)
+	}
+	if a.viewMode != "free" || !a.primaryOnly {
+		t.Fatalf("free-canvas settings not restored: mode=%q primaryOnly=%v", a.viewMode, a.primaryOnly)
 	}
 }
 

@@ -39,9 +39,9 @@ It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with it
 ## Quick start
 
 1. **Add pages.** The UI starts in Chinese; switch to English from the language menu in the top bar. Enter the primary URL and add up to 10 pages. A page left empty inherits the primary URL. Paste a URL list under **Bulk add** to generate several pages at once, or duplicate any row and tweak the difference. To work with variants, set a template such as `https://{host}/{lang}` or `https://{host}/?yplang={lang}` and give each page its own values (`host=staging.example.com, lang=de`).
-2. **Choose the setup.** Pick desktop mode (one large page at a time) or mobile mode (all pages side by side), set each page's resolution, pick one User-Agent preset for the whole task (by default it follows the mode, so mobile mode uses iPhone), choose shared or isolated storage, and optionally turn on **Record operations**.
-3. **Start and operate.** Use the primary page as you normally would. The other pages follow. Click a page card to bring that page to the front.
-4. **Collect evidence.** Take a batch screenshot of every page, or open **Recordings** to browse the step timeline, replay a session, or export an HTML report. Replay runs the steps on every page, including the primary, but doesn't include navigations, so start the task at the flow's entry URL first.
+2. **Choose the setup.** Pick desktop mode (one large page at a time), mobile mode (all pages side by side), or free canvas (draggable pages with independent, proportional resizing), set each page's resolution, pick one User-Agent preset for the whole task (by default it follows the mode, so mobile mode uses iPhone), choose shared or isolated storage, and optionally turn on **Record operations** or **Primary page only**.
+3. **Start and operate.** Use the primary page as you normally would. The other pages follow. Click a page card to bring that page to the front. Edit a running page's URL and press **Open** to move that same page without losing its session or cookies; this is useful after a login redirects away from the page you need.
+4. **Collect evidence.** Take a batch screenshot of every page, or capture the whole free canvas as one PNG. Open **Recordings** to browse the step timeline, replay a session, or export an HTML report. Replay runs the steps on every page, including the primary, but doesn't include navigations, so start the task at the flow's entry URL first.
 5. **Stop.** Every page is torn down and its session data is wiped.
 
 ## Features
@@ -54,19 +54,22 @@ It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with it
 ### Variants and devices
 - **URL variant templates.** One template, with different variables and an optional path per page. Path and query variants are supported; navigation follow maps paths and keeps each page's template query values.
 - **Bulk add and duplicate.** Paste one URL per line to append every row in one step, within the 10-page cap (plain URL mode only); generated pages inherit the preset resolution and take their host as name. Duplicate any row to clone its URL, variables and resolution, then edit only what differs.
-- **Desktop and mobile layouts.** Per-page resolutions from 200 to 3840 px.
+- **Desktop, mobile and free canvas layouts.** Per-page resolutions from 200 to 3840 px. Free canvas pages can be moved by their title bars and resized proportionally within bounded width limits.
+- **Runtime URL changes.** Each running page has an editable URL. Moving it keeps that page's live session, storage and cookies; a follower stays where you moved it until its next reload or the next primary navigation follow.
 - **User-Agent presets.** iPhone, iPad, Android phone and tablet, Windows Chrome, Edge and Firefox, and macOS Safari, or paste a custom string.
 - **Isolated or shared storage.** Each page gets its own ephemeral session by default. You can also share cookies and cache across pages.
-- **Setup profiles.** Save the whole setup — pages, template, resolutions, UA and toggles — under a name, reload it later in one click. Profiles live in `Pictures/Peapod/profiles`.
+- **Primary page only.** Block accidental input on followers while keeping synchronized replay and automation active.
+- **Setup profiles.** Save the whole setup — pages, template, resolutions, UA and toggles — under a name, reload it later in one click. Long profile lists scroll inside the selector. Profiles live in `Pictures/Peapod/profiles`.
 
 ### Evidence
+- **Configured-resolution screenshots.** Batch, MCP and recording captures render each page at its configured pixel size, then normalize the PNG to that exact size. The visible canvas is only a scaled preview; captures never upscale a smaller result.
 - **Batch screenshots.** One click saves a PNG of every running page, including pages that aren't currently on screen.
-- **Variant diff.** One click compares every page against the primary pixel by pixel, saving a red-highlight diff PNG per page plus a `diff.json` stats summary under `Pictures/Peapod/diffs`. Pages must share the primary's resolution; a per-channel tolerance absorbs anti-aliasing noise.
+- **Whole-canvas capture.** In free canvas mode, capture every visible page into one `canvas.png`, preserving the arranged layout and adding a labeled placeholder for a page that fails to capture.
 - **Operation recording.** When turned on, every operation goes into a replayable `script.jsonl`, and all pages are screenshotted once the task settles. Popups (DOM dialogs, floating toasts, native `alert`/`confirm`/`prompt`) are captured with their text and, for DOM popups, a screenshot — useful for asserting localized copy.
 - **Recordings browser.** Lists past sessions with a step-by-step timeline, per-page thumbnails and popups inline with the steps. You can replay a session on a running task or export a self-contained HTML report that includes popup text and shots.
 
 ### Automation
-- **MCP server.** A local [Model Context Protocol](https://modelcontextprotocol.io) endpoint, protected by a token, lets an AI agent start, navigate, operate, replay, screenshot, diff, diagnose and stop tasks without using the UI.
+- **MCP server.** A local [Model Context Protocol](https://modelcontextprotocol.io) endpoint, protected by a token, lets an AI agent start, navigate, operate, replay, screenshot, diagnose and stop tasks without using the UI.
 - **Acceptance diagnostics.** Failed navigations report stable error names (`NAME_NOT_RESOLVED`, `TIMEOUT`, …). An opt-in, MCP-only collector also reports the main document's HTTP status, the page text and console, network and error activity, so an agent can check actual outcomes rather than judge from screenshots.
 
 ### Everyday
@@ -74,7 +77,7 @@ It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with it
 
 ## Install
 
-Prebuilt packages are not published yet, so for now Peapod is built from source. It needs Go 1.27.4 or newer, plus the system webview for your platform:
+Prebuilt packages are available on [GitHub Releases](https://github.com/JiChao99/peapod/releases). You can also build from source; it needs Go 1.27.4 or newer, plus the system webview for your platform:
 
 | Platform | Webview | Notes |
 | --- | --- | --- |
@@ -100,7 +103,7 @@ When Peapod starts, it serves a Streamable-HTTP MCP endpoint on a random `127.0.
 | macOS | `~/Library/Application Support/Peapod/mcp.json` |
 | Linux | `~/.config/Peapod/mcp.json` |
 
-Tools: `peapod_status`, `peapod_start`, `peapod_stop`, `peapod_navigate`, `peapod_reload`, `peapod_set_sync`, `peapod_send_operation`, `peapod_replay`, `peapod_screenshot`, `peapod_diff`, `peapod_diagnostics`.
+Tools: `peapod_status`, `peapod_start`, `peapod_stop`, `peapod_navigate`, `peapod_reload`, `peapod_set_sync`, `peapod_send_operation`, `peapod_replay`, `peapod_screenshot`, `peapod_diagnostics`.
 
 Client configuration, the full tool reference, the recording format and an example agent workflow are in **[docs/mcp.md](docs/mcp.md)**. Set `PEAPOD_MCP_DISABLE=1` to turn the server off.
 
@@ -116,7 +119,7 @@ Client configuration, the full tool reference, the recording format and an examp
 ## Known limitations
 
 - **User-Agent presets change only the UA string.** Pages still render in the platform webview, so engine-specific bugs (for example, Safari-only bugs on Windows) can't be reproduced this way.
-- **Screenshots need a visible window.** The webview stops rendering while Peapod is minimized or fully covered, so captures time out until the window is visible again.
+- **Screenshots need a visible, unminimized window.** The webview stops rendering while Peapod is minimized, so captures time out until the window is restored. Configured-resolution capture temporarily lays out every page at full size, which may briefly move the preview before restoring it.
 - **Navigation follow stays on the primary's host.** Followers don't follow links to other sites, by design.
 - **Links that open a new window or tab are blocked**, since popups are disabled.
 - **Windows gets the most testing.** macOS and Linux are supported. Linux builds and passes CI; macOS isn't covered by CI yet.

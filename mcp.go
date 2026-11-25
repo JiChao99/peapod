@@ -21,8 +21,7 @@ const mcpInstructions = `Peapod mirrors one primary web page onto 2-10 follower 
 Use peapod_status to inspect the task and pages, peapod_start to open pages,
 peapod_navigate to move the primary (followers follow via navigation follow),
 peapod_send_operation to replay a click/input/scroll on followers, peapod_screenshot
-to see a page, peapod_diff to compare two pages' screenshots (same resolution) and get
-stats plus a red-highlight diff PNG, peapod_diagnostics to read a page's HTTP status, text and console/network
+to see a page, peapod_diagnostics to read a page's HTTP status, text and console/network
 activity (its collector is opt-in: installed on demand, or at document start when
 peapod_start sets diagnostics:true), peapod_set_sync to toggle a follower, peapod_reload and peapod_stop.
 peapod_start with record:true saves every dispatched operation to a replayable script.jsonl,
@@ -59,7 +58,7 @@ func (a *app) startMCP() error {
 	}
 	token := hex.EncodeToString(buf)
 
-	srv := sdk.NewServer(&sdk.Implementation{Name: "peapod", Title: "Peapod", Version: "0.8.0"},
+	srv := sdk.NewServer(&sdk.Implementation{Name: "peapod", Title: "Peapod", Version: "0.9.0"},
 		&sdk.ServerOptions{Instructions: mcpInstructions})
 	a.registerMCPTools(srv)
 
@@ -161,7 +160,8 @@ type startIn struct {
 	Pages        []mcpPage `json:"pages" jsonschema:"2-10 pages; the first is the primary."`
 	Template     string    `json:"template,omitempty" jsonschema:"Optional shared URL template with {placeholders}; empty = plain URLs."`
 	ShareStorage bool      `json:"shareStorage,omitempty" jsonschema:"Share cookies & cache across pages."`
-	ViewMode     string    `json:"viewMode,omitempty" jsonschema:"desktop (single) or mobile (side by side); default desktop."`
+	PrimaryOnly  bool      `json:"primaryOnly,omitempty" jsonschema:"Block manual interaction on follower pages; host replay still runs."`
+	ViewMode     string    `json:"viewMode,omitempty" jsonschema:"desktop (single), mobile (side by side), or free (movable canvas); default desktop."`
 	UserAgent    string    `json:"userAgent,omitempty" jsonschema:"Full User-Agent string applied to every page, for device-sniffing tests. Empty = follow viewMode (mobile -> iPhone Safari, desktop -> engine default). Changes the UA only, not the rendering engine."`
 	Diagnostics  bool      `json:"diagnostics,omitempty" jsonschema:"Inject the console/network/error collector at document start (default false). peapod_diagnostics also enables it on demand; this flag captures early page-load activity."`
 	Record       bool      `json:"record,omitempty" jsonschema:"Record every dispatched operation to a replayable script.jsonl, capture all pages after each step settles, and save popup evidence (DOM dialog/toast text + screenshot; native alert/confirm/prompt text only) (default false). Artifacts land in the user's Pictures/Peapod/recordings folder; peapod_status reports recording/recordSteps/recordDialogs/recordDir, and peapod_replay can re-enact the script later."`
@@ -222,13 +222,6 @@ type sendOpIn struct {
 type replayIn struct {
 	ScriptPath string   `json:"scriptPath" jsonschema:"Path to a recorded script.jsonl (readable by the app user). Every line's operation is validated up front, then replayed in order."`
 	DelayMs    *float64 `json:"delayMs,omitempty" jsonschema:"Pause between operations in ms, 0-5000; default 500. Give navigations time to land; 0 replays as fast as the queues allow."`
-}
-
-type diffIn struct {
-	PageID    string  `json:"pageId,omitempty" jsonschema:"Page to inspect; default primary."`
-	AgainstID string  `json:"againstId,omitempty" jsonschema:"Reference page to compare against; default primary. Must differ from pageId."`
-	Tolerance float64 `json:"tolerance,omitempty" jsonschema:"Per-channel difference (0-255) still counted as equal; default 0 = exact. Small values ignore anti-aliasing noise."`
-	TimeoutMs float64 `json:"timeoutMs,omitempty" jsonschema:"Capture timeout per page in ms, 1000-60000; default 10000. A non-rendering page fails with a timeout error."`
 }
 
 func (a *app) registerMCPTools(srv *sdk.Server) {
@@ -313,7 +306,7 @@ func (a *app) registerMCPTools(srv *sdk.Server) {
 			return mcpJSON(map[string]any{"status": "replaying", "steps": n}), nil, nil
 		})
 
-	sdk.AddTool(srv, &sdk.Tool{Name: "peapod_screenshot", Description: "Capture one page (default primary) as a PNG image so you can see its current state. Bounded by timeoutMs (default 10s): a page that is not rendering — the Peapod window is minimized/hidden, or the page is stacked behind the active one — fails with a timeout error instead of hanging; restore the window or make the page active, then retry."},
+	sdk.AddTool(srv, &sdk.Tool{Name: "peapod_screenshot", Description: "Capture one page (default primary) as a PNG at its configured resolution, regardless of the scaled canvas size. Bounded by timeoutMs (default 10s): a page that is not rendering because the Peapod window is minimized or hidden fails with a timeout error instead of hanging; restore the window, then retry."},
 		func(_ context.Context, _ *sdk.CallToolRequest, in screenshotIn) (*sdk.CallToolResult, any, error) {
 			name, png, err := a.capturePNG(in.PageID, captureTimeoutFromMs(in.TimeoutMs))
 			if err != nil {
@@ -322,32 +315,6 @@ func (a *app) registerMCPTools(srv *sdk.Server) {
 			return &sdk.CallToolResult{Content: []sdk.Content{
 				&sdk.TextContent{Text: name},
 				&sdk.ImageContent{Data: png, MIMEType: "image/png"},
-			}}, nil, nil
-		})
-
-	sdk.AddTool(srv, &sdk.Tool{Name: "peapod_diff", Description: "Compare one page's screenshot against another's (both default to the primary, so pass at least one other pageId). Returns per-channel diff stats (different-pixel fraction, max/mean delta) plus a highlight PNG: the inspected page dimmed to grayscale with differing pixels in red. Pages must have the same resolution; a mismatch fails with an actionable error. tolerance (0-255, default 0) ignores small per-channel differences such as anti-aliasing noise. Captures are bounded by timeoutMs like peapod_screenshot."},
-		func(_ context.Context, _ *sdk.CallToolRequest, in diffIn) (*sdk.CallToolResult, any, error) {
-			a.mu.Lock()
-			idA, idB := in.PageID, in.AgainstID
-			if idA == "" {
-				idA = a.primaryID
-			}
-			if idB == "" {
-				idB = a.primaryID
-			}
-			a.mu.Unlock()
-			d, err := a.diffPair(idA, idB, clampTolerance(in.Tolerance), captureTimeoutFromMs(in.TimeoutMs),
-				func(p *pageRecord) ([]byte, error) { return p.view.CapturePage() })
-			if err != nil {
-				return mcpErr(err), nil, nil
-			}
-			data, err := json.Marshal(d)
-			if err != nil {
-				return mcpErr(err), nil, nil
-			}
-			return &sdk.CallToolResult{Content: []sdk.Content{
-				&sdk.TextContent{Text: string(data)},
-				&sdk.ImageContent{Data: d.PNG, MIMEType: "image/png"},
 			}}, nil, nil
 		})
 
@@ -376,7 +343,7 @@ func (a *app) resolveMCPRequest(in startIn) (startRequest, error) {
 		}
 	}
 	mode := in.ViewMode
-	if mode != "mobile" {
+	if mode != "mobile" && mode != "free" {
 		mode = "desktop"
 	}
 	// An explicit UA wins; otherwise follow the requested mode, never the
@@ -442,7 +409,7 @@ func (a *app) resolveMCPRequest(in startIn) (startRequest, error) {
 			pages[i].base = bases[i]
 		}
 	}
-	return startRequest{pages: pages, shareStorage: in.ShareStorage, viewMode: mode, userAgent: ua, diagnostics: in.Diagnostics, record: in.Record, syncDelay: syncDelayFromMs(in.SyncDelayMs)}, nil
+	return startRequest{pages: pages, shareStorage: in.ShareStorage, primaryOnly: in.PrimaryOnly, viewMode: mode, userAgent: ua, diagnostics: in.Diagnostics, record: in.Record, syncDelay: syncDelayFromMs(in.SyncDelayMs)}, nil
 }
 
 func mcpName(p mcpPage, i int) string {

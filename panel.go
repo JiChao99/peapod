@@ -25,6 +25,11 @@ const (
 	toolbarHeight  = 56
 	stagePadding   = 12
 	titleBarHeight = 48
+	canvasMinWidth = 180
+	canvasMaxWidth = 720
+	canvasStep     = 40
+	canvasLabelH   = 28
+	canvasGap      = 24
 )
 
 // logoSrc decodes the embedded app icon once, for the panel header mark.
@@ -74,6 +79,14 @@ func (a *app) view(c *ui.Context) {
 		a.replayPendingDir = ""
 		a.replayEntryURL = ""
 		a.syncUI = map[string]*bool{}
+		a.urlDrafts = map[string]*urlDraft{}
+		if st.Status == "starting" {
+			a.mu.Lock()
+			a.canvasWidths = map[string]float64{}
+			a.canvasPos = map[string][2]float64{}
+			a.canvasScroll = ui.ScrollState{}
+			a.mu.Unlock()
+		}
 		switch st.Status {
 		case "starting", "running":
 			a.stageStopped = false
@@ -485,29 +498,27 @@ func (a *app) panelAction(c *ui.Context, tk *theme.Tokens, st appState) {
 func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 	ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
 		a.fieldLabel(c, tk, a.tr("ui.profiles"))
-		opts := make([]field.SelectOption, 0, len(a.profiles)+1)
-		opts = append(opts, field.SelectOption{Value: "", Label: a.tr("ui.profiles.none")})
-		for _, n := range a.profiles {
-			opts = append(opts, field.SelectOption{Value: n, Label: n, Icon: lucide.Bookmark()})
+		a.profileSelect(c, tk)
+		if a.profileSel != a.profileShownSel {
+			a.profileShownSel = a.profileSel
+			if !a.profileNameDirty {
+				a.profileName = a.profileSel
+				a.profileNameAuto = a.profileSel
+			}
 		}
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Column(c).Grow(1).AlignItems(ui.Stretch).Children(func() {
-				field.Select(c, &a.profileSel, field.SelectProps{
-					Options: opts,
-					Variant: field.InputOutlined,
-				}).AlignSelf(ui.Stretch)
-			})
-			if action.Button(c, a.tr("ui.profiles.load"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).Clicked() {
+			load := action.Button(c, a.tr("ui.profiles.load"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).
+				Grow(1).Disabled(a.profileSel == "")
+			if load.Clicked() {
 				a.loadProfileIntoForm()
 			}
 			a.iconButton(c, tk, lucide.Trash2(), a.tr("ui.profiles.remove"), func() {
 				if a.profileSel == "" {
-					a.setNoticeErrKey("err.profilesPick")
 					return
 				}
 				a.profileDeleteName = a.profileSel
 				a.profileDeleteOpen = true
-			})
+			}, a.profileSel == "")
 		})
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 			ui.Column(c).Grow(1).AlignItems(ui.Stretch).Children(func() {
@@ -517,6 +528,9 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 				a.requestSaveProfile(a.profileName)
 			}
 		})
+		if !a.profileNameDirty && a.profileName != a.profileNameAuto {
+			a.profileNameDirty = true
+		}
 		ui.Text(c, a.tr("ui.profiles.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
 	})
 
@@ -525,6 +539,7 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 		Options: []field.SelectOption{
 			{Value: "desktop", Label: a.tr("ui.viewMode.desktop"), Icon: lucide.Monitor()},
 			{Value: "mobile", Label: a.tr("ui.viewMode.mobile"), Icon: lucide.Smartphone()},
+			{Value: "free", Label: a.tr("ui.viewMode.free"), Icon: lucide.LayoutGrid()},
 		},
 		Variant: field.InputOutlined,
 	}).AlignSelf(ui.Stretch)
@@ -596,6 +611,65 @@ func (a *app) setupBody(c *ui.Context, tk *theme.Tokens, st appState) {
 	a.advancedBody(c, tk)
 }
 
+// profileSelect keeps long profile lists usable; field.Select only clips its popup.
+func (a *app) profileSelect(c *ui.Context, tk *theme.Tokens) {
+	opts := []field.SelectOption{{Value: "", Label: a.tr("ui.profiles.none")}}
+	for _, n := range a.profiles {
+		opts = append(opts, field.SelectOption{Value: n, Label: n, Icon: lucide.Bookmark()})
+	}
+	sel := ui.SelectBase(c, &a.profileSel)
+	trigger := sel.Trigger.MinHeight(36).Padding(6, 11).Gap(8).Radius(tk.BorderRadius).
+		AlignItems(ui.Center).TextColor(tk.Text).Cursor(ui.CursorPointer).Unselectable().
+		Background(tk.BgContainer).Border(1, tk.BorderSecondary)
+	if trigger.Hovered() {
+		trigger.Border(1, tk.Primary)
+	}
+	label := a.tr("ui.profiles.none")
+	for _, o := range opts {
+		if o.Value == a.profileSel {
+			label = o.Label
+			break
+		}
+	}
+	trigger.Children(func() {
+		ui.Row(c).Grow(1).MinWidth(0).Gap(8).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, lucide.Bookmark()).FontSize(15).TextColor(tk.TextSecondary)
+			ui.Text(c, label).Grow(1).MinWidth(0).SingleLine()
+		})
+		ui.Icon(c, lucide.ChevronDown()).FontSize(16).TextColor(tk.TextSecondary).Shrink(0)
+	})
+	width := trigger.Bounds().W
+	height := min(float32(len(opts))*36+8, 280)
+	sel.Popup(func(panel ui.Element) {
+		panel.Margin(4, 0, 0, 0).Padding(4).Width(width).Height(height).Radius(tk.BorderRadius).
+			Background(tk.BgElevated)
+		tk.Elevate(panel, theme.BoxShadowSecondary)
+		layout.ScrollArea(c, layout.ScrollAreaProps{Direction: layout.Vertical, Fade: true}, func() {
+			ui.Column(c).Gap(2).AlignItems(ui.Stretch).Children(func() {
+				for _, o := range opts {
+					chosen := o.Value == a.profileSel
+					item := sel.Item(o.Value).Padding(7, 10).MinHeight(34).Gap(8).AlignItems(ui.Center).
+						Radius(tk.BorderRadiusSM).AlignSelf(ui.Stretch).TextColor(tk.Text).Cursor(ui.CursorPointer)
+					if chosen {
+						item.Background(tk.PrimaryFillTertiary)
+					} else if item.Highlighted() {
+						item.Background(tk.FillTertiary)
+					}
+					item.Children(func() {
+						if o.Icon != nil {
+							ui.Icon(c, o.Icon).FontSize(14).TextColor(tk.TextSecondary)
+						}
+						ui.Text(c, o.Label).Grow(1).MinWidth(0).SingleLine()
+						if chosen {
+							ui.Icon(c, lucide.Check()).FontSize(14).TextColor(tk.Primary)
+						}
+					})
+				}
+			})
+		}).Fill()
+	})
+}
+
 // advancedBody groups the secondary knobs — User-Agent, sync pace, shared
 // storage and operation recording — behind a chevron header, collapsed by
 // default so the primary pages+start workflow stays above the fold.
@@ -658,6 +732,14 @@ func (a *app) advancedBody(c *ui.Context, tk *theme.Tokens) {
 					ui.Text(c, a.tr("ui.shareStorage.hint")).FontSize(12).TextColor(tk.TextTertiary)
 				})
 				choice.Switch(c, &a.shareStorage, choice.SwitchProps{})
+			})
+
+			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+				ui.Column(c).Grow(1).Gap(2).Children(func() {
+					ui.Text(c, a.tr("ui.primaryOnly")).FontSize(14).TextColor(tk.Text)
+					ui.Text(c, a.tr("ui.primaryOnly.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
+				})
+				choice.Switch(c, &a.primaryOnly, choice.SwitchProps{})
 			})
 
 			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
@@ -870,7 +952,7 @@ func (a *app) runtimeBody(c *ui.Context, tk *theme.Tokens, st appState) {
 	}
 
 	// Batch actions come before the page cards: with ten variants the cards can
-	// fill the whole sidebar, and shot/diff would otherwise sit below the fold.
+	// fill the whole sidebar, and screenshot would otherwise sit below the fold.
 	ui.Column(c).Gap(8).Padding(12).Radius(tk.BorderRadiusLG).AlignItems(ui.Stretch).
 		Background(tk.BgContainerSecondary).Border(1, tk.BorderSecondary).Children(func() {
 		a.fieldLabel(c, tk, a.tr("ui.shot"))
@@ -895,132 +977,22 @@ func (a *app) runtimeBody(c *ui.Context, tk *theme.Tokens, st appState) {
 				feedback.Spin(c, feedback.SpinProps{Size: theme.Small}, nil)
 			}
 		})
-		if warn := a.shotSizeWarning(c, st); warn != "" {
-			ui.Text(c, warn).FontSize(12).TextColor(tk.Warning).Wrap()
+		if st.ViewMode == "free" {
+			if action.Button(c, a.tr("ui.canvas.shot"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).
+				AlignSelf(ui.Stretch).Disabled(st.ShotBusy).Clicked() {
+				a.screenshotCanvas()
+			}
 		}
 		ui.Text(c, a.tr("ui.shot.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
 	})
 
-	ui.Column(c).Gap(8).Padding(12).Radius(tk.BorderRadiusLG).AlignItems(ui.Stretch).
-		Background(tk.BgContainerSecondary).Border(1, tk.BorderSecondary).Children(func() {
-		a.fieldLabel(c, tk, a.tr("ui.diff"))
-		ui.Row(c).Gap(8).AlignItems(ui.Center).AlignSelf(ui.Stretch).Children(func() {
-			btn := action.Button(c, a.tr("ui.diff.button"), action.ButtonProps{Variant: action.Default}).
-				Grow(1).Disabled(st.DiffBusy)
-			if btn.Clicked() {
-				a.diffAll()
-			}
-			if st.DiffBusy {
-				feedback.Spin(c, feedback.SpinProps{Size: theme.Small}, nil)
-			}
-		})
-		ui.Text(c, a.tr("ui.diff.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
-		if st.Diff != nil {
-			a.renderDiffReport(c, tk, st.Diff)
-		}
-	})
-
 	for _, ps := range st.Pages {
-		a.pageCard(c, tk, ps, st.ActiveID)
+		a.pageCard(c, tk, ps, st.ActiveID, st.ViewMode, st.PrimaryOnly)
 	}
 }
 
-// shotSizeWarning explains why a capture's pixels can be smaller than the
-// configured resolution: WebView2 captures the placed surface, and the stage
-// scales a page down to fit the window. Without this, the evidence looks like a
-// resolution bug.
-func (a *app) shotSizeWarning(c *ui.Context, st appState) string {
-	if len(st.Pages) == 0 {
-		return ""
-	}
-	tw, th := float32(st.Pages[0].ResW), float32(st.Pages[0].ResH)
-	if tw < 1 || th < 1 {
-		return ""
-	}
-	winW, winH := c.Size()
-	barH := c.TitleBar().Height
-	regionW := winW - panelWidth - 2*stagePadding
-	regionH := winH - barH - toolbarHeight - 2*stagePadding
-	if regionW < 1 || regionH < 1 {
-		return ""
-	}
-	var fit float32
-	if st.ViewMode == "mobile" {
-		n := len(st.Pages)
-		cols := min(n, 5)
-		rows := (n + cols - 1) / cols
-		gap := float32(stagePadding)
-		slotW := (regionW - gap*float32(cols-1)) / float32(cols)
-		const labelH = 24
-		slotH := max((regionH-gap*float32(rows-1))/float32(rows)-labelH, 0)
-		fit = min(slotW/tw, slotH/th, 1)
-	} else {
-		fit = min(regionW/tw, regionH/th, 1)
-	}
-	if fit >= 1 {
-		return ""
-	}
-	cfg := fmt.Sprintf("%.0f×%.0f", tw, th)
-	stage := fmt.Sprintf("%.0f×%.0f", tw*fit, th*fit)
-	return a.tr("ui.shot.sizeWarn", cfg, stage)
-}
-
-// renderDiffReport lists the latest batch diff page by page: change ratio,
-// captured size and a link to each highlight image, plus the folder for the
-// JSON evidence. The summary notice alone cannot answer "which variant
-// changed?".
-func (a *app) renderDiffReport(c *ui.Context, tk *theme.Tokens, d *diffReportState) {
-	viewport := ""
-	if d.ViewportW > 0 && d.ViewportH > 0 {
-		viewport = fmt.Sprintf("%.0f×%.0f", d.ViewportW, d.ViewportH)
-	}
-	capture := ""
-	if d.CaptureW > 0 && d.CaptureH > 0 {
-		capture = fmt.Sprintf("%d×%d", d.CaptureW, d.CaptureH)
-	}
-	ui.Column(c).Gap(6).Padding(10).Radius(tk.BorderRadius).AlignItems(ui.Stretch).
-		Background(tk.FillTertiary).Children(func() {
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Text(c, a.tr("ui.diff.report")).FontSize(13).Bold().TextColor(tk.TextHeading).Grow(1).MinWidth(0)
-			if action.Button(c, a.tr("ui.openFolder"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).Clicked() {
-				c.OpenURL(fileURL(d.Dir))
-			}
-		})
-		if viewport != "" || capture != "" {
-			ui.Text(c, a.tr("ui.diff.meta", viewport, capture)).FontSize(11).TextColor(tk.TextTertiary).Wrap()
-		}
-		for _, e := range d.Entries {
-			e := e
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.Column(c).Grow(1).MinWidth(0).Gap(2).Children(func() {
-					ui.Text(c, e.Name).FontSize(12).Bold().TextColor(tk.Text).SingleLine()
-					if e.Error != "" {
-						ui.Text(c, e.Error).FontSize(11).TextColor(tk.Error).Wrap()
-						return
-					}
-					detail := a.tr("ui.diff.none")
-					if e.Fraction > 0 {
-						detail = a.tr("ui.diff.changed", e.Fraction*100)
-					}
-					if e.Width > 0 && e.Height > 0 {
-						detail += a.tr("ui.diff.size", e.Width, e.Height)
-					}
-					color := tk.TextSecondary
-					if e.Fraction > 0 {
-						color = tk.Warning
-					}
-					ui.Text(c, detail).FontSize(11).TextColor(color).Wrap()
-				})
-				if e.Path != "" {
-					path := e.Path
-					a.iconButton(c, tk, lucide.Image(), a.tr("ui.diff.open"), func() { c.OpenURL(fileURL(path)) })
-				}
-			})
-		}
-	})
-}
-
-func (a *app) pageCard(c *ui.Context, tk *theme.Tokens, ps pageState, activeID string) {
+func (a *app) pageCard(c *ui.Context, tk *theme.Tokens, ps pageState, activeID, viewMode string, primaryOnly bool) {
+	locked := primaryOnly && !ps.IsPrimary
 	c = c.Key(ps.ID)
 	card := clickableCard(c, tk, ps.Name, ps.ID == activeID, func() { a.setActive(ps.ID) })
 	card.AlignSelf(ui.Stretch).Padding(14).Gap(10)
@@ -1039,12 +1011,34 @@ func (a *app) pageCard(c *ui.Context, tk *theme.Tokens, ps pageState, activeID s
 			}
 			display.Tag(c, a.pageStatusLabel(ps.Status), display.TagProps{Color: pageStatusColor(ps.Status), Size: theme.Small, Round: true})
 		})
-		ui.Text(c, ps.URL).FontSize(12).TextColor(tk.TextTertiary).SingleLine()
+		if viewMode == "free" {
+			w := a.canvasWidthForID(ps.ID)
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, a.tr("ui.canvas.size")).FontSize(12).TextColor(tk.TextSecondary).Grow(1)
+				a.iconButton(c, tk, lucide.Minus(), a.tr("ui.canvas.smaller"), func() { a.resizeCanvasPage(ps.ID, -canvasStep) }, w <= canvasMinWidth)
+				ui.Text(c, fmt.Sprintf("%.0f px", w)).FontSize(12).TextColor(tk.Text).SingleLine()
+				a.iconButton(c, tk, lucide.Plus(), a.tr("ui.canvas.larger"), func() { a.resizeCanvasPage(ps.ID, canvasStep) }, w >= canvasMaxWidth)
+			})
+		}
+		draft := a.runtimeURLDraft(ps.ID, ps.URL)
+		ui.Column(c).Gap(6).AlignItems(ui.Stretch).Children(func() {
+			field.Input(c, &draft.value, field.InputProps{Placeholder: a.tr("ui.page.urlLabel"), Variant: field.InputFilled}).
+				Label(a.tr("ui.page.urlLabel")).Disabled(locked)
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, a.tr("ui.page.urlHint")).FontSize(11).TextColor(tk.TextTertiary).Grow(1).Wrap()
+				open := action.Button(c, a.tr("ui.page.urlOpen"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).Disabled(locked)
+				if open.Clicked() {
+					if err := a.navigatePage(ps.ID, draft.value); err != nil {
+						a.setNoticeErr(err.Error())
+					}
+				}
+			})
+		})
 		ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
 			ui.Text(c, a.tr("ui.sync")).FontSize(13).TextColor(tk.TextSecondary)
-			choice.Switch(c, a.syncUIFor(ps), choice.SwitchProps{Size: theme.Small}).Label(a.tr("ui.sync"))
+			choice.Switch(c, a.syncUIFor(ps), choice.SwitchProps{Size: theme.Small}).Label(a.tr("ui.sync")).Disabled(locked)
 			ui.Row(c).Grow(1)
-			a.iconButton(c, tk, lucide.RefreshCw(), a.tr("ui.reload"), func() { a.reloadPage(ps.ID) })
+			a.iconButton(c, tk, lucide.RefreshCw(), a.tr("ui.reload"), func() { a.reloadPage(ps.ID) }, locked)
 		})
 		if ps.Error != nil {
 			ui.Text(c, syncErrorReason(ps.Error.Code, a.currentLang())).FontSize(12).TextColor(tk.Error).Wrap()
@@ -1055,12 +1049,144 @@ func (a *app) pageCard(c *ui.Context, tk *theme.Tokens, ps pageState, activeID s
 	})
 }
 
+func (a *app) canvasWidthForID(id string) float32 {
+	if a.canvasWidths == nil {
+		a.canvasWidths = map[string]float64{}
+	}
+	w := a.canvasWidths[id]
+	if w <= 0 {
+		w = 320
+	}
+	return float32(min(max(w, canvasMinWidth), canvasMaxWidth))
+}
+
+func (a *app) canvasWidth(p *pageRecord) float32 {
+	return a.canvasWidthForID(p.id)
+}
+
+func canvasPageHeight(p *pageRecord, w float32) float32 {
+	return w * float32(p.resH) / float32(p.resW)
+}
+
+func (a *app) resizeCanvasPage(id string, delta float64) {
+	a.mu.Lock()
+	w := a.canvasWidths[id]
+	if w <= 0 {
+		w = 320
+	}
+	a.canvasWidths[id] = min(max(w+delta, canvasMinWidth), canvasMaxWidth)
+	pages := make([]*pageRecord, 0, len(a.order))
+	for _, pageID := range a.order {
+		if p := a.pages[pageID]; p != nil && !p.closed {
+			pages = append(pages, p)
+		}
+	}
+	a.ensureCanvasLayoutLocked(pages)
+	a.resolveCanvasCollisionsLocked(pages, id)
+	a.mu.Unlock()
+	a.invalidate()
+}
+
+func (a *app) ensureCanvasLayout(pages []*pageRecord) {
+	a.mu.Lock()
+	a.ensureCanvasLayoutLocked(pages)
+	a.mu.Unlock()
+}
+
+func (a *app) ensureCanvasLayoutLocked(pages []*pageRecord) {
+	if a.canvasWidths == nil {
+		a.canvasWidths = map[string]float64{}
+	}
+	if a.canvasPos == nil {
+		a.canvasPos = map[string][2]float64{}
+	}
+	x, y, rowH, col := 0.0, 0.0, 0.0, 0
+	for _, p := range pages {
+		if _, ok := a.canvasPos[p.id]; !ok {
+			if col == 3 {
+				x, y, rowH, col = 0, y+rowH+canvasGap, 0, 0
+			}
+			a.canvasPos[p.id] = [2]float64{x, y}
+			w := a.canvasWidth(p)
+			h := float64(canvasPageHeight(p, w))
+			rowH = max(rowH, h+canvasLabelH)
+			x += float64(w) + canvasGap
+			col++
+		}
+	}
+}
+
+func canvasRectsOverlap(a [2]float64, aw, ah float64, b [2]float64, bw, bh float64) bool {
+	return a[0] < b[0]+bw+canvasGap && a[0]+aw+canvasGap > b[0] &&
+		a[1] < b[1]+bh+canvasLabelH+canvasGap && a[1]+ah+canvasLabelH+canvasGap > b[1]
+}
+
+func (a *app) resolveCanvasCollisionsLocked(pages []*pageRecord, resizedID string) {
+	for pass := 0; pass < max(1, len(pages)*len(pages)); pass++ {
+		changed := false
+		for _, p := range pages {
+			if p.id == resizedID {
+				continue
+			}
+			pos := a.canvasPos[p.id]
+			w := a.canvasWidth(p)
+			h := float64(canvasPageHeight(p, w))
+			for _, blocker := range pages {
+				if blocker.id == p.id {
+					continue
+				}
+				bpos := a.canvasPos[blocker.id]
+				bw := a.canvasWidth(blocker)
+				bh := float64(canvasPageHeight(blocker, bw))
+				if canvasRectsOverlap(pos, float64(w), h, bpos, float64(bw), bh) {
+					pos[1] = bpos[1] + bh + canvasLabelH + canvasGap
+					changed = true
+				}
+			}
+			a.canvasPos[p.id] = pos
+		}
+		if !changed {
+			return
+		}
+	}
+}
+
+func (a *app) resetCanvasLayout(pages []*pageRecord) {
+	a.mu.Lock()
+	a.canvasWidths = map[string]float64{}
+	a.canvasPos = map[string][2]float64{}
+	a.canvasScroll = ui.ScrollState{}
+	a.ensureCanvasLayoutLocked(pages)
+	a.mu.Unlock()
+	a.invalidate()
+}
+
+func (a *app) capturePageForRequestLocked(req *captureLayoutRequest) *pageRecord {
+	if req == nil || req.page == nil || a.taskID != req.taskID {
+		return nil
+	}
+	p := req.page
+	if p.closed || a.pages[p.id] != p || (a.status != "running" && a.status != "starting") {
+		return nil
+	}
+	return p
+}
+
 func (a *app) renderStage(c *ui.Context, tk *theme.Tokens, st appState) {
 	a.mu.Lock()
 	mobile := a.taskViewMode == "mobile"
+	free := a.taskViewMode == "free"
 	var activeView *mygo.WebView
 	var activeRec *pageRecord
+	var captureRec *pageRecord
+	var captureReq *captureLayoutRequest
 	activeName := ""
+	if req := a.captureReq; req != nil {
+		if p := a.capturePageForRequestLocked(req); p != nil {
+			captureReq = req
+			captureRec = p
+		}
+	}
 	if p := a.pages[st.ActiveID]; p != nil && !p.closed {
 		activeView = p.view
 		activeRec = p
@@ -1084,6 +1210,8 @@ func (a *app) renderStage(c *ui.Context, tk *theme.Tokens, st appState) {
 				ui.Text(c, a.tr("rec.title")).FontSize(15).Bold().TextColor(tk.TextHeading).Grow(1).MinWidth(0).SingleLine()
 			} else if mobile && len(all) > 0 {
 				ui.Text(c, a.tr("ui.mobile.title", len(all))).FontSize(15).Bold().TextColor(tk.TextHeading).Grow(1).MinWidth(0).SingleLine()
+			} else if free && len(all) > 0 {
+				ui.Text(c, a.tr("ui.canvas.title", len(all))).FontSize(15).Bold().TextColor(tk.TextHeading).Grow(1).MinWidth(0).SingleLine()
 			} else {
 				label := activeName
 				if label == "" {
@@ -1099,22 +1227,43 @@ func (a *app) renderStage(c *ui.Context, tk *theme.Tokens, st appState) {
 				a.iconButton(c, tk, lucide.X(), a.tr("rec.close"), func() { a.toggleRecordings() })
 			}
 			if !a.recView.open && activeView != nil {
+				if free {
+					a.iconButton(c, tk, lucide.Scan(), a.tr("ui.canvas.reset"), func() { a.resetCanvasLayout(all) })
+					a.iconButton(c, tk, lucide.Image(), a.tr("ui.canvas.shot"), func() { a.screenshotCanvas() }, st.ShotBusy)
+				}
 				a.iconButton(c, tk, lucide.Camera(), a.tr("ui.shotAll"), func() { a.screenshotAll() }, st.ShotBusy)
-				a.iconButton(c, tk, lucide.RefreshCw(), a.tr("ui.reload"), func() { a.reloadPage(st.ActiveID) })
+				a.iconButton(c, tk, lucide.RefreshCw(), a.tr("ui.reload"), func() { a.reloadPage(st.ActiveID) },
+					st.PrimaryOnly && activeRec != nil && !activeRec.isPrimary)
 			}
 		})
 
-		if st.Status == "starting" {
+		if captureReq != nil && captureRec != nil {
+			a.renderCaptureStage(c, tk, captureRec, captureReq, zoom, st)
+		} else if st.Status == "starting" {
 			a.renderStartingStage(c, tk)
 		} else if mobile && len(all) > 0 {
 			a.renderMobileStage(c, tk, all, zoom, barH, st)
+		} else if free && len(all) > 0 {
+			a.renderFreeStage(c, tk, all, zoom, barH, st)
 		} else {
 			a.renderDesktopStage(c, tk, st, all, zoom, barH, activeView, activeRec)
 		}
-		if a.recView.open {
+		if a.recView.open && captureReq == nil {
 			a.renderRecordingsOverlay(c, tk, barH)
 		}
 	})
+}
+
+func (a *app) renderCaptureStage(c *ui.Context, tk *theme.Tokens, p *pageRecord, req *captureLayoutRequest, zoom float64, st appState) {
+	ui.Column(c).Grow(1).MinHeight(0).Center().Children(func() {
+		ui.WebView(c, p.view).Width(float32(p.resW)).Height(float32(p.resH)).Shrink(0).
+			Disabled(st.PrimaryOnly && !p.isPrimary)
+		a.applyPageZoom(p.view, p, 1, zoom)
+		if st.PrimaryOnly && !p.isPrimary {
+			a.primaryOnlyMask(c, tk)
+		}
+	})
+	req.once.Do(func() { close(req.ready) })
 }
 
 // renderStartingStage fills the stage with a dimmed skeleton at the configured
@@ -1207,11 +1356,19 @@ func (a *app) renderDesktopStage(c *ui.Context, tk *theme.Tokens, st appState, a
 				if pfit <= 0 {
 					pfit = 0.05
 				}
-				ui.WebView(c, p.view).Absolute().Left(0).Top(0).Width(pw * pfit).Height(ph * pfit)
+				ui.WebView(c, p.view).Absolute().Left(0).Top(0).Width(pw * pfit).Height(ph * pfit).
+					Disabled(st.PrimaryOnly && !p.isPrimary)
 				a.applyPageZoom(p.view, p, pfit, zoom)
+				if st.PrimaryOnly && !p.isPrimary {
+					a.primaryOnlyMask(c, tk)
+				}
 			}
-			ui.WebView(c, activeView).Absolute().Left(0).Top(0).Width(tw * fit).Height(th * fit)
+			ui.WebView(c, activeView).Absolute().Left(0).Top(0).Width(tw * fit).Height(th * fit).
+				Disabled(st.PrimaryOnly && !activeRec.isPrimary)
 			a.applyPageZoom(activeView, activeRec, fit, zoom)
+			if st.PrimaryOnly && !activeRec.isPrimary {
+				a.primaryOnlyMask(c, tk)
+			}
 			if ps, ok := pageStateByID(st.Pages, st.ActiveID); ok && ps.Status == "paused" {
 				a.pausedMask(c, tk, ps, false)
 			}
@@ -1242,6 +1399,77 @@ func (a *app) renderRecordingsOverlay(c *ui.Context, tk *theme.Tokens, barH floa
 		}
 		panel.Children(func() {
 			a.renderRecordings(c, tk)
+		})
+	})
+}
+
+func (a *app) renderFreeStage(c *ui.Context, tk *theme.Tokens, pages []*pageRecord, zoom float64, barH float32, st appState) {
+	a.ensureCanvasLayout(pages)
+	winW, winH := c.Size()
+	regionW := max(winW-panelWidth-2*stagePadding, 1)
+	regionH := max(winH-barH-toolbarHeight-2*stagePadding, 1)
+	type placedPage struct {
+		p          *pageRecord
+		x, y, w, h float32
+	}
+	placed := make([]placedPage, 0, len(pages))
+	contentW, contentH := float32(regionW), float32(regionH)
+	for _, p := range pages {
+		pos := a.canvasPos[p.id]
+		w := a.canvasWidth(p)
+		h := w * float32(p.resH) / float32(p.resW)
+		x, y := float32(pos[0]), float32(pos[1])
+		placed = append(placed, placedPage{p: p, x: x, y: y, w: w, h: h})
+		contentW = max(contentW, x+w+stagePadding)
+		contentH = max(contentH, y+h+canvasLabelH+stagePadding)
+	}
+	ui.Column(c).Grow(1).MinHeight(0).Padding(stagePadding).Children(func() {
+		ui.ScrollBoth(c).Fill().TrackScroll(&a.canvasScroll).Children(func() {
+			ui.Box(c).Width(contentW).Height(contentH).Children(func() {
+				for i := range placed {
+					item := &placed[i]
+					p := item.p
+					ui.Box(c.Key(p.id)).Absolute().Left(item.x).Top(item.y).Width(item.w).Children(func() {
+						header := ui.Row(c).Height(canvasLabelH).Padding(0, 8).Gap(6).AlignItems(ui.Center).
+							Background(tk.BgContainer).Border(1, tk.BorderSecondary).BorderWidth(1, 1, 0, 0).
+							Radius(7).Cursor(ui.CursorMove)
+						dx, dy, held := header.Dragged()
+						if held {
+							a.mu.Lock()
+							pos := a.canvasPos[p.id]
+							pos[0] = max(0, pos[0]+float64(dx))
+							pos[1] = max(0, pos[1]+float64(dy))
+							a.canvasPos[p.id] = pos
+							a.activeID = p.id
+							a.mu.Unlock()
+							item.x, item.y = float32(pos[0]), float32(pos[1])
+							contentW = max(contentW, item.x+item.w+stagePadding)
+							contentH = max(contentH, item.y+item.h+canvasLabelH+stagePadding)
+							a.invalidate()
+						}
+						header.Children(func() {
+							ui.Icon(c, lucide.GripVertical()).FontSize(13).TextColor(tk.TextTertiary)
+							ui.Text(c, p.name).FontSize(12).Bold().TextColor(tk.TextHeading).Grow(1).MinWidth(0).SingleLine()
+							ui.Text(c, fmt.Sprintf("%.0f×%.0f", p.resW, p.resH)).FontSize(10).TextColor(tk.TextTertiary).SingleLine()
+						})
+						border := tk.BorderSecondary
+						if p.id == st.ActiveID {
+							border = tk.Primary
+						}
+						ui.Box(c).Width(item.w).Height(item.h).Clip().Radius(7).Border(1, border).Children(func() {
+							ui.WebView(c, p.view).Absolute().Left(0).Top(0).Width(item.w).Height(item.h).
+								Disabled(st.PrimaryOnly && !p.isPrimary)
+							a.applyPageZoom(p.view, p, item.w/float32(p.resW), zoom)
+							if st.PrimaryOnly && !p.isPrimary {
+								a.primaryOnlyMask(c, tk)
+							}
+							if ps, ok := pageStateByID(st.Pages, p.id); ok && ps.Status == "paused" {
+								a.pausedMask(c, tk, ps, item.w < 200)
+							}
+						})
+					})
+				}
+			})
 		})
 	})
 }
@@ -1301,12 +1529,23 @@ func (a *app) mobileSlot(c *ui.Context, tk *theme.Tokens, p *pageRecord, slotW, 
 			fit = 0.05
 		}
 		ui.Box(c).Width(tw * fit).Height(th * fit).Clip().Radius(8).Children(func() {
-			ui.WebView(c, p.view).Absolute().Left(0).Top(0).Width(tw*fit).Height(th*fit).Radius(8).Border(1, tk.Border)
+			ui.WebView(c, p.view).Absolute().Left(0).Top(0).Width(tw*fit).Height(th*fit).Radius(8).Border(1, tk.Border).
+				Disabled(st.PrimaryOnly && !p.isPrimary)
 			a.applyPageZoom(p.view, p, fit, zoom)
+			if st.PrimaryOnly && !p.isPrimary {
+				a.primaryOnlyMask(c, tk)
+			}
 			if ps, ok := pageStateByID(st.Pages, p.id); ok && ps.Status == "paused" {
 				a.pausedMask(c, tk, ps, slotW < 160)
 			}
 		})
+	})
+}
+
+func (a *app) primaryOnlyMask(c *ui.Context, tk *theme.Tokens) {
+	ui.Column(c).Absolute().Fill().Center().AlignItems(ui.Center).Padding(12).
+		Background(tk.BgLayout.Alpha(0.08)).Cursor(ui.CursorNotAllowed).Children(func() {
+		display.Tag(c, a.tr("ui.primaryOnly"), display.TagProps{Color: display.TagGray, Size: theme.Small, Round: true, Icon: lucide.Lock()})
 	})
 }
 
