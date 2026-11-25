@@ -19,3 +19,39 @@ jobs:
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./...
+
+  site:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Check landing page assets
+        run: |
+          node --input-type=module <<'NODE'
+          import { existsSync, readFileSync } from 'node:fs';
+          import { dirname, resolve } from 'node:path';
+
+          const root = process.cwd();
+          const html = readFileSync(resolve(root, 'index.html'), 'utf8');
+          const css = readFileSync(resolve(root, 'site/assets/site.css'), 'utf8');
+          if (html.includes('data:image')) throw new Error('Landing page embeds image data');
+          if (!existsSync(resolve(root, '.nojekyll'))) throw new Error('Missing .nojekyll');
+          if (!/\.product-frame\s*>\s*img\s*\{[^}]*object-fit:\s*contain/s.test(css)) {
+            throw new Error('Product screenshot must use object-fit: contain');
+          }
+          const preview = readFileSync(resolve(root, 'site/assets/app-preview.png'));
+          if (preview.readUInt32BE(16) !== 1920 || preview.readUInt32BE(20) !== 1032) {
+            throw new Error('Product screenshot must remain 1920×1032');
+          }
+          if (!/aspect-ratio:\s*80\s*\/\s*43/.test(css)) throw new Error('Product screenshot ratio must match its pixels');
+          const refs = [
+            ...[...html.matchAll(/(?:src|href)=["']([^"']+)["']/g)].map((m) => ({ ref: m[1], base: root })),
+            ...[...css.matchAll(/url\(["']?([^"')]+)["']?\)/g)].map((m) => ({ ref: m[1], base: dirname(resolve(root, 'site/assets/site.css')) })),
+          ].filter(({ ref }) => ref && !/^(?:https?:|mailto:|tel:|#|\/\/)/.test(ref));
+          for (const { ref, base } of refs) {
+            const path = resolve(base, ref.replace(/^\.\//, '').replace(/^\//, ''));
+            if (!existsSync(path)) throw new Error(`Missing landing page asset: ${ref}`);
+          }
+          NODE
