@@ -81,9 +81,11 @@ func (a *app) view(c *ui.Context) {
 		a.syncUI = map[string]*bool{}
 		a.urlDrafts = map[string]*urlDraft{}
 		if st.Status == "starting" {
+			a.mu.Lock()
 			a.canvasWidths = map[string]float64{}
 			a.canvasPos = map[string][2]float64{}
 			a.canvasScroll = ui.ScrollState{}
+			a.mu.Unlock()
 		}
 		switch st.Status {
 		case "starting", "running":
