@@ -117,6 +117,32 @@ func readSummary(t *testing.T, r *recorder) map[string]any {
 	return m
 }
 
+func TestSessionJSONIncludesPrimaryOnly(t *testing.T) {
+	dir := t.TempDir()
+	req := startRequest{
+		pages: []resolvedPage{
+			{name: "Primary", url: "https://a.com/", resW: 1280, resH: 800},
+			{name: "Page 2", url: "https://b.com/", resW: 390, resH: 844},
+		},
+		viewMode:    "mobile",
+		primaryOnly: true,
+	}
+	if err := writeSessionJSON(dir, "task-1", req); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "session.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var session map[string]any
+	if err := json.Unmarshal(data, &session); err != nil {
+		t.Fatal(err)
+	}
+	if session["primaryOnly"] != true {
+		t.Fatalf("session primaryOnly = %v, want true", session["primaryOnly"])
+	}
+}
+
 func TestRecorderScriptAndStepShots(t *testing.T) {
 	a, r := recordFixture(t)
 	op := operation{Type: "click", Anchor: anchor{Type: "id", Selector: "#go"}, Timestamp: 1}

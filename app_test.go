@@ -152,7 +152,7 @@ func TestNoticeAutoExpires(t *testing.T) {
 		{"info", "", true},
 		{"error", "", false},
 		{"warning", "", false},
-		{"success", "/tmp/diff", false},
+		{"success", "/tmp/screenshots", false},
 		{"info", "/tmp/shot.png", false},
 	}
 	for _, c := range cases {
@@ -445,6 +445,22 @@ func TestNoticeKeyRetranslates(t *testing.T) {
 	a.clearNoticeTag("form")
 	if a.notice != "" || a.noticeKey != "" || a.noticeTag != "" {
 		t.Fatalf("tagged notice survived its clear: %q key=%q tag=%q", a.notice, a.noticeKey, a.noticeTag)
+	}
+}
+
+func TestRuntimeURLDraft(t *testing.T) {
+	a := newApp()
+	d := a.runtimeURLDraft("p1", "https://example.com/home")
+	if d.value != "https://example.com/home" {
+		t.Fatalf("initial draft = %q", d.value)
+	}
+	d.value = "https://example.com/private"
+	if got := a.runtimeURLDraft("p1", "https://example.com/home"); got.value != d.value {
+		t.Fatalf("navigation overwrote an active edit: %q", got.value)
+	}
+	d.value = d.seen
+	if got := a.runtimeURLDraft("p1", "https://example.com/dashboard"); got.value != got.seen {
+		t.Fatalf("idle draft did not follow navigation: %+v", got)
 	}
 }
 

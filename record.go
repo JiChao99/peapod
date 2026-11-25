@@ -186,7 +186,7 @@ func (a *app) startRecordingIn(root, taskID string, req startRequest) {
 		done:       make(chan struct{}),
 		dialogDone: make(chan struct{}),
 		captureFn: func(p *pageRecord) ([]byte, error) {
-			return p.view.CapturePage()
+			return a.captureAtConfiguredSize(p, captureTimeout)
 		},
 	}
 	r.sessionErr = writeSessionJSON(dir, taskID, req)
@@ -651,6 +651,7 @@ func writeSessionJSON(dir, taskID string, req startRequest) error {
 		"viewMode":     req.viewMode,
 		"userAgent":    req.userAgent,
 		"shareStorage": req.shareStorage,
+		"primaryOnly":  req.primaryOnly,
 		"diagnostics":  req.diagnostics,
 		"syncDelayMs":  float64(req.syncDelay) / float64(time.Millisecond),
 		"pages":        pages,

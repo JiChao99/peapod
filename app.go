@@ -33,22 +33,24 @@ type pageConfig struct {
 // pageRecord is one guest page: its web view, ephemeral session, sync status
 // and the ordered queue of operations replayed onto it.
 type pageRecord struct {
-	id         string
-	name       string
-	url        string
-	base       string // variant prefix swapped when following navigations
-	resW, resH float64
-	view       *mygo.WebView
-	session    *mygo.Session
-	status     string // loading, ready, error, closed, paused
-	syncOn     bool   // guarded by mu; read by the replay path
-	isPrimary  bool
-	closed     bool
-	lastError  *syncError
-	navError   *navFailure    // failed navigation (DNS/TLS/timeout…); guarded by mu
-	navFailed  bool           // current load attempt failed; gates Linux finish-after-fail; guarded by mu
-	capture    *captureFlight // outstanding CapturePage coalescing concurrent shots; guarded by mu
-	queue      *opQueue
+	id            string
+	name          string
+	url           string
+	base          string // variant prefix swapped when following navigations
+	resW, resH    float64
+	view          *mygo.WebView
+	session       *mygo.Session
+	status        string // loading, ready, error, closed, paused
+	syncOn        bool   // guarded by mu; read by the replay path
+	isPrimary     bool
+	closed        bool
+	manualNav     bool // suppress follower reconciliation until this explicit load finishes
+	manualNavFrom string
+	lastError     *syncError
+	navError      *navFailure    // failed navigation (DNS/TLS/timeout…); guarded by mu
+	navFailed     bool           // current load attempt failed; gates Linux finish-after-fail; guarded by mu
+	capture       *captureFlight // outstanding CapturePage coalescing concurrent shots; guarded by mu
+	queue         *opQueue
 
 	// navPendingAt is guarded by mu: when an operation that may navigate was
 	// enqueued, so navigation follow lets the replay navigate this page itself.
@@ -91,6 +93,12 @@ type pageState struct {
 	NavError *navFailure `json:"navError,omitempty"`
 }
 
+// urlDraft keeps runtime URL edits stable while navigation updates the card.
+type urlDraft struct {
+	value string
+	seen  string
+}
+
 // appState is everything the native panel renders, and the peapod_status payload.
 type appState struct {
 	Status   string      `json:"status"` // idle, starting, running, stopping, cleanup-error
@@ -110,9 +118,6 @@ type appState struct {
 	NoticePath      string `json:"noticePath,omitempty"`
 	NoticePathIsDir bool   `json:"noticePathIsDir,omitempty"`
 	ShotBusy        bool   `json:"shotBusy,omitempty"`
-	DiffBusy        bool   `json:"diffBusy,omitempty"`
-	// Diff is the latest per-page batch-diff result, shown in the runtime panel.
-	Diff *diffReportState `json:"diff,omitempty"`
 
 	// Recording/replay evidence surface (docs/mcp.md). Recording is true while
 	// a recorder is attached; Replay appears once a peapod_replay has started
@@ -130,6 +135,8 @@ type appState struct {
 	// ViewMode is the running task's resolved view mode; the stage and size
 	// warnings read it from this snapshot instead of the guarded app field.
 	ViewMode string `json:"viewMode,omitempty"`
+	// PrimaryOnly blocks manual interaction on followers; host replay still runs.
+	PrimaryOnly bool `json:"primaryOnly,omitempty"`
 }
 
 // app holds the task state. mu guards the task/page fields, which services and
@@ -137,8 +144,9 @@ type appState struct {
 // viewMode, resW/resH, shareStorage, syncUI, notice source) are touched only on
 // the main thread by the native panel.
 type app struct {
-	mu  sync.Mutex
-	win *mygo.Window
+	mu          sync.Mutex
+	captureGate chan struct{}
+	win         *mygo.Window
 
 	status  string
 	taskID  string
@@ -157,19 +165,19 @@ type app struct {
 	// activity's end can replace or clear it instead of leaving it stale.
 	noticeTag string
 	// noticePath/noticePathIsDir attach an "open" action to a result notice
-	// (screenshot folder, diff evidence, exported report).
+	// (screenshot folder, exported report).
 	noticePath      string
 	noticePathIsDir bool
-	// shotBusy/diffBusy mark an in-flight batch so the panel can spin and
-	// disable the trigger instead of letting a second batch stack on it.
-	shotBusy  bool
-	diffBusy  bool
-	pages     map[string]*pageRecord
-	order     []string
-	activeID  string
-	primaryID string
-	cancel    chan struct{}
-	seq       int
+	// shotBusy marks an in-flight batch so the panel can spin and disable the
+	// trigger instead of letting a second batch stack on it.
+	shotBusy   bool
+	captureReq *captureLayoutRequest
+	pages      map[string]*pageRecord
+	order      []string
+	activeID   string
+	primaryID  string
+	cancel     chan struct{}
+	seq        int
 	// startAt marks when the countdown began, guarded by mu; the panel derives
 	// the visible 3→2→1 countdown and ring progress from it.
 	startAt time.Time
@@ -183,11 +191,9 @@ type app struct {
 	// taskViewMode is the resolved view mode of the running task, guarded by mu.
 	// The stage renders from it, not the setup form's viewMode, so an MCP-started
 	// task lays out by the mode it actually requested.
-	taskViewMode string
-
-	// taskSyncDelay is the running task's continuous-operation pace, guarded by
-	// mu; each page's opQueue carries its own copy.
-	taskSyncDelay time.Duration
+	taskViewMode    string
+	taskPrimaryOnly bool
+	taskSyncDelay   time.Duration
 
 	configs   []*pageConfig
 	configSeq int
@@ -202,7 +208,7 @@ type app struct {
 	// and block the user from scrolling away). Main-thread only.
 	lastScrolledErr string
 	template        string // optional URL template with {placeholders}; empty = plain URLs
-	viewMode        string // desktop | mobile
+	viewMode        string // desktop | mobile | free
 	lastViewMode    string
 	resW, resH      float64 // preset seeded by viewMode; each page copies it
 	// resByMode remembers each view mode's last-used preset resolution so
@@ -211,8 +217,6 @@ type app struct {
 	// switch no longer flattens customized page sizes.
 	resByMode map[string][2]float64
 	resByPage map[string]map[string][2]float64
-	// diffReport is the latest per-page diff result, cleared on a new launch.
-	diffReport *diffReportState
 	// advancedOpen expands the advanced-settings group (UA, sync pace, shared
 	// storage, recording); default collapsed. Main-thread only.
 	advancedOpen bool
@@ -221,6 +225,9 @@ type app struct {
 	// mid-form. Main-thread only.
 	lastStatus   string
 	configScroll ui.ScrollState
+	canvasWidths map[string]float64
+	canvasPos    map[string][2]float64
+	canvasScroll ui.ScrollState
 	// stageStopped distinguishes "never run" from "run and stopped" for the
 	// stage's empty-state copy. Main-thread only.
 	stageStopped bool
@@ -230,16 +237,21 @@ type app struct {
 	uaPreset     string // built-in UA option key (ua.go); UI-owned like viewMode
 	uaCustom     string // full UA string when uaPreset == uaCustom
 	shareStorage bool
+	primaryOnly  bool
 	record       bool   // record operations + per-step screenshots; UI-owned like shareStorage
 	syncDelay    string // continuous-operation pace in ms ("0" = instant); UI-owned like shareStorage
 	syncUI       map[string]*bool
+	urlDrafts    map[string]*urlDraft
 
 	// Setup profiles (profiles.go): profileName is the save-as input, profileSel
 	// the picked existing profile, profiles the cached list refreshed on
 	// startup/save/delete. All UI-owned like the fields above.
-	profileName string
-	profileSel  string
-	profiles    []string
+	profileName      string
+	profileNameAuto  string
+	profileNameDirty bool
+	profileSel       string
+	profileShownSel  string
+	profiles         []string
 	// profileOverwriteOpen/profileOverwriteName gate saving over an existing
 	// profile behind a confirm modal. UI-owned like the fields above.
 	profileOverwriteOpen bool
@@ -285,6 +297,7 @@ type app struct {
 func newApp() *app {
 	a := &app{
 		status:       "idle",
+		captureGate:  make(chan struct{}, 1),
 		pages:        map[string]*pageRecord{},
 		viewMode:     "desktop",
 		lastViewMode: "desktop",
@@ -293,15 +306,19 @@ func newApp() *app {
 		resByMode: map[string][2]float64{
 			"desktop": {1280, 800},
 			"mobile":  {390, 844},
+			"free":    {1280, 800},
 		},
-		resByPage:  map[string]map[string][2]float64{},
-		lastStatus: "idle",
-		uaPreset:   uaDefault,
-		themeMode:  "system",
-		scalePct:   "100",
-		syncDelay:  "100",
-		lang:       "zh",
-		syncUI:     map[string]*bool{},
+		resByPage:    map[string]map[string][2]float64{},
+		lastStatus:   "idle",
+		uaPreset:     uaDefault,
+		themeMode:    "system",
+		scalePct:     "100",
+		syncDelay:    "100",
+		lang:         "zh",
+		syncUI:       map[string]*bool{},
+		urlDrafts:    map[string]*urlDraft{},
+		canvasWidths: map[string]float64{},
+		canvasPos:    map[string][2]float64{},
 		configs: []*pageConfig{
 			{id: "c1", resW: 1280, resH: 800},
 			{id: "c2", resW: 1280, resH: 800},
@@ -335,6 +352,7 @@ type resolvedPage struct {
 type startRequest struct {
 	pages        []resolvedPage
 	shareStorage bool
+	primaryOnly  bool
 	viewMode     string
 	userAgent    string        // resolved UA applied to every page; empty = engine default
 	diagnostics  bool          // inject the opt-in diagnostics collector at document start
@@ -659,7 +677,7 @@ func (a *app) buildRequest() (startRequest, error) {
 			pages[i].base = bases[i]
 		}
 	}
-	return startRequest{pages: pages, shareStorage: a.shareStorage, viewMode: a.viewMode,
+	return startRequest{pages: pages, shareStorage: a.shareStorage, primaryOnly: a.primaryOnly, viewMode: a.viewMode,
 		userAgent: resolveUA(a.uaPreset, a.uaCustom, a.viewMode), record: a.record,
 		syncDelay: formSyncDelay(a.syncDelay)}, nil
 }
@@ -733,7 +751,6 @@ func (a *app) launch(req startRequest) error {
 	a.startAt = time.Now()
 	a.message = ""
 	a.clearNoticeLocked()
-	a.diffReport = nil
 	a.cancel = make(chan struct{})
 	cancel := a.cancel
 	taskID := a.taskID
@@ -805,6 +822,8 @@ func (a *app) reloadPage(id string) {
 	resync := ""
 	if p != nil && !p.closed {
 		resetNavLocked(p)
+		p.manualNav = false
+		p.manualNavFrom = ""
 		// An explicit reload/resync supersedes any deferred follow destination;
 		// leaving it would let the navigation handler undo the repair.
 		p.pendingNav = ""
@@ -856,6 +875,8 @@ func (a *app) gotoPageHome(id string) {
 	home := ""
 	if p != nil && !p.closed {
 		resetNavLocked(p)
+		p.manualNav = false
+		p.manualNavFrom = ""
 		p.pendingNav = ""
 		p.navPendingAt = time.Time{}
 		view = p.view
@@ -900,9 +921,7 @@ func (a *app) screenshotAll() {
 	taskID := a.taskID
 	a.mu.Unlock()
 	if len(shots) == 0 {
-		a.mu.Lock()
-		a.shotBusy = false
-		a.mu.Unlock()
+		a.finishBatchShot(taskID)
 		a.setNoticeErrKey("err.noPages")
 		return
 	}
@@ -911,12 +930,7 @@ func (a *app) screenshotAll() {
 	}
 	a.pushState()
 	go func() {
-		defer func() {
-			a.mu.Lock()
-			a.shotBusy = false
-			a.mu.Unlock()
-			a.pushState()
-		}()
+		defer a.finishBatchShot(taskID)
 		dir, err := screenshotDir(base)
 		if err != nil {
 			if !a.batchStale(taskID) {
@@ -931,7 +945,7 @@ func (a *app) screenshotAll() {
 			var f *captureFlight
 			if a.batchShotValidLocked(taskID, s.id) {
 				p := a.pages[s.id]
-				f = a.capturePageFlight(p, p.view.CapturePage)
+				f = a.capturePageFlight(p, func() ([]byte, error) { return a.captureAtConfiguredSize(p, captureTimeout) })
 			}
 			a.mu.Unlock()
 			if f == nil {
@@ -987,6 +1001,15 @@ func (a *app) batchStale(taskID string) bool {
 	return a.taskID != taskID || a.status != "running"
 }
 
+func (a *app) finishBatchShot(taskID string) {
+	a.mu.Lock()
+	if a.taskID == taskID {
+		a.shotBusy = false
+	}
+	a.mu.Unlock()
+	a.pushState()
+}
+
 // setNoticeErr tiers a notice as an error so the panel renders it as an alert
 // instead of undifferentiated gray text.
 func (a *app) setNoticeErr(msg string) { a.setNoticeFull(msg, "error", "", "", false) }
@@ -1037,7 +1060,7 @@ const noticeTTL = 5 * time.Second
 
 // noticeAutoExpires reports whether a notice may dismiss itself. Result notices
 // that carry an artifact path stay up: the open-folder button is the only
-// in-app route back to the diff/screenshot/recording they produced.
+// in-app route back to the screenshot/recording they produced.
 func noticeAutoExpires(kind, path string) bool {
 	if path != "" {
 		return false
@@ -1236,6 +1259,16 @@ func (a *app) reseedViewMode() {
 // createPages builds one web view per resolved page with capture preload,
 // lockdown handlers and a replay worker, then marks the task running.
 func (a *app) createPages(taskID string, req startRequest, lang string) {
+	a.mu.Lock()
+	if a.taskID != taskID || a.status != "starting" {
+		a.mu.Unlock()
+		return
+	}
+	a.taskViewMode = req.viewMode
+	a.taskPrimaryOnly = req.primaryOnly
+	a.taskSyncDelay = req.syncDelay
+	a.mu.Unlock()
+
 	var shared *mygo.Session
 	if req.shareStorage {
 		shared = mygo.NewEphemeralSession()
@@ -1329,6 +1362,7 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 	a.status = "running"
 	a.activeID = a.primaryID
 	a.taskViewMode = req.viewMode
+	a.taskPrimaryOnly = req.primaryOnly
 	a.taskSyncDelay = req.syncDelay
 	a.mu.Unlock()
 	a.invalidate()
@@ -1349,12 +1383,14 @@ func (a *app) attachHandlers(p *pageRecord) {
 	page.OnDidFinishLoad(func() {
 		a.mu.Lock()
 		a.markNavSucceededLocked(p)
+		a.finishManualNavLocked(p)
 		a.mu.Unlock()
 		a.pushState()
 	})
 	page.OnDidFailLoad(func(e *mygo.LoadError) {
 		a.mu.Lock()
 		a.markNavFailedLocked(p, e)
+		a.clearManualNavLocked(p)
 		a.mu.Unlock()
 		a.pushState()
 	})
@@ -1372,7 +1408,7 @@ func (a *app) attachHandlers(p *pageRecord) {
 			}
 			if p.isPrimary {
 				targets = a.followTargets(p, u)
-			} else {
+			} else if !p.manualNav {
 				// This page navigated; any replay that was expected to cause
 				// it has landed, so follow may act on the next primary move.
 				p.navPendingAt = time.Time{}
@@ -1428,14 +1464,21 @@ func (a *app) cleanup(pages []*pageRecord, lang string) {
 		}
 		a.replay = nil
 	}
+	if req := a.captureReq; req != nil {
+		if req.cancel != nil {
+			req.cancel()
+		}
+		a.captureReq = nil
+	}
 	a.pages = map[string]*pageRecord{}
 	a.order = nil
 	a.activeID = ""
 	a.primaryID = ""
 	a.cancel = nil
 	a.taskViewMode = ""
+	a.taskPrimaryOnly = false
 	a.taskSyncDelay = 0
-	// Drop the previous task's result notice so a stale screenshot/diff path does
+	// Drop the previous task's result notice so a stale screenshot path does
 	// not linger in the footer after stop; the recorder's save notice (if any)
 	// lands afterwards as a fresh result. Clear the tag/path/key too, so a replay
 	// finishing concurrently cannot resurrect its result over this reset.
@@ -1443,7 +1486,6 @@ func (a *app) cleanup(pages []*pageRecord, lang string) {
 	// A batch goroutine may outlive the task (capture timeouts); release its
 	// busy flags so the next task's buttons are not disabled by a dead batch.
 	a.shotBusy = false
-	a.diffBusy = false
 	if failed {
 		a.status = "cleanup-error"
 		a.message = trLang(lang, "err.cleanupFailed")
@@ -1470,11 +1512,11 @@ func (a *app) snapshot() appState {
 		NoticePath:      a.noticePath,
 		NoticePathIsDir: a.noticePathIsDir,
 		ShotBusy:        a.shotBusy,
-		DiffBusy:        a.diffBusy,
 		Pages:           make([]pageState, 0, len(a.order)),
 		Errors:          []syncError{},
 		SyncDelayMs:     float64(a.taskSyncDelay) / float64(time.Millisecond),
 		ViewMode:        a.taskViewMode,
+		PrimaryOnly:     a.taskPrimaryOnly,
 	}
 	for _, id := range a.order {
 		p := a.pages[id]
@@ -1497,11 +1539,6 @@ func (a *app) snapshot() appState {
 		if p.lastError != nil {
 			st.Errors = append(st.Errors, *p.lastError)
 		}
-	}
-	if a.diffReport != nil {
-		rep := *a.diffReport
-		rep.Entries = append([]diffReportEntry(nil), a.diffReport.Entries...)
-		st.Diff = &rep
 	}
 	if r := a.rec; r != nil {
 		st.Recording = true
@@ -1526,6 +1563,25 @@ func (a *app) invalidate() {
 	if a.win != nil {
 		a.win.Invalidate()
 	}
+}
+
+func (a *app) runtimeURLDraft(id, current string) *urlDraft {
+	if a.urlDrafts == nil {
+		a.urlDrafts = map[string]*urlDraft{}
+	}
+	d := a.urlDrafts[id]
+	if d == nil {
+		d = &urlDraft{value: current, seen: current}
+		a.urlDrafts[id] = d
+		return d
+	}
+	if d.seen != current {
+		if d.value == d.seen {
+			d.value = current
+		}
+		d.seen = current
+	}
+	return d
 }
 
 func (a *app) validateURL(raw string) error {

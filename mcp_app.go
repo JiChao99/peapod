@@ -80,6 +80,12 @@ func (a *app) navigatePage(id, url string) error {
 		// otherwise stick (e.g. /page -> /page#section on a ready page).
 		if !sameDocumentURL(p.url, url) {
 			resetNavLocked(p)
+			if !p.isPrimary {
+				p.manualNav = true
+				p.manualNavFrom = p.url
+			}
+		} else {
+			p.url = url
 		}
 		// An explicit navigation supersedes any deferred follow destination,
 		// exactly as reloadPage does: resetNavLocked lifts a pause, and leaving
@@ -118,8 +124,8 @@ type errCaptureTimeout struct{ timeout time.Duration }
 
 func (e errCaptureTimeout) Error() string {
 	return fmt.Sprintf("screenshot timed out after %s: the page is not rendering "+
-		"(the Peapod window may be minimized or hidden, or this page is stacked behind the active one). "+
-		"Restore the Peapod window and retry, or make this page active first.", e.timeout)
+		"(the Peapod window may be minimized or hidden). "+
+		"Restore the Peapod window and retry.", e.timeout)
 }
 
 // captureFlight is one outstanding CapturePage for a page. WebView2's
@@ -180,15 +186,22 @@ func waitCapture(f *captureFlight, timeout time.Duration) ([]byte, error) {
 // shots of the same page coalesce onto one capture flight.
 func (a *app) capturePNG(id string, timeout time.Duration) (string, []byte, error) {
 	a.mu.Lock()
+	taskID := a.taskID
+	a.mu.Unlock()
+	return a.capturePNGForTask(taskID, id, timeout)
+}
+
+func (a *app) capturePNGForTask(taskID, id string, timeout time.Duration) (string, []byte, error) {
+	a.mu.Lock()
 	if id == "" {
 		id = a.primaryID
 	}
 	p := a.pages[id]
 	var f *captureFlight
 	name := ""
-	if p != nil && !p.closed {
+	if a.taskID == taskID && p != nil && !p.closed && (a.status == "running" || a.status == "starting") {
 		name = p.name
-		f = a.capturePageFlight(p, p.view.CapturePage)
+		f = a.capturePageFlight(p, func() ([]byte, error) { return a.captureAtConfiguredSize(p, timeout) })
 	}
 	a.mu.Unlock()
 	if f == nil {

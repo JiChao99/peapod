@@ -64,15 +64,14 @@ Because the port/token rotate per launch, either regenerate this config from `mc
 | Tool | Arguments | Effect |
 | --- | --- | --- |
 | `peapod_status` | — | Task status plus every page's `id`, `name`, `url`, `status`, `syncOn`, `isPrimary`, last error. |
-| `peapod_start` | `pages[]` (2–10), optional `template`, `shareStorage`, `viewMode`, `userAgent`, `diagnostics`, `record`, `syncDelayMs` | Open pages and start mirroring. Returns `starting`; poll `peapod_status` until `running` (3 s grace). `diagnostics:true` injects the opt-in collector at document start (see below). `record:true` saves a replayable script, per-step screenshots and popup evidence (see [Recording & replay](#recording--replay)). `syncDelayMs` paces input/scroll mirroring (see [Sync pace](#sync-pace)). |
+| `peapod_start` | `pages[]` (2–10), optional `template`, `shareStorage`, `viewMode`, `userAgent`, `diagnostics`, `record`, `primaryOnly`, `syncDelayMs` | Open pages and start mirroring. Returns `starting`; poll `peapod_status` until `running` (3 s grace). `diagnostics:true` injects the opt-in collector at document start (see below). `record:true` saves a replayable script, per-step screenshots and popup evidence (see [Recording & replay](#recording--replay)). `primaryOnly:true` blocks manual interaction on followers while leaving host-driven replay intact. `syncDelayMs` paces input/scroll mirroring (see [Sync pace](#sync-pace)). |
 | `peapod_stop` | — | Tear down every page and wipe its session data. |
-| `peapod_navigate` | `url`, optional `pageId` (default primary) | Load a URL. A primary move propagates to followers via navigation follow. A fragment-only (same-document) move keeps the page's current status. |
+| `peapod_navigate` | `url`, optional `pageId` (default primary) | Load a URL in the same WebView, preserving that page's session and cookies. A primary move propagates to followers via navigation follow. An explicit follower move is not immediately reconciled back to the primary. A fragment-only (same-document) move keeps the page's current status. |
 | `peapod_reload` | optional `pageId` (default primary) | Reload a page; a running follower re-aligns to the primary's current URL and clears a pause. |
 | `peapod_set_sync` | `pageId`, `on` | Enable/disable replay onto one follower. |
 | `peapod_send_operation` | `operation` | Replay a host-trusted operation on every synced follower. |
 | `peapod_replay` | `scriptPath`, optional `delayMs` (0–5000, default 500) | Re-enact a recorded `script.jsonl` on **every** page of the running task, including the primary. Returns `{"status":"replaying","steps":n}` immediately; poll `peapod_status.replay` until `active` is `false` (see [Recording & replay](#recording--replay)). |
-| `peapod_screenshot` | optional `pageId` (default primary), `timeoutMs` (1000–60000, default 10000) | Capture one page as a PNG image. Bounded by a timeout: a page that is not rendering fails with an error instead of hanging (see below). |
-| `peapod_diff` | optional `pageId` / `againstId` (default primary, must differ), `tolerance` (0–255, default 0), `timeoutMs` (1000–60000, default 10000) | Compare two pages' screenshots pixel by pixel (equal resolutions required). Returns diff stats as JSON plus a red-highlight diff PNG (see below). |
+| `peapod_screenshot` | optional `pageId` (default primary), `timeoutMs` (1000–60000, default 10000) | Capture one page as a PNG at its configured `resW × resH`, regardless of the scaled canvas size. Bounded by a timeout: a page that is not rendering fails with an error instead of hanging (see below). |
 | `peapod_diagnostics` | optional `pageId` (default primary) | Read a page's acceptance diagnostics: `status`/`navError`, plus URL/title/readyState, the main document's HTTP status, bounded body text, and recent console/network/error activity. Installs the opt-in collector on demand (idempotent) if it was not injected at start. |
 
 ### `peapod_status` response
@@ -92,13 +91,14 @@ Keys are lower camelCase, matching `peapod_start` / `peapod_stop`:
   "message": "",
   "notice": "",
   "recording": false,
+  "primaryOnly": false,
   "syncDelayMs": 100
 }
 ```
 
 `status` is one of `idle`, `starting`, `running`, `stopping`, `cleanup-error`. After a failed data wipe the task stays in `cleanup-error`: `peapod_start` and `peapod_stop` both report the lockout until the app is restarted, so a new task can never run on un-wiped session data.
 
-`recording` is always present (`true` while an opt-in recording is active). When recording, `recordSteps` (operations dispatched so far), `recordDialogs` (popups reported so far) and `recordDir` (the session folder) are added. `syncDelayMs` reports the running task's input/scroll pace (0 when idle or instant). While a `peapod_replay` run exists, `replay` reports its progress:
+`recording` is always present (`true` while an opt-in recording is active). `primaryOnly` reports whether manual follower interaction is blocked; host replay remains enabled. When recording, `recordSteps` (operations dispatched so far), `recordDialogs` (popups reported so far) and `recordDir` (the session folder) are added. `syncDelayMs` reports the running task's input/scroll pace (0 when idle or instant). While a `peapod_replay` run exists, `replay` reports its progress:
 
 ```json
 { "recording": true, "recordSteps": 12, "recordDialogs": 3, "recordDir": "C:\\Users\\me\\Pictures\\Peapod\\recordings\\recording_20261117-101500",
@@ -118,27 +118,9 @@ Each page's `status` is one of `loading`, `ready`, `error`, `paused`, `closed`:
 
 ### `peapod_screenshot` timeout
 
-WebView2 cannot capture a page that is not rendering: if the Peapod window is minimized or hidden, or the page is stacked behind the active one in desktop view, `CapturePreview` never completes. The tool therefore bounds every capture by `timeoutMs` (default 10 s) and returns an error result on timeout rather than hanging until the client times out. The error names the page and the likely cause; restore the Peapod window (or make the page active) and retry. The panel's batch screenshot applies the same per-page bound, so one non-rendering page no longer stalls the whole batch. Because `CapturePreview` cannot be cancelled, concurrent captures of the same page coalesce onto a single outstanding capture: retries attach to it instead of launching more uncancellable work, and all waiters receive the result once the callback lands (e.g. after the window is restored).
+WebView2 cannot capture a page that is not rendering: if the Peapod window is minimized or hidden, `CapturePreview` never completes. The tool therefore bounds every capture by `timeoutMs` (default 10 s) and returns an error result on timeout rather than hanging until the client times out. The error names the page and the likely cause; restore the Peapod window and retry. The panel's batch screenshot applies the same per-page bound, so one non-rendering page no longer stalls the whole batch. Because `CapturePreview` cannot be cancelled, concurrent captures of the same page coalesce onto a single outstanding capture: retries attach to it instead of launching more uncancellable work, and all waiters receive the result once the callback lands (e.g. after the window is restored).
 
-### `peapod_diff` response
-
-Captures both pages (reusing the coalesced, timeout-bounded capture path), then compares them channel by channel. The result carries two content blocks: a JSON stats object and the highlight PNG.
-
-```json
-{
-  "pageId": "p2", "pageName": "Page 2", "againstId": "p1", "againstName": "Primary",
-  "stats": { "width": 1280, "height": 800, "pixels": 1024000, "different": 4210,
-             "fraction": 0.0041, "maxDelta": 255, "meanDelta": 0.31, "tolerance": 0 }
-}
-```
-
-- `different` / `fraction` — pixels where **any** RGBA channel differs by more than `tolerance`, and their share of all pixels. `maxDelta` is the largest per-channel difference (0–255); `meanDelta` averages all four channels' differences over every pixel, so small changes across a large area still register.
-- `tolerance` (0–255, default 0 = exact) absorbs anti-aliasing / font-rendering noise: a channel difference ≤ tolerance counts as equal.
-- The highlight PNG dims the inspected page to 35% grayscale and paints differing pixels solid red — a reviewer sees exactly where the variants diverge.
-- **Equal resolutions are required.** Mismatched sizes fail with an actionable error naming both pages and their dimensions instead of silently cropping or scaling; set the pages to the same `resW`/`resH` first.
-- Captures are bounded by `timeoutMs` per page like `peapod_screenshot`; a non-rendering (minimized/occluded) page fails fast.
-
-The native panel's **Variant diff** button runs the same comparison for every follower against the primary (tolerance 0), saving `{page}_diff.png` plus a `diff.json` summary (per-page stats or failure reason, `primaryError` if the reference capture failed) under `Pictures/Peapod/diffs/`.
+Captures are temporarily rendered at the page's configured resolution and normalized to that exact pixel size; the visible canvas is only a preview. If the webview returns a smaller bitmap, capture fails rather than upscaling it. In free canvas mode, the panel's **Capture whole canvas** action stitches all page captures into one `canvas.png`; it is a panel-only action.
 
 ### `peapod_diagnostics` response
 
@@ -169,6 +151,16 @@ Each page accepts `name`, and either plain-mode `url` or template-mode `vars` + 
 - **Template mode** (`template` set, e.g. `https://{host}/{lang}` or `https://{host}/?yplang={lang}`): each page supplies `vars` (`host=dev.example.com, lang=en`) and an optional `path` (default `/`). Path and query variants are supported; navigation follow maps paths and keeps each page's template query values. A page `path` may carry its own query and fragment; its query values are merged over the template's for the initial URL.
 
 `diagnostics` (default `false`) is a task-level opt-in: when `true`, the console/network/error collector is injected into every page at document start, so activity from the very first load is captured. Leave it `false` for ordinary mirroring — `peapod_diagnostics` still works and installs the collector on demand the first time you call it (capturing activity from that point on). The native panel never injects the collector.
+
+### View modes and primary-only operation
+
+`viewMode` accepts `desktop`, `mobile` or `free`. Desktop shows one active page, mobile shows all pages in a row, and free canvas uses draggable, independently resizable page frames. Free-canvas layout and whole-canvas capture are controlled from the native panel.
+
+`primaryOnly` (default `false`) disables manual input on every follower page and shows a lock overlay. Operations sent by the host (`peapod_send_operation` and replay), synchronization, navigation and capture continue to work. The setting is included in `peapod_status`, setup profiles and recording session metadata.
+
+### Runtime URL changes
+
+`peapod_navigate` always reuses the target page's WebView, so cookies, local storage and the current session survive the move. This supports the login-redirect workflow: visit the protected page, complete login on the redirected home page, then navigate the same page to the original URL. A direct follower navigation sets a one-shot guard so navigation follow does not immediately undo it; reloading the follower or a later primary navigation restores normal follow behavior.
 
 ### Sync pace
 
@@ -217,7 +209,7 @@ If no home directory is available the root falls back to the user config dir (`�
 
 ```
 recording_20261117-101500/
-  session.json      # task setup: pages/variants, resolutions, viewMode, userAgent, shareStorage, diagnostics, syncDelayMs
+  session.json      # task setup: pages/variants, resolutions, viewMode, userAgent, shareStorage, primaryOnly, diagnostics, syncDelayMs
   script.jsonl      # every dispatched operation, in order — the replayable script
   steps/0001/       # one PNG per running page after step 1 settled
     Primary.png
@@ -289,5 +281,5 @@ Scrolls the page produces itself — load animations, scroll anchoring after a r
 1. `peapod_start` with a template and two pages (dev + prod); add `record:true` to keep a replayable script, per-step screenshots and popup evidence.
 2. Poll `peapod_status` until both pages are `ready`. A page stuck in `error` with a `navError` (e.g. `NAME_NOT_RESOLVED`) is unreachable — fix the URL/host rather than waiting.
 3. `peapod_navigate` the primary to a route; followers follow on their own host.
-4. `peapod_send_operation` to type into a field; `peapod_diff` to compare variants pixel by pixel (stats + red-highlight PNG), or `peapod_screenshot` each page and `peapod_diagnostics` to assert HTTP status, text and console/network errors.
+4. `peapod_send_operation` to type into a field; `peapod_screenshot` each page and `peapod_diagnostics` to assert HTTP status, text and console/network errors.
 5. `peapod_stop` to clean up. With recording on, the session folder now holds `script.jsonl` + step shots + `dialogs.jsonl`/`dialogs/` + `summary.json`; the recordings browser shows popups inline with the steps and exports them into the HTML report. Later, start a fresh task at the same entry URL and `peapod_replay` the script to re-enact the flow.

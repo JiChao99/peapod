@@ -30,6 +30,7 @@ type profileData struct {
 	UAPreset     string        `json:"uaPreset"`
 	UACustom     string        `json:"uaCustom"`
 	ShareStorage bool          `json:"shareStorage"`
+	PrimaryOnly  bool          `json:"primaryOnly"`
 	Record       bool          `json:"record"`
 	SyncDelay    string        `json:"syncDelay"`
 	Pages        []profilePage `json:"pages"`
@@ -100,6 +101,7 @@ func (a *app) currentProfile() profileData {
 		UAPreset:     a.uaPreset,
 		UACustom:     a.uaCustom,
 		ShareStorage: a.shareStorage,
+		PrimaryOnly:  a.primaryOnly,
 		Record:       a.record,
 		SyncDelay:    a.syncDelay,
 		Pages:        pages,
@@ -122,8 +124,8 @@ func (a *app) applyProfile(p profileData) error {
 		}
 	}
 	viewMode := "desktop"
-	if p.ViewMode == "mobile" {
-		viewMode = "mobile"
+	if p.ViewMode == "mobile" || p.ViewMode == "free" {
+		viewMode = p.ViewMode
 	}
 	configs := make([]*pageConfig, 0, len(p.Pages))
 	for _, pg := range p.Pages {
@@ -149,6 +151,7 @@ func (a *app) applyProfile(p profileData) error {
 	a.uaPreset = preset
 	a.uaCustom = p.UACustom
 	a.shareStorage = p.ShareStorage
+	a.primaryOnly = p.PrimaryOnly
 	a.record = p.Record
 	syncDelay := "100"
 	for _, v := range syncDelayOptions {
@@ -193,6 +196,9 @@ func (a *app) saveProfile(name string) {
 	}
 	a.profiles = listProfiles()
 	a.profileSel = sanitizeFileName(name)
+	a.profileName = a.profileSel
+	a.profileNameAuto = a.profileSel
+	a.profileNameDirty = false
 	a.setNoticeOKKey("notice.profilesSaved", name)
 }
 
@@ -212,6 +218,9 @@ func (a *app) loadProfileIntoForm() {
 		return
 	}
 	a.setNoticeOKKey("notice.profilesLoaded", a.profileSel)
+	a.profileName = a.profileSel
+	a.profileNameAuto = a.profileSel
+	a.profileNameDirty = false
 }
 
 // deleteProfile removes the selected profile file.
@@ -227,6 +236,8 @@ func (a *app) deleteProfile() {
 	}
 	a.profileSel = ""
 	a.profileName = ""
+	a.profileNameAuto = ""
+	a.profileNameDirty = false
 	a.profiles = listProfiles()
 	a.setNoticeOKKey("notice.profilesDeleted", name)
 }
