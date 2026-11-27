@@ -65,9 +65,9 @@ func (a *app) renderSettings(c *ui.Context, tk *theme.Tokens) {
 				Options: syncOptions,
 				Variant: field.InputOutlined,
 			}).AlignSelf(ui.Stretch)
-			choice.Switch(c, &a.settingsDraft.DefaultShareStorage, choice.SwitchProps{}).Label(a.tr("ui.shareStorage"))
-			choice.Switch(c, &a.settingsDraft.DefaultPrimaryOnly, choice.SwitchProps{}).Label(a.tr("ui.primaryOnly"))
-			choice.Switch(c, &a.settingsDraft.DefaultRecord, choice.SwitchProps{}).Label(a.tr("ui.record"))
+			settingsToggle(c, tk, a.tr("ui.shareStorage"), &a.settingsDraft.DefaultShareStorage)
+			settingsToggle(c, tk, a.tr("ui.primaryOnly"), &a.settingsDraft.DefaultPrimaryOnly)
+			settingsToggle(c, tk, a.tr("ui.record"), &a.settingsDraft.DefaultRecord)
 
 			settingsSection(c, tk, lucide.RefreshCw(), a.tr("ui.settings.updates"))
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
@@ -76,7 +76,7 @@ func (a *app) renderSettings(c *ui.Context, tk *theme.Tokens) {
 					a.checkForUpdates()
 				}
 			})
-			choice.Switch(c, &a.settingsDraft.AutoUpdate, choice.SwitchProps{}).Label(a.tr("ui.update.auto"))
+			settingsToggle(c, tk, a.tr("ui.update.auto"), &a.settingsDraft.AutoUpdate)
 			ui.Text(c, a.tr("ui.update.privacy")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
 			state := a.updateSnapshot()
 			switch state.Status {
@@ -123,4 +123,11 @@ func settingsSection(c *ui.Context, tk *theme.Tokens, icon *ui.SVG, title string
 
 func settingsLabel(c *ui.Context, tk *theme.Tokens, label string) {
 	ui.Text(c, label).FontSize(12).Bold().TextColor(tk.TextSecondary)
+}
+
+func settingsToggle(c *ui.Context, tk *theme.Tokens, label string, value *bool) {
+	ui.Row(c).Gap(12).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, label).FontSize(13).TextColor(tk.TextSecondary).Grow(1).Wrap()
+		choice.Switch(c, value, choice.SwitchProps{}).AlignSelf(ui.Center)
+	})
 }
