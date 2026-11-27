@@ -96,6 +96,24 @@ func TestBuildRequestInheritsPrimaryURL(t *testing.T) {
 	}
 }
 
+func TestBuildRequestInjection(t *testing.T) {
+	a := newApp()
+	a.configs[0].url = "https://example.com"
+	a.configs[0].injectJS = "document.body.dataset.qa = 'primary';"
+	a.configs[1].injectJS = "document.body.dataset.qa = 'follower';"
+	req, err := a.buildRequest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.pages[0].injectJS != a.configs[0].injectJS || req.pages[1].injectJS != a.configs[1].injectJS {
+		t.Fatalf("injection not preserved: %+v", req.pages)
+	}
+	a.configs[0].injectJS = strings.Repeat("x", maxInjectedJSBytes+1)
+	if _, err := a.buildRequest(); err == nil {
+		t.Fatal("oversized injection script was accepted")
+	}
+}
+
 func TestBuildRequestRejectsBadForm(t *testing.T) {
 	a := newApp()
 	a.configs = a.configs[:1]

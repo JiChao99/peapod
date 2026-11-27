@@ -83,7 +83,7 @@
         <div class="hero-orb orb-two"></div>
         <div class="container hero-grid">
           <div class="hero-copy reveal">
-            <div class="eyebrow"><span class="status-dot"></span><span data-i18n="hero.badge">v0.10.1 · Open-source desktop app</span></div>
+            <div class="eyebrow"><span class="status-dot"></span><span data-i18n="hero.badge">v0.11.0 · Open-source desktop app</span></div>
             <h1><span data-i18n="hero.title1">Repeat less. </span><span class="accent-text" data-i18n="hero.title2">Know more.</span></h1>
             <p class="hero-description" data-i18n="hero.description">Run one flow across languages, environments, and devices — side by side, in sync, with evidence at every step.</p>
             <div class="hero-actions">
@@ -204,6 +204,12 @@
               <div class="code-line"><span>peapod</span>_screenshot <span>→</span> <i></i></div>
             </article>
             <article class="feature-card reveal">
+              <div class="feature-icon"><svg class="icon"><use href="#i-terminal"/></svg></div>
+              <h3 data-i18n="features.injectTitle">Inject test scripts per view</h3>
+              <p data-i18n="features.injectBody">Run JavaScript at document start on each page, manipulate its DOM after DOMContentLoaded, and send bounded test events back to the host for diagnostics.</p>
+              <div class="code-line"><span>window.peapod</span>.emit('ready', data)</div>
+            </article>
+            <article class="feature-card reveal">
               <div class="feature-icon"><svg class="icon"><use href="#i-shield"/></svg></div>
               <h3 data-i18n="features.privacyTitle">Local-first. Private by default.</h3>
               <p data-i18n="features.privacyBody">Passwords are never recorded, and sessions are wiped when a task stops. Task files stay on your machine. Optional GitHub release-metadata checks are separate and include no task data.</p>
@@ -263,7 +269,7 @@
         <div class="container">
           <div class="install-panel reveal">
             <div class="install-copy">
-              <span class="section-kicker" data-i18n="install.kicker">v0.10.1 · Install or build from source</span>
+              <span class="section-kicker" data-i18n="install.kicker">v0.11.0 · Install or build from source</span>
               <h2 data-i18n="install.title">One download.<br>A better QA loop.</h2>
               <p data-i18n="install.description">Prebuilt packages are available on GitHub Releases, or build from source with no extra browser to install. Source builds need Go 1.27.4+ and your system WebView.</p>
               <a class="text-link install-release-link" href="https://github.com/jichao99/peapod/releases" target="_blank" rel="noreferrer"><span data-i18n="install.releases">Download from GitHub Releases</span><svg class="icon small"><use href="#i-arrow-up-right"/></svg></a>
@@ -283,16 +289,20 @@
 
           <div class="release-panel reveal">
             <div class="release-intro">
-              <span class="release-label" data-i18n="release.kicker">New in v0.10.0</span>
-              <h3 data-i18n="release.title">Persistent settings.<br>Updates on your terms.</h3>
+              <span class="release-label" data-i18n="release.kicker">New in v0.11.0</span>
+              <h3 data-i18n="release.title">Direct updates.<br>Deeper test control.</h3>
             </div>
             <div class="release-item">
               <svg class="icon"><use href="#i-profile"/></svg>
               <div><strong data-i18n="release.settingsTitle">Persistent settings</strong><p data-i18n="release.settingsBody">Keep your preferences across restarts, so your workspace is ready when you are.</p></div>
             </div>
             <div class="release-item">
+              <svg class="icon"><use href="#i-terminal"/></svg>
+              <div><strong data-i18n="release.injectTitle">Per-view JavaScript injection</strong><p data-i18n="release.injectBody">Run test scripts at document start, interact with each page's DOM, and send bounded events back to diagnostics.</p></div>
+            </div>
+            <div class="release-item">
               <svg class="icon"><use href="#i-sync"/></svg>
-              <div><strong data-i18n="release.updatesTitle">Built-in GitHub release checker</strong><p data-i18n="release.updatesBody">Checks are manual by default, with optional automatic checks for new releases.</p><p class="release-note" data-i18n="release.note">The checker reads public release metadata and opens GitHub for downloads. It does not install binaries inside the app.</p></div>
+              <div><strong data-i18n="release.updatesTitle">Download and install updates</strong><p data-i18n="release.updatesBody">On Windows/Linux, Peapod downloads the matching release package, verifies SHA256, installs it, and restarts.</p><p class="release-note" data-i18n="release.note">Checks stay manual by default. macOS opens the release page until a macOS package is available.</p></div>
             </div>
           </div>
         </div>
@@ -304,9 +314,10 @@
           <div class="faq-list reveal reveal-delay">
             <details><summary><span data-i18n="faq.q1">How is this different from a responsive previewer?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a1">Responsive previewers usually show one URL at several viewport sizes. Peapod runs several versions of a complete flow, with mapped navigation, reusable setups, and evidence for every step.</p></details>
             <details><summary><span data-i18n="faq.q2">Does Peapod send my task data anywhere?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a2">Peapod has no telemetry. Task URLs, page content, cookies, screenshots, and recordings are not uploaded by Peapod. Optional release checks contact GitHub only for public release metadata and include no task data.</p></details>
-            <details><summary><span data-i18n="faq.q3">How do update checks work?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a3">Peapod includes a built-in GitHub release checker. It checks manually by default; automatic checks are opt-in. It shows release details and opens GitHub, but does not download or install binaries in the app.</p></details>
+            <details><summary><span data-i18n="faq.q3">How do update checks work?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a3">Checks are manual by default. On Windows/Linux, Download and install fetches the matching package, verifies SHA256, installs, and restarts Peapod. macOS opens the release page.</p></details>
             <details><summary><span data-i18n="faq.q4">Can it reproduce Safari-specific bugs?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a4">User-Agent presets only change the UA string. Pages still render in your platform WebView, so engine-specific Safari bugs cannot be reproduced this way.</p></details>
             <details><summary><span data-i18n="faq.q5">Which platforms are supported?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a5">Windows, macOS, and Linux via WebView2, WKWebView, and WebKitGTK respectively. Windows is currently the most thoroughly tested platform.</p></details>
+            <details><summary><span data-i18n="faq.q6">Can I simulate a slow network?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a6">Not yet. Per-view offline, latency, and throughput control requires extending the WebView backend; see the project TODO.</p></details>
           </div>
         </div>
       </section>
@@ -317,7 +328,7 @@
           <span class="section-kicker" data-i18n="cta.kicker">Open source · Local-first · Built for focus</span>
           <h2 data-i18n="cta.title">Repeat less. Know more.</h2>
           <p data-i18n="cta.description">Let Peapod watch every other page while you focus on the one that matters.</p>
-          <div class="hero-actions"><a class="button button-light" href="https://github.com/jichao99/peapod/releases" target="_blank" rel="noreferrer"><svg class="icon"><use href="#i-github"/></svg><span data-i18n="cta.button">Get Peapod v0.10.0</span><svg class="icon small"><use href="#i-arrow-up-right"/></svg></a><a class="button button-dark-ghost" href="https://github.com/jichao99/peapod/#quick-start" target="_blank" rel="noreferrer"><svg class="icon"><use href="#i-arrow-right"/></svg><span data-i18n="cta.docs">Quick start</span></a></div>
+          <div class="hero-actions"><a class="button button-light" href="https://github.com/jichao99/peapod/releases" target="_blank" rel="noreferrer"><svg class="icon"><use href="#i-github"/></svg><span data-i18n="cta.button">Get Peapod v0.11.0</span><svg class="icon small"><use href="#i-arrow-up-right"/></svg></a><a class="button button-dark-ghost" href="https://github.com/jichao99/peapod/#quick-start" target="_blank" rel="noreferrer"><svg class="icon"><use href="#i-arrow-right"/></svg><span data-i18n="cta.docs">Quick start</span></a></div>
         </div>
       </section>
     </main>

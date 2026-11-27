@@ -15,11 +15,12 @@ import (
 
 // profilePage is one setup row as stored on disk.
 type profilePage struct {
-	Name string  `json:"name"`
-	URL  string  `json:"url"`
-	Vars string  `json:"vars"`
-	ResW float64 `json:"resW"`
-	ResH float64 `json:"resH"`
+	Name     string  `json:"name"`
+	URL      string  `json:"url"`
+	Vars     string  `json:"vars"`
+	InjectJS string  `json:"injectJS,omitempty"`
+	ResW     float64 `json:"resW"`
+	ResH     float64 `json:"resH"`
 }
 
 // profileData mirrors the raw setup-form fields (not the resolved start
@@ -91,7 +92,7 @@ func (a *app) currentProfile() profileData {
 	pages := make([]profilePage, 0, len(a.configs))
 	for _, cfg := range a.configs {
 		pages = append(pages, profilePage{
-			Name: cfg.name, URL: cfg.url, Vars: cfg.vars,
+			Name: cfg.name, URL: cfg.url, Vars: cfg.vars, InjectJS: cfg.injectJS,
 			ResW: cfg.resW, ResH: cfg.resH,
 		})
 	}
@@ -129,10 +130,13 @@ func (a *app) applyProfile(p profileData) error {
 	}
 	configs := make([]*pageConfig, 0, len(p.Pages))
 	for _, pg := range p.Pages {
+		if len(pg.InjectJS) > maxInjectedJSBytes {
+			return fmt.Errorf("%s", a.tr("err.injectTooLong", maxInjectedJSBytes))
+		}
 		a.configSeq++
 		configs = append(configs, &pageConfig{
 			id:   fmt.Sprintf("c%d", a.configSeq),
-			name: pg.Name, url: pg.URL, vars: pg.Vars,
+			name: pg.Name, url: pg.URL, vars: pg.Vars, injectJS: pg.InjectJS,
 			resW: clampRes(pg.ResW, a.resW), resH: clampRes(pg.ResH, a.resH),
 		})
 	}

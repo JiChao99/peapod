@@ -27,7 +27,7 @@
   <img src="docs/images/mcp-ready-panel.png" alt="Peapod 以行動裝置模式並排執行同一網站的四個語言版本，畫面顯示每頁同步開關與即時錄製徽章">
 </p>
 
-Peapod v0.10.1 可於單一視窗開啟 2–10 個頁面。你在**主頁**上點擊、輸入、捲動及送出，其餘頁面會依序即時重播相同操作。把各頁面指向不同語言、網域或環境，就能讓同一條流程在所有版本上同步走一遍，並留下截圖與可回放的腳本。
+Peapod v0.11.0 可於單一視窗開啟 2–10 個頁面。你在**主頁**上點擊、輸入、捲動及送出，其餘頁面會依序即時重播相同操作。把各頁面指向不同語言、網域或環境，就能讓同一條流程在所有版本上同步走一遍，並留下截圖與可回放的腳本。
 
 這是一款以 [MyGo](https://github.com/egoist/mygo) 打造的原生 Go 應用程式，介面採用 [Lobe MyGo](https://github.com/lobehub/lobe-mygo) 元件（Lobe UI 設計語言的原生 Go 實作）。它以單一執行檔提供，直接使用系統 WebView，不內建瀏覽器。
 
@@ -79,11 +79,12 @@ Peapod v0.10.1 可於單一視窗開啟 2–10 個頁面。你在**主頁**上�
 
 - **MCP 伺服器**：由 token 保護的本機 [Model Context Protocol](https://modelcontextprotocol.io) 端點，讓 AI agent 無需操作介面，即可啟動任務、導覽、執行操作、回放、截圖、診斷與停止任務。
 - **驗收診斷**：導覽失敗時會提供固定的錯誤名稱（`NAME_NOT_RESOLVED`、`TIMEOUT` 等）。另有僅限 MCP、需主動開啟的收集器，可提供主文件 HTTP 狀態、頁面文字，以及 console、network 與 error 活動，讓 agent 根據實際結果判斷，而不只看截圖。
+- **每檢視 JS 注入**：可在每個文件開始時注入測試指令碼。存取 DOM 前請等待 `DOMContentLoaded`；呼叫 `window.peapod.emit(name, payload)` 可把受限事件回傳至 `peapod_diagnostics.injectedEvents`。
 
 ### 日常體驗
 
 - 英語、簡體中文、繁體中文與日語介面；淺色、深色或跟隨系統主題，並支援介面縮放。
-- 現已提供設定持久化與內建 GitHub 發行更新檢查器，詳見[安裝](#安裝)。
+- 現已提供設定持久化，並支援 Windows/Linux 應用程式內下載安裝更新，詳見[安裝](#安裝)。
 
 ## 安裝
 
@@ -91,7 +92,7 @@ Peapod v0.10.1 可於單一視窗開啟 2–10 個頁面。你在**主頁**上�
 
 ### 更新與設定持久化
 
-Peapod 內建設定持久化與 [GitHub Releases](https://github.com/JiChao99/peapod/releases) 檢查器。更新檢查**預設為手動**，也可選擇自動檢查。檢查器會顯示發行資訊並開啟 GitHub 下載，**不會**在 Peapod 內下載或安裝執行檔。
+Peapod 內建設定持久化與 [GitHub Releases](https://github.com/JiChao99/peapod/releases) 更新器。更新檢查**預設為手動**，也可選擇自動檢查。發現新穩定版後，點擊「下載並安裝」會取得相符的發行包、校驗 SHA256，然後在 Windows/Linux 上安裝並重新啟動 Peapod；macOS 因暫無安裝包，會開啟發行頁。
 
 | 平台 | WebView | 說明 |
 | --- | --- | --- |
@@ -128,16 +129,17 @@ Peapod 啟動後，會在 `127.0.0.1` 的隨機連接埠提供 Streamable-HTTP M
 - 工作階段都是暫時的，任務停止時資料即被清除。
 - 彈出視窗與權限請求（攝影機、麥克風、通知等）會被封鎖；每頁的 IPC 只對自己的 origin 開放。
 - 截圖與錄製只留在本機，分別位於 `Pictures/Peapod/screenshots` 與 `Pictures/Peapod/recordings`（Windows 上即「圖片」資料夾）。錄製腳本包含其他輸入文字，請視為敏感檔案。
-- Peapod 沒有遙測，不會上傳任務 URL、頁面內容、Cookie、截圖或錄製檔案。選用的 GitHub 發行檢查器只取得公開發行元資料，不包含任務資料，且預設手動檢查。
+- Peapod 沒有遙測，不會上傳任務 URL、頁面內容、Cookie、截圖或錄製檔案。更新功能只取得公開發行元資料；只有點擊「下載並安裝」後才會下載相符公開套件，兩種請求都不包含任務資料。
 - MCP 伺服器只監聽本機迴環位址，每個請求都必須帶 token，並拒絕瀏覽器發出的跨源請求。頁面內容屬於不可信資料，agent 不應執行其中夾帶的指令。
 
 ## 已知限制
 
 - **User-Agent 預設只改變 UA 字串**：頁面仍由平台 WebView 渲染，因此無法重現特定引擎的問題（例如在 Windows 上重現 Safari 獨有的 bug）。
-- **截圖需要視窗可見且不可最小化**：Peapod 最小化時 WebView 會停止渲染，截圖會逾時，直到視窗恢復。依設定解析度擷取會暫時將頁面以完整尺寸排列，預覽可能短暫移動，完成後自動復原。
+- **截圖需要視窗可見且不可最小化**：Peapod 最小化時 WebView 會停止渲染，截圖會逾時，直到視窗恢復。頁面始終保持設定的原生解析度，僅對預覽做視覺縮放，因此錄製不再切換舞台配置。
 - **導覽跟隨只在主頁所在主機內生效**：跟隨頁不會跟著跳到其他網站，這是刻意設計。
 - **開啟新視窗或新分頁的連結會被封鎖**，因為彈出視窗已停用。
 - **Windows 測試最充分**：macOS 與 Linux 均受支援；Linux 可建置並通過 CI，macOS 暫未納入 CI。
+- **暫不支援每檢視弱網模擬**：Windows 需擴充 MyGo 的 WebView2 CDP 綁定，macOS/Linux 需原生請求控制，詳見 [TODO](docs/TODO.md)。
 
 ## 常見問題
 
@@ -145,10 +147,10 @@ Peapod 啟動後，會在 `127.0.0.1` 的隨機連接埠提供 Streamable-HTTP M
 Responsively、Polypane 這類工具是把*同一個* URL 以多種螢幕尺寸顯示。Peapod 面向同一條流程的*多個版本*（不同語言、網域或環境）同時執行：自動在它們之間對應導覽，並記錄每一步。
 
 **它會把任務資料傳到別處嗎？**
-不會。Peapod 沒有遙測，不會上傳任務 URL、頁面內容、Cookie、截圖或錄製檔案。頁面會聯絡你開啟的網站，MCP 伺服器也只允許本機存取。若使用選用的發行檢查器，Peapod 會向 GitHub 取得公開發行元資料，但不包含任務資料。
+不會。Peapod 沒有遙測，不會上傳任務 URL、頁面內容、Cookie、截圖或錄製檔案。頁面會聯絡你開啟的網站，MCP 伺服器也只允許本機存取。更新功能只向 GitHub 取得公開發行元資料；只有點擊「下載並安裝」後，才會下載不含任務資料的相符公開套件。
 
 **更新檢查如何運作？**
-Peapod 內建 GitHub 發行檢查器，預設手動檢查，自動檢查需主動開啟。它會顯示發行資訊並開啟 GitHub 下載，不會在應用程式內下載或安裝執行檔。
+Peapod 預設手動檢查，自動檢查需主動開啟。發現更新後點擊「下載並安裝」，會下載相符套件、校驗 SHA256，並在 Windows/Linux 上安裝重新啟動；macOS 暫開啟發行頁。
 
 ## 參與貢獻
 
@@ -160,7 +162,7 @@ go vet ./...
 go test ./...
 ```
 
-CI 會在 Windows 與 Linux 上執行相同的建置、vet 與測試步驟。
+CI 會在 Windows 與 Linux 上執行相同的建置、vet 與測試步驟。推送 `v*` tag 後，Release 工作流程還會建置 Windows 安裝套件與 Linux amd64/arm64 套件、產生 `SHA256SUMS` 並發布 GitHub Release。
 
 ## 致謝
 

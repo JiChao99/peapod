@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/egoist/mygo"
@@ -25,14 +24,6 @@ import (
 	"golang.org/x/image/font/sfnt"
 	"golang.org/x/image/math/fixed"
 )
-
-type captureLayoutRequest struct {
-	taskID string
-	page   *pageRecord
-	ready  chan struct{}
-	cancel context.CancelFunc
-	once   sync.Once
-}
 
 type captureResult struct {
 	png []byte
@@ -69,30 +60,10 @@ func (a *app) captureAtConfiguredSize(p *pageRecord, timeout time.Duration) ([]b
 		a.mu.Unlock()
 		return nil, fmt.Errorf("page is no longer running")
 	}
-	taskID := a.taskID
-	req := &captureLayoutRequest{taskID: taskID, page: p, ready: make(chan struct{}), cancel: cancel}
-	a.captureReq = req
 	view := p.view
 	resW, resH := p.resW, p.resH
 	a.mu.Unlock()
 
-	restore := func() {
-		a.mu.Lock()
-		if a.captureReq == req {
-			a.captureReq = nil
-		}
-		a.mu.Unlock()
-		cancel()
-		a.invalidate()
-	}
-	defer restore()
-	a.invalidate()
-
-	select {
-	case <-req.ready:
-	case <-ctx.Done():
-		return nil, captureContextError(ctx, timeout)
-	}
 	if err := waitForViewport(ctx, view, resW, resH); err != nil {
 		return nil, err
 	}

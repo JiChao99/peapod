@@ -27,6 +27,7 @@ type pageConfig struct {
 	name       string
 	url        string
 	vars       string // template-mode placeholder assignments
+	injectJS   string // per-view test script run at document start
 	resW, resH float64
 }
 
@@ -51,6 +52,9 @@ type pageRecord struct {
 	navFailed     bool           // current load attempt failed; gates Linux finish-after-fail; guarded by mu
 	capture       *captureFlight // outstanding CapturePage coalescing concurrent shots; guarded by mu
 	queue         *opQueue
+	injectEvents  []injectedEvent // bounded host events from injected JS; guarded by mu
+	injectTokens  float64
+	injectTokenAt time.Time
 
 	// navPendingAt is guarded by mu: when an operation that may navigate was
 	// enqueued, so navigation follow lets the replay navigate this page itself.
@@ -170,14 +174,13 @@ type app struct {
 	noticePathIsDir bool
 	// shotBusy marks an in-flight batch so the panel can spin and disable the
 	// trigger instead of letting a second batch stack on it.
-	shotBusy   bool
-	captureReq *captureLayoutRequest
-	pages      map[string]*pageRecord
-	order      []string
-	activeID   string
-	primaryID  string
-	cancel     chan struct{}
-	seq        int
+	shotBusy  bool
+	pages     map[string]*pageRecord
+	order     []string
+	activeID  string
+	primaryID string
+	cancel    chan struct{}
+	seq       int
 	// startAt marks when the countdown began, guarded by mu; the panel derives
 	// the visible 3→2→1 countdown and ring progress from it.
 	startAt time.Time
@@ -356,6 +359,7 @@ func (a *app) currentLang() string {
 type resolvedPage struct {
 	name, url  string
 	base       string
+	injectJS   string
 	resW, resH float64
 }
 
@@ -639,6 +643,9 @@ func (a *app) buildRequest() (startRequest, error) {
 	pages := make([]resolvedPage, 0, len(a.configs))
 	plainURLs := make([]string, 0, len(a.configs))
 	for i, cfg := range a.configs {
+		if len(cfg.injectJS) > maxInjectedJSBytes {
+			return startRequest{}, a.fieldError("inject:"+cfg.id, a.tr("err.injectTooLong", maxInjectedJSBytes))
+		}
 		var raw, base string
 		if tmpl == "" {
 			raw = strings.TrimSpace(cfg.url)
@@ -677,7 +684,7 @@ func (a *app) buildRequest() (startRequest, error) {
 			}
 		}
 		pages = append(pages, resolvedPage{
-			name: a.cfgName(cfg, i), url: raw, base: base,
+			name: a.cfgName(cfg, i), url: raw, base: base, injectJS: cfg.injectJS,
 			resW: clampRes(cfg.resW, a.resW), resH: clampRes(cfg.resH, a.resH),
 		})
 	}
@@ -1318,8 +1325,9 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 		if req.diagnostics {
 			preload += "\n" + diagPreload()
 		}
+		preload += "\n" + injectedPreload(id, rp.injectJS)
 		pageOpts.PreloadScript = preload
-		view, err := a.win.NewWebView(mygo.WebViewOptions{URL: rp.url, Page: pageOpts})
+		view, err := a.win.NewWebView(mygo.WebViewOptions{Page: pageOpts})
 		if err != nil {
 			a.mu.Lock()
 			a.message = trLang(lang, "err.createPage", rp.name, err)
@@ -1358,6 +1366,12 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 			a.primaryID = id
 		}
 		a.mu.Unlock()
+		if err := view.Page().LoadURL(rp.url); err != nil {
+			a.mu.Lock()
+			p.status = "error"
+			a.message = trLang(lang, "err.createPage", rp.name, err)
+			a.mu.Unlock()
+		}
 		go a.replayWorker(p)
 	}
 
@@ -1473,12 +1487,6 @@ func (a *app) cleanup(pages []*pageRecord, lang string) {
 			rp.cancel()
 		}
 		a.replay = nil
-	}
-	if req := a.captureReq; req != nil {
-		if req.cancel != nil {
-			req.cancel()
-		}
-		a.captureReq = nil
 	}
 	a.pages = map[string]*pageRecord{}
 	a.order = nil
