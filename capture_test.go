@@ -5,7 +5,10 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"runtime"
 	"testing"
+
+	"golang.org/x/image/font/sfnt"
 )
 
 func solidPNG(width, height int, c color.RGBA) []byte {
@@ -57,6 +60,79 @@ func TestRenderCanvasShot(t *testing.T) {
 	}
 }
 
+func TestRenderCanvasShotWithCJKNames(t *testing.T) {
+	items := []canvasShotItem{
+		{id: "p1", name: "日本語 QA", x: 0, y: 0, w: 200, h: 100, lang: "ja"},
+		{id: "p2", name: "繁體中文 QA", x: 220, y: 0, w: 200, h: 100, lang: "zh-Hant"},
+	}
+	shots := map[string][]byte{
+		"p1": solidPNG(400, 200, color.RGBA{255, 0, 0, 255}),
+		"p2": solidPNG(400, 200, color.RGBA{0, 255, 0, 255}),
+	}
+	if _, failed, err := renderCanvasShot(items, shots); err != nil || failed != 0 {
+		t.Fatalf("CJK canvas render: failed=%d err=%v", failed, err)
+	}
+}
+
+func TestCanvasLabelKindUsesPageScript(t *testing.T) {
+	tests := []struct {
+		name  string
+		items []canvasShotItem
+		want  string
+	}{
+		{name: "latin", items: []canvasShotItem{{name: "English QA", lang: "ja"}}, want: "latin"},
+		{name: "japanese", items: []canvasShotItem{{name: "にほんご QA", lang: "ja"}}, want: "ja"},
+		{name: "traditional", items: []canvasShotItem{{name: "繁體中文 QA", lang: "zh-Hant"}}, want: "zh-Hant"},
+		{name: "traditional on japanese ui", items: []canvasShotItem{{name: "繁體中文 QA", lang: "ja"}}, want: "cjk"},
+		{name: "simplified", items: []canvasShotItem{{name: "简体中文 QA", lang: "ja"}}, want: "cjk"},
+		{name: "mixed", items: []canvasShotItem{{name: "にほんご", lang: "ja"}, {name: "繁體中文", lang: "zh-Hant"}}, want: "ja"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := canvasLabelKind(tt.items); got != tt.want {
+				t.Fatalf("canvas label kind = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCanvasLabelFontsCoverRepresentativeScripts(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("checks the bundled Windows CJK fonts")
+	}
+	items := []canvasShotItem{
+		{name: "日本語 QA", lang: "ja"},
+		{name: "繁體中文 QA", lang: "zh-Hant"},
+		{name: "简体中文 QA", lang: "zh"},
+		{name: "English QA", lang: "en"},
+	}
+	fonts := canvasLabelFonts(items, 1)
+	if len(fonts) == 0 {
+		t.Skip("Windows CJK fonts are unavailable")
+	}
+	defer func() {
+		for _, candidate := range fonts {
+			candidate.face.Close()
+		}
+	}()
+	var buffer sfnt.Buffer
+	for _, item := range items {
+		for _, r := range item.name {
+			covered := false
+			for _, candidate := range fonts {
+				glyph, err := candidate.font.GlyphIndex(&buffer, r)
+				if err == nil && glyph != 0 {
+					covered = true
+					break
+				}
+			}
+			if !covered {
+				t.Fatalf("no canvas font covers %q in %q", r, item.name)
+			}
+		}
+	}
+}
+
 func TestCanvasWidthClamp(t *testing.T) {
 	a := newApp()
 	a.resizeCanvasPage("p1", -1000)
@@ -66,6 +142,47 @@ func TestCanvasWidthClamp(t *testing.T) {
 	a.resizeCanvasPage("p1", 1000)
 	if got := a.canvasWidthForID("p1"); got != canvasMaxWidth {
 		t.Fatalf("maximum width = %v", got)
+	}
+}
+
+func TestCanvasResizePreservesAspectRatioAndOtherPages(t *testing.T) {
+	a := newApp()
+	p := &pageRecord{id: "p1", resW: 1920, resH: 1080}
+	for _, width := range []float32{canvasMinWidth, 320, canvasMaxWidth} {
+		h := canvasPageHeight(p, width)
+		if h != width*9/16 {
+			t.Fatalf("height at width %v = %v, want %v", width, h, width*9/16)
+		}
+	}
+	a.canvasWidths["p2"] = 500
+	a.resizeCanvasPage("p1", 80)
+	if got := a.canvasWidthForID("p2"); got != 500 {
+		t.Fatalf("resizing p1 changed p2 width to %v", got)
+	}
+}
+
+func TestCanvasResizeDeltaUsesDominantAxis(t *testing.T) {
+	if got := canvasResizeDelta(60, 10, 1920, 1080); got != 60 {
+		t.Fatalf("horizontal delta = %v, want 60", got)
+	}
+	if got := canvasResizeDelta(10, 60, 1920, 1080); got != 60*1920.0/1080.0 {
+		t.Fatalf("vertical delta = %v, want %v", got, 60*1920.0/1080.0)
+	}
+	if got := canvasResizeDelta(-40, -5, 390, 844); got != -40 {
+		t.Fatalf("shrink delta = %v, want -40", got)
+	}
+	if got := canvasResizeDelta(60, 60, 390, 844); got != 60 {
+		t.Fatalf("normalized portrait delta = %v, want 60", got)
+	}
+	if got := canvasResizeDelta(60, 60, 1920, 1080); got != 60*1920.0/1080.0 {
+		t.Fatalf("normalized landscape delta = %v, want %v", got, 60*1920.0/1080.0)
+	}
+}
+
+func TestRecMetaLineNamesFreeCanvas(t *testing.T) {
+	got := recMetaLine(recSessionMeta{viewMode: "free", pages: []string{"Primary", "Follower"}, torn: true}, "en")
+	if got != "2 pages · Free canvas" {
+		t.Fatalf("free-canvas recording meta = %q", got)
 	}
 }
 

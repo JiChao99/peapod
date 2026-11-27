@@ -469,8 +469,11 @@ func recMetaLine(m recSessionMeta, lang string) string {
 	parts := []string{trLang(lang, "rec.pages", len(m.pages))}
 	if m.viewMode != "" {
 		mode := "ui.viewMode.desktop"
-		if m.viewMode == "mobile" {
+		switch m.viewMode {
+		case "mobile":
 			mode = "ui.viewMode.mobile"
+		case "free":
+			mode = "ui.viewMode.free"
 		}
 		parts = append(parts, trLang(lang, mode))
 	}

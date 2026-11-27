@@ -19,6 +19,10 @@ var iconSmallPNG []byte
 
 func main() {
 	a := newApp()
+	if err := a.loadSettings(); err != nil {
+		log.Printf("load settings: %v", err)
+		a.settingsErr = a.tr("err.settingsRead") + ": " + err.Error()
+	}
 	// The panel is native UI; only guest pages call Go, through Sync.
 	mygo.BindAs("Sync", &SyncService{a})
 
@@ -41,6 +45,7 @@ func main() {
 			log.Printf("start mcp: %v", err)
 		}
 		a.win.Invalidate()
+		a.autoCheckForUpdates()
 	})
 
 	if err := mygo.App.Run(); err != nil {

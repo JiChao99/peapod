@@ -12,6 +12,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -20,6 +21,8 @@ import (
 	drawx "golang.org/x/image/draw"
 	"golang.org/x/image/font"
 	"golang.org/x/image/font/basicfont"
+	"golang.org/x/image/font/opentype"
+	"golang.org/x/image/font/sfnt"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -182,6 +185,7 @@ type canvasShotItem struct {
 	id, name string
 	x, y     float64
 	w, h     float64
+	lang     string
 }
 
 func (a *app) screenshotCanvas() {
@@ -204,7 +208,7 @@ func (a *app) screenshotCanvas() {
 		}
 		pos := a.canvasPos[id]
 		w := a.canvasWidthForID(id)
-		items = append(items, canvasShotItem{id: id, name: p.name, x: pos[0], y: pos[1], w: float64(w), h: float64(w) * p.resH / p.resW})
+		items = append(items, canvasShotItem{id: id, name: p.name, x: pos[0], y: pos[1], w: float64(w), h: float64(w) * p.resH / p.resW, lang: a.currentLang()})
 	}
 	base := strings.TrimSpace(a.shotName)
 	if base == "" {
@@ -286,6 +290,12 @@ func renderCanvasShot(items []canvasShotItem, shots map[string][]byte) ([]byte, 
 	width, height := int(math.Ceil(contentW*scale)), int(math.Ceil(contentH*scale))
 	canvas := image.NewRGBA(image.Rect(0, 0, width, height))
 	draw.Draw(canvas, canvas.Bounds(), image.NewUniform(color.RGBA{240, 243, 237, 255}), image.Point{}, draw.Src)
+	labelFonts := canvasLabelFonts(items, scale)
+	defer func() {
+		for _, labelFont := range labelFonts {
+			labelFont.face.Close()
+		}
+	}()
 	failed := 0
 	for _, item := range items {
 		x, y := int(item.x*scale), int(item.y*scale)
@@ -294,7 +304,7 @@ func renderCanvasShot(items []canvasShotItem, shots map[string][]byte) ([]byte, 
 		draw.Draw(canvas, image.Rect(x, y, x+w, y+headerH), image.NewUniform(color.RGBA{255, 255, 255, 255}), image.Point{}, draw.Src)
 		label := &font.Drawer{Dst: canvas, Src: image.NewUniform(color.RGBA{35, 49, 40, 255}), Face: basicfont.Face7x13}
 		label.Dot = fixed.P(x+int(8*scale), y+max(headerH-6, 12))
-		label.DrawString(item.name)
+		drawCanvasLabel(label, labelFonts, item.name)
 		src, _, err := image.Decode(bytes.NewReader(shots[item.id]))
 		if err != nil {
 			failed++
@@ -308,4 +318,129 @@ func renderCanvasShot(items []canvasShotItem, shots map[string][]byte) ([]byte, 
 		return nil, failed, fmt.Errorf("encode canvas: %w", err)
 	}
 	return out.Bytes(), failed, nil
+}
+
+type canvasLabelFont struct {
+	face font.Face
+	font *sfnt.Font
+}
+
+func drawCanvasLabel(drawer *font.Drawer, fonts []canvasLabelFont, text string) {
+	if len(fonts) == 0 {
+		drawer.DrawString(text)
+		return
+	}
+	var buffer sfnt.Buffer
+	for _, r := range text {
+		selected := -1
+		for i, candidate := range fonts {
+			glyph, err := candidate.font.GlyphIndex(&buffer, r)
+			if err == nil && glyph != 0 {
+				selected = i
+				break
+			}
+		}
+		if selected >= 0 {
+			drawer.Face = fonts[selected].face
+		}
+		drawer.DrawString(string(r))
+	}
+}
+
+func canvasLabelKind(items []canvasShotItem) string {
+	kind := "latin"
+	traditional := false
+	for _, item := range items {
+		for _, r := range item.name {
+			switch {
+			case isCanvasKana(r):
+				return "ja"
+			case isCanvasHan(r):
+				if kind == "latin" {
+					kind = "cjk"
+				}
+				traditional = traditional || normalizeLang(item.lang) == "zh-Hant"
+			case r > 127 && kind == "latin":
+				kind = "cjk"
+			}
+		}
+	}
+	if traditional && kind == "cjk" {
+		return "zh-Hant"
+	}
+	return kind
+}
+
+func isCanvasKana(r rune) bool {
+	return r >= 0x3040 && r <= 0x30ff || r >= 0x31f0 && r <= 0x31ff || r >= 0xff66 && r <= 0xff9d
+}
+
+func isCanvasHan(r rune) bool {
+	return r >= 0x3400 && r <= 0x4dbf || r >= 0x4e00 && r <= 0x9fff || r >= 0xf900 && r <= 0xfaff ||
+		r >= 0x20000 && r <= 0x2fa1f || r >= 0x30000 && r <= 0x323af
+}
+
+func canvasLabelFontPaths(kind string) []string {
+	var paths []string
+	switch runtime.GOOS {
+	case "windows":
+		dir := os.Getenv("WINDIR")
+		if dir == "" {
+			dir = `C:\Windows`
+		}
+		fonts := filepath.Join(dir, "Fonts")
+		switch kind {
+		case "ja":
+			paths = []string{"meiryo.ttc", "yugothic.ttc", "msjh.ttc", "msyh.ttc", "segoeui.ttf"}
+		case "zh-Hant":
+			paths = []string{"msjh.ttc", "mingliu.ttc", "meiryo.ttc", "msyh.ttc", "segoeui.ttf"}
+		case "cjk":
+			paths = []string{"msyh.ttc", "simsun.ttc", "msjh.ttc", "meiryo.ttc", "segoeui.ttf"}
+		default:
+			paths = []string{"segoeui.ttf"}
+		}
+		for i := range paths {
+			paths[i] = filepath.Join(fonts, paths[i])
+		}
+	case "darwin":
+		if kind != "latin" {
+			paths = []string{"/System/Library/Fonts/PingFang.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc"}
+		}
+		paths = append(paths, "/System/Library/Fonts/Supplemental/Arial.ttf")
+	default:
+		if kind != "latin" {
+			paths = []string{
+				"/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+				"/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf",
+				"/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+			}
+		}
+		paths = append(paths, "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+	}
+	return paths
+}
+
+func canvasLabelFonts(items []canvasShotItem, scale float64) []canvasLabelFont {
+	var fonts []canvasLabelFont
+	for _, path := range canvasLabelFontPaths(canvasLabelKind(items)) {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue
+		}
+		collection, err := opentype.ParseCollection(data)
+		if err != nil {
+			continue
+		}
+		for i := 0; i < collection.NumFonts(); i++ {
+			parsed, err := collection.Font(i)
+			if err != nil {
+				continue
+			}
+			face, err := opentype.NewFace(parsed, &opentype.FaceOptions{Size: max(8, 12*scale), DPI: 72, Hinting: font.HintingFull})
+			if err == nil {
+				fonts = append(fonts, canvasLabelFont{face: face, font: parsed})
+			}
+		}
+	}
+	return fonts
 }
