@@ -736,7 +736,10 @@ func TestWindowsHelperStatusRequiresCompletion(t *testing.T) {
 }
 
 func TestValidateWindowsHelperConfigAllowsCallingParentPID(t *testing.T) {
-	parent := t.TempDir()
+	parent, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	installDir := filepath.Join(parent, "Peapod App")
 	workDir := filepath.Join(parent, "update")
 	backupRoot := filepath.Join(parent, ".peapod.backup")
@@ -744,10 +747,6 @@ func TestValidateWindowsHelperConfigAllowsCallingParentPID(t *testing.T) {
 		if err := os.Mkdir(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
-	}
-	installDir, err := filepath.EvalSymlinks(installDir)
-	if err != nil {
-		t.Fatal(err)
 	}
 	helperPath := filepath.Join(workDir, "helper.exe")
 	installer := filepath.Join(workDir, "setup.exe")
