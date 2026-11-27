@@ -745,6 +745,10 @@ func TestValidateWindowsHelperConfigAllowsCallingParentPID(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	installDir, err := filepath.EvalSymlinks(installDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	helperPath := filepath.Join(workDir, "helper.exe")
 	installer := filepath.Join(workDir, "setup.exe")
 	for _, file := range []string{helperPath, installer} {
