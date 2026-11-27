@@ -2,7 +2,7 @@
 @font-face{font-family:'IBM Plex Mono';font-style:normal;font-display:swap;font-weight:400;src:url(fonts/ibm-plex-mono-400.woff2) format('woff2');}
 @font-face{font-family:'IBM Plex Mono';font-style:normal;font-display:swap;font-weight:500;src:url(fonts/ibm-plex-mono-500.woff2) format('woff2');}
 :root {
-  font-family: 'Manrope Variable', 'Segoe UI', sans-serif;
+  font-family: 'Manrope Variable', 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans CJK TC', 'Noto Sans CJK JP', sans-serif;
   color: #17241b;
   background: #f5f7f1;
   font-synthesis: none;
@@ -53,7 +53,7 @@ img { display: block; max-width: 100%; }
 .desktop-nav a:hover::after { transform: scaleX(1); transform-origin: left; }
 .nav-actions { display: flex; align-items: center; gap: 14px; }
 .language-switch { display: flex; padding: 3px; border: 1px solid var(--line); border-radius: 100px; background: rgba(255, 255, 255, .5); }
-.language-switch button { border: 0; padding: 5px 9px; border-radius: 100px; background: transparent; color: var(--muted); font-size: 11px; font-weight: 750; }
+.language-switch button { min-width: 28px; min-height: 28px; border: 0; padding: 5px 7px; border-radius: 100px; background: transparent; color: var(--muted); font-size: 11px; font-weight: 750; }
 .language-switch button[aria-pressed="true"] { color: white; background: var(--ink); }
 .github-link { display: inline-flex; align-items: center; gap: 8px; padding: 10px 15px; border: 1px solid #cfd6ca; border-radius: 8px; background: rgba(255, 255, 255, .6); font-size: 13px; font-weight: 700; transition: transform .2s ease, border-color .2s ease, background .2s ease; }
 .github-link:hover { transform: translateY(-2px); border-color: var(--ink); background: white; }
@@ -203,6 +203,14 @@ img { display: block; max-width: 100%; }
 .evidence-tags span { padding: 6px 8px; color: #647363; border: 1px solid #dbe3d5; border-radius: 4px; background: white; font-family: var(--mono); font-size: 7px; }
 .device-row { display: flex; align-items: center; gap: 12px; margin-top: auto; padding-top: 24px; color: #5f725f; font-family: var(--mono); font-size: 9px; }
 .device-row .icon:last-child { margin-left: auto; }
+.canvas-layout { position: relative; height: 58px; margin-top: auto; padding-top: 18px; overflow: hidden; border: 1px solid #dce4d7; border-radius: 6px; background: #eef3e9; }
+.canvas-layout i { position: absolute; display: block; border: 1px solid #a9c49f; border-radius: 3px; background: #fff; }
+.canvas-layout i:nth-child(1) { left: 9px; top: 9px; width: 38%; height: 29px; }
+.canvas-layout i:nth-child(2) { left: 49%; top: 9px; width: 42%; height: 20px; }
+.canvas-layout i:nth-child(3) { left: 49%; top: 33px; width: 31%; height: 17px; }
+.canvas-layout span { position: absolute; right: 7px; bottom: 4px; color: #4c7c4b; font-family: var(--mono); font-size: 7px; }
+.profile-chip { display: flex; align-items: center; gap: 8px; margin-top: auto; padding: 11px 12px; color: #466b45; border: 1px solid #d5e2cd; border-radius: 6px; background: #eef6e8; font-size: 10px; font-weight: 650; }
+.profile-chip .icon:last-child { margin-left: auto; }
 .code-line { margin-top: auto; padding-top: 24px; color: #6f7c70; font-family: var(--mono); font-size: 8px; }
 .code-line > span { color: #2f8444; }
 .code-line i { display: inline-block; width: 5px; height: 10px; margin-left: 4px; vertical-align: -2px; background: #79a96c; animation: blink 1s steps(2) infinite; }
@@ -251,12 +259,13 @@ img { display: block; max-width: 100%; }
 .step { display: grid; grid-template-columns: 40px 1fr 44px; gap: 18px; align-items: start; padding: 31px 0; border-bottom: 1px solid #d8dfd3; }
 .step-number { padding-top: 3px; color: #7e927a; font-family: var(--mono); font-size: 10px; }
 .step h3 { margin: 0 0 10px; font-size: 19px; font-weight: 650; letter-spacing: -.5px; }
-.step p { margin: 0; color: #738073; font-size: 12px; line-height: 1.85; }
+.step p { margin: 0; color: #5f6d5f; font-size: 12px; line-height: 1.85; }
 .step-icon { width: 38px; height: 38px; padding: 9px; color: #4c7c4c; border: 1px solid #d4e0cc; border-radius: 8px; background: #edf3e7; }
 
 .install-section { padding-top: 20px; background: #f5f7f1; }
 .install-panel { display: grid; grid-template-columns: .9fr 1.1fr; align-items: center; gap: 70px; padding: 58px; border: 1px solid #dbe5d2; border-radius: 18px; background: #eaf2e1; }
-.install-copy p { max-width: 410px; margin: 24px 0; color: #697963; font-size: 13px; line-height: 1.9; }
+.install-copy p { max-width: 410px; margin: 24px 0; color: #55664f; font-size: 13px; line-height: 1.9; }
+.install-release-link { margin-bottom: 22px; }
 .install-requirements { display: flex; flex-wrap: wrap; gap: 12px 18px; color: #54734f; font-size: 9px; }
 .install-requirements > span { display: flex; align-items: center; gap: 5px; }
 .terminal-card { overflow: hidden; border: 1px solid #2e4434; border-radius: 10px; background: #17281d; box-shadow: 0 18px 35px rgba(23, 40, 29, .16); }
@@ -266,11 +275,20 @@ img { display: block; max-width: 100%; }
 .copy-button:hover, .copy-button.is-copied { color: #b8ed72; border-color: #6c895c; }
 .terminal-card pre { margin: 0; padding: 24px 22px; overflow-x: auto; color: #dce7d6; font-family: var(--mono); font-size: 10px; line-height: 2; }
 .terminal-card code { font-family: inherit; }
-.code-comment { color: #70856d; }
+.code-comment { color: #9aac96; }
 .code-prompt { color: #b8ed72; }
 .terminal-success { display: flex; align-items: center; gap: 8px; padding: 12px 17px; color: #a3c194; border-top: 1px solid #324536; background: #1c2e21; font-size: 8px; }
 .terminal-success .status-dot { width: 5px; height: 5px; box-shadow: none; background: #8ac866; }
 .terminal-success .icon { margin-left: auto; color: #b8ed72; }
+
+.release-panel { display: grid; grid-template-columns: .9fr 1fr 1.25fr; gap: 34px; align-items: start; margin-top: 24px; padding: 34px 38px; border: 1px solid #d7e2cf; border-radius: 14px; background: rgba(255, 255, 255, .55); }
+.release-label { color: #397448; font-size: 10px; font-weight: 750; letter-spacing: 1.4px; text-transform: uppercase; }
+.release-intro h3 { margin: 12px 0 0; font-size: 23px; font-weight: 650; line-height: 1.25; letter-spacing: -.8px; }
+.release-item { display: flex; gap: 13px; }
+.release-item > .icon { width: 22px; height: 22px; margin-top: 1px; padding: 4px; color: #327b42; border-radius: 5px; background: #e5f1dd; }
+.release-item strong { display: block; font-size: 13px; font-weight: 700; }
+.release-item p { margin: 8px 0 0; color: #64745e; font-size: 11px; line-height: 1.8; }
+.release-item .release-note { color: #5b6b54; font-size: 10px; }
 
 .faq-section { background: #fff; }
 .faq-grid { display: grid; grid-template-columns: .7fr 1.3fr; gap: 100px; }
@@ -312,6 +330,7 @@ img { display: block; max-width: 100%; }
 .footer-bottom > a { display: flex; align-items: center; gap: 5px; margin-left: auto; color: #607259; }
 
 .reveal { opacity: 0; transform: translateY(22px); transition: opacity .7s ease, transform .7s ease; }
+.no-js .reveal { opacity: 1; transform: none; }
 .reveal-delay { transition-delay: .12s; }
 .reveal.is-visible { opacity: 1; transform: translateY(0); }
 
@@ -334,6 +353,7 @@ img { display: block; max-width: 100%; }
   .feature-card { padding: 23px; }
   .how-grid, .faq-grid { gap: 60px; }
   .install-panel { gap: 40px; padding: 44px; }
+  .release-panel { gap: 24px; padding: 30px; }
 }
 
 @media (max-width: 860px) {
@@ -375,6 +395,7 @@ img { display: block; max-width: 100%; }
   .how-copy p { max-width: 550px; }
   .install-panel { grid-template-columns: 1fr; gap: 35px; padding: 36px; }
   .install-copy p { max-width: 600px; }
+  .release-panel { grid-template-columns: 1fr; gap: 26px; padding: 32px; }
   .faq-grid { grid-template-columns: 1fr; gap: 35px; }
   .footer-top { flex-wrap: wrap; }
   .footer-top p { order: 3; width: 100%; }
@@ -385,7 +406,9 @@ img { display: block; max-width: 100%; }
   .section { padding: 72px 0; }
   .brand { font-size: 22px; }
   .brand img { width: 34px; height: 34px; }
+  .nav-wrap { gap: 12px; }
   .nav-actions { gap: 9px; }
+  .language-switch button { min-width: 24px; min-height: 44px; padding: 5px 6px; font-size: 10px; }
   .hero { padding-top: 112px; }
   .hero h1 { margin-top: 20px; font-size: 45px; letter-spacing: -2.8px; }
   .hero-description { font-size: 14px; line-height: 1.8; }
@@ -439,6 +462,8 @@ img { display: block; max-width: 100%; }
   .step h3 { font-size: 17px; }
   .install-section { padding-top: 0; }
   .install-panel { width: 100%; padding: 30px 20px; border-right: 0; border-left: 0; border-radius: 0; }
+  .release-panel { padding: 28px 20px; border-right: 0; border-left: 0; border-radius: 0; }
+  .release-intro h3 { font-size: 21px; }
   .terminal-card pre { padding: 20px 15px; font-size: 8px; }
   .terminal-success { font-size: 7px; }
   .faq-list summary { padding: 21px 0; font-size: 12px; }
