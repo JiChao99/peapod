@@ -97,6 +97,9 @@ func (a *app) view(c *ui.Context) {
 				a.stageStopped = true
 			}
 		}
+		if st.Status == "idle" {
+			a.applyPendingTaskDefaults()
+		}
 		a.lastStatus = st.Status
 	}
 	a.applySyncToggles()
@@ -113,6 +116,7 @@ func (a *app) view(c *ui.Context) {
 			ui.Text(c, "Peapod").FontSize(13).Bold().TextColor(tk.TextHeading)
 			ui.Row(c).Grow(1)
 			a.mcpIndicator(c, tk)
+			a.iconButton(c, tk, lucide.Settings2(), a.tr("ui.settings"), func() { a.openSettings() })
 			field.Select(c, &a.themeMode, field.SelectProps{
 				Options: []field.SelectOption{
 					{Value: "system", Label: a.tr("ui.theme.system"), Icon: lucide.SunMoon()},
@@ -130,12 +134,9 @@ func (a *app) view(c *ui.Context) {
 				Variant: field.InputOutlined,
 			}).Width(100).Tooltip(a.tr("ui.scale"))
 			field.Select(c, &a.lang, field.SelectProps{
-				Options: []field.SelectOption{
-					{Value: "zh", Label: "中文"},
-					{Value: "en", Label: "EN"},
-				},
+				Options: languageSelectOptions(),
 				Variant: field.InputOutlined,
-			}).Width(90)
+			}).Width(140)
 		})
 		ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 			a.renderPanel(c, tk, st)
@@ -146,6 +147,7 @@ func (a *app) view(c *ui.Context) {
 	a.renderReplayConfirm(c, tk)
 	a.renderProfileOverwrite(c, tk)
 	a.renderProfileDelete(c, tk)
+	a.renderSettings(c, tk)
 	a.renderRecLightbox(c, tk)
 
 	// The recordings overlay's Esc lives on its panel subtree; when focus sits
@@ -161,6 +163,7 @@ func (a *app) view(c *ui.Context) {
 	// Publish the language the Select may have just changed so off-thread
 	// readers (MCP, cleanup, screenshots) see it without racing the binding.
 	a.langVal.Store(a.lang)
+	a.persistAppearanceChanges()
 }
 
 // syncCaptionTheme draws the native minimize, maximize and close buttons for
@@ -1068,6 +1071,15 @@ func canvasPageHeight(p *pageRecord, w float32) float32 {
 	return w * float32(p.resH) / float32(p.resW)
 }
 
+func canvasResizeDelta(dx, dy float32, resW, resH float64) float64 {
+	delta := float64(dx)
+	vertical := float64(dy) * resW / resH
+	if math.Abs(vertical) > math.Abs(delta) {
+		delta = vertical
+	}
+	return delta
+}
+
 func (a *app) resizeCanvasPage(id string, delta float64) {
 	a.mu.Lock()
 	w := a.canvasWidths[id]
@@ -1450,7 +1462,8 @@ func (a *app) renderFreeStage(c *ui.Context, tk *theme.Tokens, pages []*pageReco
 						header.Children(func() {
 							ui.Icon(c, lucide.GripVertical()).FontSize(13).TextColor(tk.TextTertiary)
 							ui.Text(c, p.name).FontSize(12).Bold().TextColor(tk.TextHeading).Grow(1).MinWidth(0).SingleLine()
-							ui.Text(c, fmt.Sprintf("%.0f×%.0f", p.resW, p.resH)).FontSize(10).TextColor(tk.TextTertiary).SingleLine()
+							ui.Text(c, fmt.Sprintf("%.0f px", item.w)).FontSize(10).TextColor(tk.TextTertiary).SingleLine().
+								Tooltip(fmt.Sprintf("%.0f×%.0f", p.resW, p.resH))
 						})
 						border := tk.BorderSecondary
 						if p.id == st.ActiveID {
@@ -1467,6 +1480,22 @@ func (a *app) renderFreeStage(c *ui.Context, tk *theme.Tokens, pages []*pageReco
 								a.pausedMask(c, tk, ps, item.w < 200)
 							}
 						})
+						handle := ui.Box(c).Label(a.tr("ui.canvas.resizeHint")).Tooltip(a.tr("ui.canvas.resizeHint")).
+							Size(28, 28).Absolute().Right(3).Bottom(3).Center().Radius(6).
+							Cursor(ui.CursorResizeNWSE).Background(tk.BgElevated.Alpha(0.94)).Border(1, border)
+						hx, hy, resizing := handle.Dragged()
+						if resizing {
+							delta := canvasResizeDelta(hx, hy, p.resW, p.resH)
+							a.resizeCanvasPage(p.id, delta)
+							item.w = a.canvasWidthForID(p.id)
+							item.h = canvasPageHeight(p, item.w)
+							contentW = max(contentW, item.x+item.w+stagePadding)
+							contentH = max(contentH, item.y+item.h+canvasLabelH+stagePadding)
+						}
+						if handle.Hovered() {
+							handle.BorderColor(tk.Primary).TextColor(tk.Primary)
+						}
+						handle.Children(func() { ui.Icon(c, lucide.Scaling()).FontSize(14) })
 					})
 				}
 			})
@@ -1516,7 +1545,7 @@ func (a *app) renderMobileStage(c *ui.Context, tk *theme.Tokens, pages []*pageRe
 // mobileSlot renders one page in a fixed-width mobile grid cell.
 func (a *app) mobileSlot(c *ui.Context, tk *theme.Tokens, p *pageRecord, slotW, slotH float32, zoom float64, st appState) {
 	ui.Column(c).Width(slotW).Gap(4).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, p.name).FontSize(12).TextColor(tk.TextSecondary).SingleLine()
+		ui.Text(c, p.name).FontSize(12).Bold().TextColor(tk.TextHeading).SingleLine()
 		tw, th := float32(p.resW), float32(p.resH)
 		if tw < 1 {
 			tw = 390

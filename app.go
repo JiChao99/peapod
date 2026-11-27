@@ -264,11 +264,20 @@ type app struct {
 	themeMode string // system | light | dark
 	// captionTheme is the theme last given to the native caption buttons, so
 	// syncCaptionTheme only repaints them when the panel theme changes.
-	captionTheme string
-	scalePct     string // UI zoom percent: 100 | 125 | 150
-	shotName     string // base name for batch screenshots
-	bulkOpen     bool   // URL-list bulk add area expanded; UI-owned like shotName
-	bulkText     string // pasted URL list, one per line; UI-owned like shotName
+	captionTheme            string
+	scalePct                string // UI zoom percent: 100 | 125 | 150
+	defaults                userSettings
+	settingsOpen            bool
+	settingsDraft           userSettings
+	settingsErr             string
+	appearanceDirty         bool
+	appearanceRetryAt       time.Time
+	pendingTaskDefaults     bool
+	pendingTaskDefaultsMode bool
+	update                  updateState
+	shotName                string // base name for batch screenshots
+	bulkOpen                bool   // URL-list bulk add area expanded; UI-owned like shotName
+	bulkText                string // pasted URL list, one per line; UI-owned like shotName
 	// pendingAdd/pendingDup/pendingRemove defer row mutations clicked during
 	// the setup range loop until after it, so the loop never reads a shifted
 	// slice.
@@ -313,6 +322,7 @@ func newApp() *app {
 		uaPreset:     uaDefault,
 		themeMode:    "system",
 		scalePct:     "100",
+		defaults:     defaultUserSettings(),
 		syncDelay:    "100",
 		lang:         "zh",
 		syncUI:       map[string]*bool{},

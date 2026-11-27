@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <b>Operate once. Every page follows.</b><br>
+  <b>Repeat less. Know more.</b><br>
   A desktop app that runs one flow across many versions of a site — side by side, in sync, with evidence.
 </p>
 
@@ -16,14 +16,18 @@
 </p>
 
 <p align="center">
-  English · <a href="README.zh-CN.md">简体中文</a>
+  <a href="README.md"><b>English</b></a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.zh-TW.md">繁體中文</a> · <a href="README.ja.md">日本語</a>
+</p>
+
+<p align="center">
+  <b>Landing page:</b> <a href="https://jichao99.github.io/peapod/">https://jichao99.github.io/peapod/</a>
 </p>
 
 <p align="center">
   <img src="docs/images/mcp-ready-panel.png" alt="Peapod running four locale variants of one site side by side in mobile mode, with per-page sync toggles and a live recording badge">
 </p>
 
-Peapod opens 2–10 pages in one window. You click, type, scroll and submit on the **primary** page; every other page replays the same operations live, in order. Point the pages at different languages, domains or environments and you can walk through one flow on all of them at once, then keep screenshots and a replayable script of what happened.
+Peapod v0.10.0 opens 2–10 pages in one window. You click, type, scroll and submit on the **primary** page; every other page replays the same operations live, in order. Point the pages at different languages, domains or environments and you can walk through one flow on all of them at once, then keep screenshots and a replayable script of what happened.
 
 It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with its interface made from [Lobe MyGo](https://github.com/lobehub/lobe-mygo) components (the Lobe UI design language for native Go). It ships as a single binary that uses the system webview, with no bundled browser.
 
@@ -38,8 +42,8 @@ It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with it
 
 ## Quick start
 
-1. **Add pages.** The UI starts in Chinese; switch to English from the language menu in the top bar. Enter the primary URL and add up to 10 pages. A page left empty inherits the primary URL. Paste a URL list under **Bulk add** to generate several pages at once, or duplicate any row and tweak the difference. To work with variants, set a template such as `https://{host}/{lang}` or `https://{host}/?yplang={lang}` and give each page its own values (`host=staging.example.com, lang=de`).
-2. **Choose the setup.** Pick desktop mode (one large page at a time), mobile mode (all pages side by side), or free canvas (draggable pages with independent, proportional resizing), set each page's resolution, pick one User-Agent preset for the whole task (by default it follows the mode, so mobile mode uses iPhone), choose shared or isolated storage, and optionally turn on **Record operations** or **Primary page only**.
+1. **Add pages.** Enter the primary URL and add up to 10 pages. A page left empty inherits the primary URL. Paste a URL list under **Bulk add** to generate several pages at once, or duplicate any row and tweak the difference. To work with variants, set a template such as `https://{host}/{lang}` or `https://{host}/?yplang={lang}` and give each page its own values (`host=staging.example.com, lang=de`).
+2. **Choose the setup.** Pick desktop mode (one large page at a time), mobile mode (all pages side by side), or free canvas (draggable pages with independent, proportional resizing), set each page's resolution, pick one User-Agent preset for the whole task (by default it follows the mode, so mobile mode uses iPhone), choose shared or isolated storage, and optionally turn on **Record operations** or **Primary page only**. Save the setup as a named profile to reload it later.
 3. **Start and operate.** Use the primary page as you normally would. The other pages follow. Click a page card to bring that page to the front. Edit a running page's URL and press **Open** to move that same page without losing its session or cookies; this is useful after a login redirects away from the page you need.
 4. **Collect evidence.** Take a batch screenshot of every page, or capture the whole free canvas as one PNG. Open **Recordings** to browse the step timeline, replay a session, or export an HTML report. Replay runs the steps on every page, including the primary, but doesn't include navigations, so start the task at the flow's entry URL first.
 5. **Stop.** Every page is torn down and its session data is wiped.
@@ -73,11 +77,16 @@ It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with it
 - **Acceptance diagnostics.** Failed navigations report stable error names (`NAME_NOT_RESOLVED`, `TIMEOUT`, …). An opt-in, MCP-only collector also reports the main document's HTTP status, the page text and console, network and error activity, so an agent can check actual outcomes rather than judge from screenshots.
 
 ### Everyday
-- English and 简体中文 UI, light, dark or system theme, and UI scaling.
+- English, 简体中文, 繁體中文, and 日本語 UI, light, dark or system theme, and UI scaling.
+- Persistent settings and a built-in GitHub release update checker are included; see [Install](#install).
 
 ## Install
 
-Prebuilt packages are available on [GitHub Releases](https://github.com/JiChao99/peapod/releases). You can also build from source; it needs Go 1.27.4 or newer, plus the system webview for your platform:
+Prebuilt packages are available on [GitHub Releases](https://github.com/JiChao99/peapod/releases). You can also build from source; it needs Go 1.27.4 or newer, plus the system webview for your platform.
+
+### Updates and persistent settings
+
+Peapod includes persistent settings and a built-in checker for [GitHub Releases](https://github.com/JiChao99/peapod/releases). Update checks are **manual by default**; you can opt in to automatic checks. The checker shows release details and opens GitHub for downloads. It does **not** download or install app binaries inside Peapod.
 
 | Platform | Webview | Notes |
 | --- | --- | --- |
@@ -114,6 +123,7 @@ Client configuration, the full tool reference, the recording format and an examp
 - Sessions are ephemeral, and their data is wiped when the task stops.
 - Popups and permission prompts (camera, microphone, notifications, …) are blocked. Each page's IPC is locked to its own origin.
 - Screenshots and recordings stay on your machine, in `Pictures/Peapod/screenshots` and `Pictures/Peapod/recordings`. Recorded scripts do contain other typed text, so treat them as sensitive.
+- Peapod has no telemetry and does not upload task URLs, page content, cookies, screenshots, or recordings. The optional GitHub release checker retrieves public release metadata only; it includes no task data and is manual by default.
 - The MCP server listens on loopback only, requires the token on every request and rejects cross-origin browser calls. Page content is untrusted data, and agents must not follow instructions found in it.
 
 ## Known limitations
@@ -129,8 +139,11 @@ Client configuration, the full tool reference, the recording format and an examp
 **How is this different from a responsive previewer?**
 Tools like Responsively or Polypane show *one* URL at several screen sizes. Peapod is built for *several versions* of a flow — different locales, domains or environments — run together, with navigation mapped between them and a record of every step.
 
-**Does it send any data anywhere?**
-No. Peapod has no telemetry and makes no network calls of its own. Pages only contact the sites you open, and the MCP server can only be reached from your own machine.
+**Does it send task data anywhere?**
+No. Peapod has no telemetry and does not upload task URLs, page content, cookies, screenshots, or recordings. Pages contact the sites you open, and the MCP server is loopback-only. If you use the optional release checker, Peapod contacts GitHub for public release metadata without including task data.
+
+**How do update checks work?**
+Peapod includes a built-in GitHub release checker. Checks are manual by default, and automatic checks are opt-in. It displays release details and opens GitHub for downloads; it does not download or install binaries inside the app.
 
 ## Contributing
 
