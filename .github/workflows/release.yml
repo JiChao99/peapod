@@ -1,0 +1,147 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows-amd64
+            os: windows-latest
+          - name: linux
+            os: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    env:
+      WINDOWS_SIGNING_ENABLED: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 != '' && secrets.WINDOWS_CERTIFICATE_PASSWORD != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Validate tag against package version
+        shell: bash
+        run: |
+          node <<'NODE'
+          const fs = require('node:fs');
+          const { version } = JSON.parse(fs.readFileSync('mygo.json', 'utf8'));
+          const tag = process.env.GITHUB_REF_NAME;
+          if (!/^v\d+\.\d+\.\d+$/.test(tag)) {
+            throw new Error(`Tag ${tag} must be a stable semantic version`);
+          }
+          if (tag !== `v${version}`) {
+            throw new Error(`Tag ${tag} must match mygo.json version v${version}`);
+          }
+          fs.appendFileSync(process.env.GITHUB_ENV, `PACKAGE_VERSION=${version}\n`);
+          NODE
+
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+
+      - name: Build Windows executable and NSIS installer
+        if: runner.os == 'Windows'
+        run: go tool mygo build
+
+      - name: Build Linux amd64 and arm64 packages
+        if: runner.os == 'Linux'
+        run: |
+          go tool mygo build
+          go tool mygo build -platform linux/arm64
+
+      - name: Collect release assets
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [[ "$RUNNER_OS" == 'Windows' ]]; then
+            cp "build/windows-amd64/peapod-setup-${PACKAGE_VERSION}-amd64.exe" dist/
+          else
+            cp "build/linux-amd64/peapod-${PACKAGE_VERSION}-linux-amd64.tar.gz" dist/
+            cp "build/linux-arm64/peapod-${PACKAGE_VERSION}-linux-arm64.tar.gz" dist/
+          fi
+
+      - name: Sign Windows installer
+        if: runner.os == 'Windows' && env.WINDOWS_SIGNING_ENABLED == 'true'
+        shell: pwsh
+        env:
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          # TODO: Configure both Windows certificate secrets to enable Authenticode signing.
+          $ErrorActionPreference = 'Stop'
+          $installer = Join-Path (Get-Location) "dist\peapod-setup-$env:PACKAGE_VERSION-amd64.exe"
+          if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
+            throw "Windows installer not found: $installer"
+          }
+
+          $certificatePath = Join-Path $env:RUNNER_TEMP 'peapod-windows-signing.pfx'
+          $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" |
+            Sort-Object { [version]$_.Directory.Parent.Name } -Descending |
+            Select-Object -First 1
+          if (-not $signtool) {
+            throw 'signtool.exe was not found in the Windows SDK.'
+          }
+
+          try {
+            [System.IO.File]::WriteAllBytes(
+              $certificatePath,
+              [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64)
+            )
+            & $signtool.FullName sign /f $certificatePath /p $env:WINDOWS_CERTIFICATE_PASSWORD /fd sha256 /tr http://timestamp.digicert.com /td sha256 $installer
+            if ($LASTEXITCODE -ne 0) {
+              throw "signtool sign failed with exit code $LASTEXITCODE"
+            }
+            & $signtool.FullName verify /pa $installer
+            if ($LASTEXITCODE -ne 0) {
+              throw "signtool verify failed with exit code $LASTEXITCODE"
+            }
+          }
+          finally {
+            if (Test-Path -LiteralPath $certificatePath) {
+              Remove-Item -LiteralPath $certificatePath -Force
+            }
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+          overwrite: true
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Generate SHA256SUMS
+        working-directory: dist
+        run: |
+          sha256sum --binary -- * > SHA256SUMS
+          sha256sum --check SHA256SUMS
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* --verify-tag --title "Peapod $GITHUB_REF_NAME" --generate-notes
+          fi

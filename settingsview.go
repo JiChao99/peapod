@@ -1,6 +1,8 @@
 package main
 
 import (
+	"runtime"
+
 	"github.com/egoist/mygo/ui"
 	"github.com/lobehub/lobe-mygo/pkg/action"
 	"github.com/lobehub/lobe-mygo/pkg/choice"
@@ -72,26 +74,47 @@ func (a *app) renderSettings(c *ui.Context, tk *theme.Tokens) {
 			settingsSection(c, tk, lucide.RefreshCw(), a.tr("ui.settings.updates"))
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, a.tr("ui.update.current", appVersion)).FontSize(13).TextColor(tk.TextSecondary).Grow(1)
-				if action.Button(c, a.tr("ui.update.check"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).Disabled(a.updateSnapshot().Checking).Clicked() {
+				if action.Button(c, a.tr("ui.update.check"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).Disabled(a.updateSnapshot().Checking || a.updateSnapshot().Phase != "").Clicked() {
 					a.checkForUpdates()
 				}
 			})
 			settingsToggle(c, tk, a.tr("ui.update.auto"), &a.settingsDraft.AutoUpdate)
 			ui.Text(c, a.tr("ui.update.privacy")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
 			state := a.updateSnapshot()
-			switch state.Status {
-			case "checking":
-				ui.Text(c, a.tr("ui.update.checking")).FontSize(13).TextColor(tk.TextSecondary)
-			case "available":
-				ui.Column(c).Gap(8).Padding(12).Radius(tk.BorderRadius).Background(tk.FillTertiary).Children(func() {
-					ui.Text(c, a.tr("ui.update.available", state.Latest.Version)).FontSize(14).Bold().TextColor(tk.TextHeading)
-					if action.Button(c, a.tr("ui.update.download"), action.ButtonProps{Variant: action.Primary, Size: theme.Small}).Clicked() {
-						c.OpenURL(state.Latest.URL)
-					}
-				})
-			case "current":
-				ui.Text(c, a.tr("ui.update.currentStatus", state.Latest.Version)).FontSize(13).TextColor(tk.TextSecondary)
-			case "error":
+			if state.Phase != "" {
+				switch state.Phase {
+				case "downloading":
+					ui.Text(c, a.tr("ui.update.downloading", int(state.Progress))).FontSize(13).TextColor(tk.TextSecondary)
+				case "verifying":
+					ui.Text(c, a.tr("ui.update.verifying")).FontSize(13).TextColor(tk.TextSecondary)
+				case "installing":
+					ui.Text(c, a.tr("ui.update.installing")).FontSize(13).TextColor(tk.TextSecondary)
+				}
+			} else {
+				switch state.Status {
+				case "checking":
+					ui.Text(c, a.tr("ui.update.checking")).FontSize(13).TextColor(tk.TextSecondary)
+				case "available":
+					ui.Column(c).Gap(8).Padding(12).Radius(tk.BorderRadius).Background(tk.FillTertiary).Children(func() {
+						ui.Text(c, a.tr("ui.update.available", state.Latest.Version)).FontSize(14).Bold().TextColor(tk.TextHeading)
+						ui.Row(c).Gap(8).Children(func() {
+							if runtime.GOOS != "darwin" {
+								if action.Button(c, a.tr("ui.update.install"), action.ButtonProps{Variant: action.Primary, Size: theme.Small}).Clicked() {
+									a.downloadAndInstallUpdate()
+								}
+							}
+							if action.Button(c, a.tr("ui.update.openRelease"), action.ButtonProps{Variant: action.Default, Size: theme.Small}).Clicked() {
+								c.OpenURL(state.Latest.URL)
+							}
+						})
+					})
+				case "current":
+					ui.Text(c, a.tr("ui.update.currentStatus", state.Latest.Version)).FontSize(13).TextColor(tk.TextSecondary)
+				case "error":
+					ui.Text(c, a.tr("ui.update.error", state.Err)).FontSize(12).TextColor(tk.Error).Wrap()
+				}
+			}
+			if state.Err != "" && state.Status != "error" {
 				ui.Text(c, a.tr("ui.update.error", state.Err)).FontSize(12).TextColor(tk.Error).Wrap()
 			}
 			if a.settingsErr != "" {

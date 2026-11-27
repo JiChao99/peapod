@@ -139,6 +139,7 @@ func (a *app) view(c *ui.Context) {
 			}).Width(140)
 		})
 		ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
+			a.renderCaptureAnchors(c, st)
 			a.renderPanel(c, tk, st)
 			a.renderStage(c, tk, st)
 		})
@@ -872,9 +873,20 @@ func (a *app) setupRow(c *ui.Context, tk *theme.Tokens, cfg *pageConfig, i int) 
 					Label(a.tr("ui.res.h"))
 			})
 		})
+		ui.Column(c).Gap(4).AlignItems(ui.Stretch).Children(func() {
+			ui.Text(c, a.tr("ui.inject.js")).FontSize(12).TextColor(tk.TextTertiary)
+			field.TextArea(c, &cfg.injectJS, field.TextAreaProps{
+				Placeholder: a.tr("ui.inject.js.placeholder"),
+				MinRows:     2,
+				MaxRows:     4,
+				Variant:     field.InputFilled,
+			}).AlignSelf(ui.Stretch)
+			ui.Text(c, a.tr("ui.inject.js.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
+			a.fieldErrorText(c, tk, "inject:"+cfg.id)
+		})
 	})
 	if a.scrollErrField != "" && a.scrollErrField != a.lastScrolledErr &&
-		(a.scrollErrField == "page:"+cfg.id || a.scrollErrField == "vars:"+cfg.id) {
+		(a.scrollErrField == "page:"+cfg.id || a.scrollErrField == "vars:"+cfg.id || a.scrollErrField == "inject:"+cfg.id) {
 		row.ScrollIntoView()
 		a.lastScrolledErr = a.scrollErrField
 	}
@@ -1173,32 +1185,13 @@ func (a *app) resetCanvasLayout(pages []*pageRecord) {
 	a.invalidate()
 }
 
-func (a *app) capturePageForRequestLocked(req *captureLayoutRequest) *pageRecord {
-	if req == nil || req.page == nil || a.taskID != req.taskID {
-		return nil
-	}
-	p := req.page
-	if p.closed || a.pages[p.id] != p || (a.status != "running" && a.status != "starting") {
-		return nil
-	}
-	return p
-}
-
 func (a *app) renderStage(c *ui.Context, tk *theme.Tokens, st appState) {
 	a.mu.Lock()
 	mobile := a.taskViewMode == "mobile"
 	free := a.taskViewMode == "free"
 	var activeView *mygo.WebView
 	var activeRec *pageRecord
-	var captureRec *pageRecord
-	var captureReq *captureLayoutRequest
 	activeName := ""
-	if req := a.captureReq; req != nil {
-		if p := a.capturePageForRequestLocked(req); p != nil {
-			captureReq = req
-			captureRec = p
-		}
-	}
 	if p := a.pages[st.ActiveID]; p != nil && !p.closed {
 		activeView = p.view
 		activeRec = p
@@ -1249,9 +1242,7 @@ func (a *app) renderStage(c *ui.Context, tk *theme.Tokens, st appState) {
 			}
 		})
 
-		if captureReq != nil && captureRec != nil {
-			a.renderCaptureStage(c, tk, captureRec, captureReq, zoom, st)
-		} else if st.Status == "starting" {
+		if st.Status == "starting" {
 			a.renderStartingStage(c, tk)
 		} else if mobile && len(all) > 0 {
 			a.renderMobileStage(c, tk, all, zoom, barH, st)
@@ -1260,22 +1251,36 @@ func (a *app) renderStage(c *ui.Context, tk *theme.Tokens, st appState) {
 		} else {
 			a.renderDesktopStage(c, tk, st, all, zoom, barH, activeView, activeRec)
 		}
-		if a.recView.open && captureReq == nil {
+		if a.recView.open {
 			a.renderRecordingsOverlay(c, tk, barH)
 		}
 	})
 }
 
-func (a *app) renderCaptureStage(c *ui.Context, tk *theme.Tokens, p *pageRecord, req *captureLayoutRequest, zoom float64, st appState) {
-	ui.Column(c).Grow(1).MinHeight(0).Center().Children(func() {
-		ui.WebView(c, p.view).Width(float32(p.resW)).Height(float32(p.resH)).Shrink(0).
-			Disabled(st.PrimaryOnly && !p.isPrimary)
-		a.applyPageZoom(p.view, p, 1, zoom)
-		if st.PrimaryOnly && !p.isPrimary {
-			a.primaryOnlyMask(c, tk)
+// renderCaptureAnchors keeps every page natively placed even when its normal
+// slot is scrolled outside the window. The invisible parent makes the native
+// placement inert; visible stage placements built later replace it.
+func (a *app) renderCaptureAnchors(c *ui.Context, st appState) {
+	if st.Status != "starting" && st.Status != "running" {
+		return
+	}
+	a.mu.Lock()
+	pages := make([]*pageRecord, 0, len(a.order))
+	for _, id := range a.order {
+		if p := a.pages[id]; p != nil && !p.closed {
+			pages = append(pages, p)
 		}
-	})
-	req.once.Do(func() { close(req.ready) })
+	}
+	a.mu.Unlock()
+	zoom := float64(c.Zoom())
+	for _, p := range pages {
+		nativeW, nativeH, _, _ := pageViewTransform(p, 1, 1)
+		ui.Box(c).Absolute().Left(panelWidth + stagePadding).Top(toolbarHeight + stagePadding).
+			Width(nativeW).Height(nativeH).Invisible().Children(func() {
+			ui.WebView(c, p.view).Absolute().Left(0).Top(0).Width(nativeW).Height(nativeH)
+		})
+		a.applyPageZoom(p.view, p, zoom)
+	}
 }
 
 // renderStartingStage fills the stage with a dimmed skeleton at the configured
@@ -1368,16 +1373,12 @@ func (a *app) renderDesktopStage(c *ui.Context, tk *theme.Tokens, st appState, a
 				if pfit <= 0 {
 					pfit = 0.05
 				}
-				ui.WebView(c, p.view).Absolute().Left(0).Top(0).Width(pw * pfit).Height(ph * pfit).
-					Disabled(st.PrimaryOnly && !p.isPrimary)
-				a.applyPageZoom(p.view, p, pfit, zoom)
+				a.placePageView(c, p, pw*pfit, ph*pfit, zoom, st.PrimaryOnly && !p.isPrimary)
 				if st.PrimaryOnly && !p.isPrimary {
 					a.primaryOnlyMask(c, tk)
 				}
 			}
-			ui.WebView(c, activeView).Absolute().Left(0).Top(0).Width(tw * fit).Height(th * fit).
-				Disabled(st.PrimaryOnly && !activeRec.isPrimary)
-			a.applyPageZoom(activeView, activeRec, fit, zoom)
+			a.placePageView(c, activeRec, tw*fit, th*fit, zoom, st.PrimaryOnly && !activeRec.isPrimary)
 			if st.PrimaryOnly && !activeRec.isPrimary {
 				a.primaryOnlyMask(c, tk)
 			}
@@ -1470,9 +1471,7 @@ func (a *app) renderFreeStage(c *ui.Context, tk *theme.Tokens, pages []*pageReco
 							border = tk.Primary
 						}
 						ui.Box(c).Width(item.w).Height(item.h).Clip().Radius(7).Border(1, border).Children(func() {
-							ui.WebView(c, p.view).Absolute().Left(0).Top(0).Width(item.w).Height(item.h).
-								Disabled(st.PrimaryOnly && !p.isPrimary)
-							a.applyPageZoom(p.view, p, item.w/float32(p.resW), zoom)
+							a.placePageView(c, p, item.w, item.h, zoom, st.PrimaryOnly && !p.isPrimary)
 							if st.PrimaryOnly && !p.isPrimary {
 								a.primaryOnlyMask(c, tk)
 							}
@@ -1557,10 +1556,8 @@ func (a *app) mobileSlot(c *ui.Context, tk *theme.Tokens, p *pageRecord, slotW, 
 		if fit <= 0 {
 			fit = 0.05
 		}
-		ui.Box(c).Width(tw * fit).Height(th * fit).Clip().Radius(8).Children(func() {
-			ui.WebView(c, p.view).Absolute().Left(0).Top(0).Width(tw*fit).Height(th*fit).Radius(8).Border(1, tk.Border).
-				Disabled(st.PrimaryOnly && !p.isPrimary)
-			a.applyPageZoom(p.view, p, fit, zoom)
+		ui.Box(c).Width(tw*fit).Height(th*fit).Clip().Radius(8).Border(1, tk.Border).Children(func() {
+			a.placePageView(c, p, tw*fit, th*fit, zoom, st.PrimaryOnly && !p.isPrimary)
 			if st.PrimaryOnly && !p.isPrimary {
 				a.primaryOnlyMask(c, tk)
 			}
@@ -1621,17 +1618,36 @@ func pageStateByID(pages []pageState, id string) (pageState, bool) {
 	return pageState{}, false
 }
 
-// applyPageZoom keeps a page's CSS viewport at its configured resolution: the
-// element is fit times the resolution, shown zoom times larger by the UI zoom,
-// so the page zoom must be fit × zoom.
-func (a *app) applyPageZoom(view *mygo.WebView, rec *pageRecord, fit float32, zoom float64) {
+// placePageView keeps the native page at its configured resolution and scales
+// only its visual frame, so screenshots never require a layout transition.
+func (a *app) placePageView(c *ui.Context, rec *pageRecord, displayW, displayH float32, zoom float64, disabled bool) {
+	nativeW, nativeH, scaleX, scaleY := pageViewTransform(rec, displayW, displayH)
+	ui.WebView(c, rec.view).Absolute().Left(0).Top(0).Width(nativeW).Height(nativeH).Shrink(0).
+		TransformOrigin(0, 0).Scale(scaleX, scaleY).Radius(8).Disabled(disabled)
+	a.applyPageZoom(rec.view, rec, zoom)
+}
+
+func pageViewTransform(rec *pageRecord, displayW, displayH float32) (nativeW, nativeH, scaleX, scaleY float32) {
+	nativeW, nativeH = float32(rec.resW), float32(rec.resH)
+	if nativeW < 1 {
+		nativeW = 1280
+	}
+	if nativeH < 1 {
+		nativeH = 800
+	}
+	return nativeW, nativeH, displayW / nativeW, displayH / nativeH
+}
+
+func (a *app) applyPageZoom(view *mygo.WebView, rec *pageRecord, zoom float64) {
 	if rec == nil {
 		return
 	}
-	pz := float64(fit) * zoom
-	if math.Abs(pz-rec.appliedZoom) > 0.001 {
-		view.Page().SetZoomFactor(pz)
-		rec.appliedZoom = pz
+	if zoom <= 0 {
+		zoom = 1
+	}
+	if math.Abs(zoom-rec.appliedZoom) > 0.001 {
+		view.Page().SetZoomFactor(zoom)
+		rec.appliedZoom = zoom
 	}
 }
 

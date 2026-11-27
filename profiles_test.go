@@ -26,8 +26,8 @@ func sampleProfile() profileData {
 		PrimaryOnly:  true,
 		Record:       true,
 		Pages: []profilePage{
-			{Name: "primary", Vars: "host=example.com, lang=en-us", ResW: 390, ResH: 844},
-			{Name: "de", Vars: "host=example.com, lang=de", ResW: 390, ResH: 844},
+			{Name: "primary", Vars: "host=example.com, lang=en-us", InjectJS: "document.body.dataset.qa = 'primary';", ResW: 390, ResH: 844},
+			{Name: "de", Vars: "host=example.com, lang=de", InjectJS: "document.body.dataset.qa = 'de';", ResW: 390, ResH: 844},
 		},
 	}
 }
@@ -44,7 +44,7 @@ func TestProfileFileRoundTrip(t *testing.T) {
 	}
 	if got.Template != want.Template || got.ViewMode != want.ViewMode || got.UAPreset != want.UAPreset ||
 		got.ShareStorage != want.ShareStorage || got.PrimaryOnly != want.PrimaryOnly || got.Record != want.Record || len(got.Pages) != 2 ||
-		got.Pages[0].Vars != want.Pages[0].Vars || got.Pages[1].ResH != 844 {
+		got.Pages[0].Vars != want.Pages[0].Vars || got.Pages[0].InjectJS != want.Pages[0].InjectJS || got.Pages[1].ResH != 844 {
 		t.Fatalf("round trip mismatch: %+v vs %+v", got, want)
 	}
 }
@@ -109,8 +109,8 @@ func TestSaveLoadFormRoundTrip(t *testing.T) {
 	a.uaPreset, a.uaCustom = "ipad", ""
 	a.shareStorage, a.record = true, true
 	a.configs = []*pageConfig{
-		{id: "c1", vars: "host=a.com, lang=en", resW: 400, resH: 900},
-		{id: "c2", vars: "host=a.com, lang=de", resW: 400, resH: 900},
+		{id: "c1", vars: "host=a.com, lang=en", injectJS: "document.body.dataset.qa = 'en';", resW: 400, resH: 900},
+		{id: "c2", vars: "host=a.com, lang=de", injectJS: "document.body.dataset.qa = 'de';", resW: 400, resH: 900},
 	}
 	a.saveProfile("qa")
 
@@ -137,7 +137,7 @@ func TestSaveLoadFormRoundTrip(t *testing.T) {
 	if len(b.configs) != 2 {
 		t.Fatalf("configs = %d, want 2", len(b.configs))
 	}
-	if b.configs[0].vars != "host=a.com, lang=en" || b.configs[0].resW != 400 || b.configs[0].resH != 900 {
+	if b.configs[0].vars != "host=a.com, lang=en" || b.configs[0].injectJS != "document.body.dataset.qa = 'en';" || b.configs[0].resW != 400 || b.configs[0].resH != 900 {
 		t.Fatalf("page 0 not restored: %+v", *b.configs[0])
 	}
 	if b.configs[0].id == "c1" || b.configs[0].id == b.configs[1].id {

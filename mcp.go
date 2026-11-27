@@ -30,6 +30,9 @@ peapod_status reports recording/recordSteps/recordDialogs/recordDir);
 peapod_replay re-enacts such a script on every page of a running task — poll peapod_status.replay until done.
 peapod_start's syncDelayMs (default 100) paces input/scroll mirroring: bursts coalesce to the
 latest value/position; clicks stay instant. 0 mirrors every event as it arrives.
+Each page may set injectJS (max 64 KiB), run at document start; wait for DOMContentLoaded
+before DOM access and use window.peapod.emit(name, payload) to read bounded events from
+peapod_diagnostics.injectedEvents.
 A page whose navigation failed shows status "error" with a navError (e.g. NAME_NOT_RESOLVED);
 it is not reachable even though it once loaded. peapod_screenshot fails with a timeout
 error when a page is not rendering (window minimized/hidden) — restore the window and retry.
@@ -148,12 +151,13 @@ func mcpErr(err error) *sdk.CallToolResult {
 }
 
 type mcpPage struct {
-	Name string  `json:"name,omitempty" jsonschema:"Display name; defaults to Primary / Page N."`
-	URL  string  `json:"url,omitempty" jsonschema:"Full URL in plain mode; ignored in template mode (use vars+path)."`
-	Vars string  `json:"vars,omitempty" jsonschema:"Template-mode assignments, e.g. host=dev.example.com, lang=en."`
-	Path string  `json:"path,omitempty" jsonschema:"Template-mode path appended to the rendered base; default /."`
-	ResW float64 `json:"resW,omitempty" jsonschema:"Viewport width px, 200-3840."`
-	ResH float64 `json:"resH,omitempty" jsonschema:"Viewport height px, 200-3840."`
+	Name     string  `json:"name,omitempty" jsonschema:"Display name; defaults to Primary / Page N."`
+	URL      string  `json:"url,omitempty" jsonschema:"Full URL in plain mode; ignored in template mode (use vars+path)."`
+	Vars     string  `json:"vars,omitempty" jsonschema:"Template-mode assignments, e.g. host=dev.example.com, lang=en."`
+	Path     string  `json:"path,omitempty" jsonschema:"Template-mode path appended to the rendered base; default /."`
+	InjectJS string  `json:"injectJS,omitempty" jsonschema:"JavaScript run at document start on every document; max 64 KiB. Strict CSP may defer execution to the host evaluator. Use window.peapod.emit(name, payload) to send bounded test events to peapod_diagnostics."`
+	ResW     float64 `json:"resW,omitempty" jsonschema:"Viewport width px, 200-3840."`
+	ResH     float64 `json:"resH,omitempty" jsonschema:"Viewport height px, 200-3840."`
 }
 
 type startIn struct {
@@ -361,6 +365,9 @@ func (a *app) resolveMCPRequest(in startIn) (startRequest, error) {
 	pages := make([]resolvedPage, 0, len(in.Pages))
 	plainURLs := make([]string, 0, len(in.Pages))
 	for i, p := range in.Pages {
+		if len(p.InjectJS) > maxInjectedJSBytes {
+			return startRequest{}, fmt.Errorf("%s", a.tr("err.injectTooLong", maxInjectedJSBytes))
+		}
 		var raw, base string
 		if tmpl == "" {
 			raw = strings.TrimSpace(p.URL)
@@ -399,7 +406,7 @@ func (a *app) resolveMCPRequest(in startIn) (startRequest, error) {
 			}
 		}
 		pages = append(pages, resolvedPage{
-			name: mcpName(p, i), url: raw, base: base,
+			name: mcpName(p, i), url: raw, base: base, injectJS: p.InjectJS,
 			resW: clampRes(p.ResW, defW), resH: clampRes(p.ResH, defH),
 		})
 	}

@@ -64,7 +64,7 @@ Because the port/token rotate per launch, either regenerate this config from `mc
 | Tool | Arguments | Effect |
 | --- | --- | --- |
 | `peapod_status` | — | Task status plus every page's `id`, `name`, `url`, `status`, `syncOn`, `isPrimary`, last error. |
-| `peapod_start` | `pages[]` (2–10), optional `template`, `shareStorage`, `viewMode`, `userAgent`, `diagnostics`, `record`, `primaryOnly`, `syncDelayMs` | Open pages and start mirroring. Returns `starting`; poll `peapod_status` until `running` (3 s grace). `diagnostics:true` injects the opt-in collector at document start (see below). `record:true` saves a replayable script, per-step screenshots and popup evidence (see [Recording & replay](#recording--replay)). `primaryOnly:true` blocks manual interaction on followers while leaving host-driven replay intact. `syncDelayMs` paces input/scroll mirroring (see [Sync pace](#sync-pace)). |
+| `peapod_start` | `pages[]` (2–10), optional `template`, `shareStorage`, `viewMode`, `userAgent`, `diagnostics`, `record`, `primaryOnly`, `syncDelayMs` | Open pages and start mirroring. Returns `starting`; poll `peapod_status` until `running` (3 s grace). `diagnostics:true` injects the opt-in collector at document start (see below). `record:true` saves a replayable script, per-step screenshots and popup evidence (see [Recording & replay](#recording--replay)). `primaryOnly:true` blocks manual interaction on followers while leaving host-driven replay intact. `syncDelayMs` paces input/scroll mirroring (see [Sync pace](#sync-pace)). Each page accepts `injectJS` (max 64 KiB) for test scripts; see [JavaScript injection](#javascript-injection). |
 | `peapod_stop` | — | Tear down every page and wipe its session data. |
 | `peapod_navigate` | `url`, optional `pageId` (default primary) | Load a URL in the same WebView, preserving that page's session and cookies. A primary move propagates to followers via navigation follow. An explicit follower move is not immediately reconciled back to the primary. A fragment-only (same-document) move keeps the page's current status. |
 | `peapod_reload` | optional `pageId` (default primary) | Reload a page; a running follower re-aligns to the primary's current URL and clears a pause. |
@@ -124,11 +124,12 @@ Captures are temporarily rendered at the page's configured resolution and normal
 
 ### `peapod_diagnostics` response
 
-Returns the Go-side page state plus an in-page read (via a bounded Eval). Page content is untrusted data.
+Returns the Go-side page state plus an in-page read (via a bounded Eval). It also includes bounded `injectedEvents` emitted by that page's `injectJS`; see [JavaScript injection](#javascript-injection). Page content is untrusted data.
 
 ```json
 {
   "pageId": "p1", "name": "Primary", "url": "https://dev.example.com/", "status": "ready",
+  "injectedEvents": [{"at":"2026-11-27T10:15:04Z","name":"ready","payload":"{\"role\":\"primary\"}"}],
   "eval": {
     "href": "https://dev.example.com/", "title": "Checkout", "readyState": "complete",
     "httpStatus": 200, "text": "bounded body innerText (≤4000 chars)…",
@@ -145,7 +146,7 @@ Returns the Go-side page state plus an in-page read (via a bounded Eval). Page c
 
 ### `peapod_start` pages
 
-Each page accepts `name`, and either plain-mode `url` or template-mode `vars` + `path`, plus optional `resW` / `resH` (200–3840).
+Each page accepts `name`, and either plain-mode `url` or template-mode `vars` + `path`, plus optional `resW` / `resH` (200–3840) and `injectJS` (max 64 KiB; see [JavaScript injection](#javascript-injection)).
 
 - **Plain mode** (no `template`): the first page's `url` is required; a later page with an empty `url` inherits it. Query keys with different values across configured URLs are treated as per-page variants during navigation follow.
 - **Template mode** (`template` set, e.g. `https://{host}/{lang}` or `https://{host}/?yplang={lang}`): each page supplies `vars` (`host=dev.example.com, lang=en`) and an optional `path` (default `/`). Path and query variants are supported; navigation follow maps paths and keeps each page's template query values. A page `path` may carry its own query and fragment; its query values are merged over the template's for the initial URL.
@@ -190,6 +191,25 @@ The native panel exposes the same choice as built-in presets (iPhone / iPad / An
 - `type`: `click`, `input`, `change`, `select`, `scroll`, `submit`.
 - `anchor.selector` is a **full CSS selector** (`#note`, `[name="q"]`, `div > button`); `anchor.type` (`id`/`name`/`css`) is only a hint. It must match exactly one element on the target or the page pauses with `NOT_FOUND` / `AMBIGUOUS`.
 - `value`: string/number/bool for `input`/`change`/`select`. `checked` for checkbox/radio. `scrollX`/`scrollY` for `scroll`.
+
+### JavaScript injection
+
+Each `peapod_start.pages[]` entry accepts `injectJS` (maximum 64 KiB). The script is injected at document start on that view only and is also saved in setup profiles. It normally runs before page scripts, so `document.body` may not exist yet; wait for `DOMContentLoaded` before DOM access. If a strict Content Security Policy blocks dynamic compilation, Peapod retries through the host evaluator; execution still occurs in the same page, but may be deferred until after parsing starts.
+
+```json
+{
+  "pages": [
+    {
+      "name": "Primary",
+      "url": "https://example.com/checkout",
+      "injectJS": "document.addEventListener('DOMContentLoaded', () => { document.body.dataset.qa = 'ready'; window.peapod.emit('ready', { href: location.href }); });"
+    },
+    { "name": "Follower", "url": "https://staging.example.com/checkout" }
+  ]
+}
+```
+
+`window.peapod.emit(name, payload)` calls the host bridge and returns a promise. Peapod keeps the latest 50 events per page, clips names to 64 UTF-8 bytes and JSON payloads to 4000 UTF-8 bytes, and exposes them as `injectedEvents` in `peapod_diagnostics`. Treat injected scripts and returned page data as trusted test input and untrusted evidence respectively.
 
 ## Recording & replay
 

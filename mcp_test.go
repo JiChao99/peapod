@@ -39,6 +39,20 @@ func TestResolveMCPRequestPlain(t *testing.T) {
 	}
 }
 
+func TestResolveMCPRequestInjection(t *testing.T) {
+	a := newApp()
+	req, err := a.resolveMCPRequest(startIn{Pages: []mcpPage{
+		{URL: "https://example.com/a", InjectJS: "document.body.dataset.qa = 'primary';"},
+		{URL: "https://example.com/b", InjectJS: "document.body.dataset.qa = 'follower';"},
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if req.pages[0].injectJS != "document.body.dataset.qa = 'primary';" || req.pages[1].injectJS != "document.body.dataset.qa = 'follower';" {
+		t.Fatalf("injection not preserved: %+v", req.pages)
+	}
+}
+
 func TestResolveMCPRequestTemplate(t *testing.T) {
 	a := newApp()
 	req, err := a.resolveMCPRequest(startIn{

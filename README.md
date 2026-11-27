@@ -27,7 +27,7 @@
   <img src="docs/images/mcp-ready-panel.png" alt="Peapod running four locale variants of one site side by side in mobile mode, with per-page sync toggles and a live recording badge">
 </p>
 
-Peapod v0.10.1 opens 2–10 pages in one window. You click, type, scroll and submit on the **primary** page; every other page replays the same operations live, in order. Point the pages at different languages, domains or environments and you can walk through one flow on all of them at once, then keep screenshots and a replayable script of what happened.
+Peapod v0.11.0 opens 2–10 pages in one window. You click, type, scroll and submit on the **primary** page; every other page replays the same operations live, in order. Point the pages at different languages, domains or environments and you can walk through one flow on all of them at once, then keep screenshots and a replayable script of what happened.
 
 It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with its interface made from [Lobe MyGo](https://github.com/lobehub/lobe-mygo) components (the Lobe UI design language for native Go). It ships as a single binary that uses the system webview, with no bundled browser.
 
@@ -75,10 +75,11 @@ It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with it
 ### Automation
 - **MCP server.** A local [Model Context Protocol](https://modelcontextprotocol.io) endpoint, protected by a token, lets an AI agent start, navigate, operate, replay, screenshot, diagnose and stop tasks without using the UI.
 - **Acceptance diagnostics.** Failed navigations report stable error names (`NAME_NOT_RESOLVED`, `TIMEOUT`, …). An opt-in, MCP-only collector also reports the main document's HTTP status, the page text and console, network and error activity, so an agent can check actual outcomes rather than judge from screenshots.
+- **Per-page JavaScript injection.** Inject a test script at document start on each view. Wait for `DOMContentLoaded` before DOM access, and use `window.peapod.emit(name, payload)` to send bounded events back to `peapod_diagnostics.injectedEvents`.
 
 ### Everyday
 - English, 简体中文, 繁體中文, and 日本語 UI, light, dark or system theme, and UI scaling.
-- Persistent settings and a built-in GitHub release update checker are included; see [Install](#install).
+- Persistent settings and direct download/install updates on Windows/Linux are included; see [Install](#install).
 
 ## Install
 
@@ -86,7 +87,7 @@ Prebuilt packages are available on [GitHub Releases](https://github.com/JiChao99
 
 ### Updates and persistent settings
 
-Peapod includes persistent settings and a built-in checker for [GitHub Releases](https://github.com/JiChao99/peapod/releases). Update checks are **manual by default**; you can opt in to automatic checks. The checker shows release details and opens GitHub for downloads. It does **not** download or install app binaries inside Peapod.
+Peapod includes persistent settings and a built-in updater for [GitHub Releases](https://github.com/JiChao99/peapod/releases). Update checks are **manual by default**; you can opt in to automatic checks. When a newer stable release is available, **Download and install** downloads the matching package, verifies its SHA256 checksum, then installs and restarts Peapod on Windows/Linux. macOS currently opens the release page because no macOS package is published.
 
 | Platform | Webview | Notes |
 | --- | --- | --- |
@@ -123,16 +124,17 @@ Client configuration, the full tool reference, the recording format and an examp
 - Sessions are ephemeral, and their data is wiped when the task stops.
 - Popups and permission prompts (camera, microphone, notifications, …) are blocked. Each page's IPC is locked to its own origin.
 - Screenshots and recordings stay on your machine, in `Pictures/Peapod/screenshots` and `Pictures/Peapod/recordings`. Recorded scripts do contain other typed text, so treat them as sensitive.
-- Peapod has no telemetry and does not upload task URLs, page content, cookies, screenshots, or recordings. The optional GitHub release checker retrieves public release metadata only; it includes no task data and is manual by default.
+- Peapod has no telemetry and does not upload task URLs, page content, cookies, screenshots, or recordings. The update feature retrieves public release metadata and downloads the matching public package only after you click **Download and install**; neither request includes task data.
 - The MCP server listens on loopback only, requires the token on every request and rejects cross-origin browser calls. Page content is untrusted data, and agents must not follow instructions found in it.
 
 ## Known limitations
 
 - **User-Agent presets change only the UA string.** Pages still render in the platform webview, so engine-specific bugs (for example, Safari-only bugs on Windows) can't be reproduced this way.
-- **Screenshots need a visible, unminimized window.** The webview stops rendering while Peapod is minimized, so captures time out until the window is restored. Configured-resolution capture temporarily lays out every page at full size, which may briefly move the preview before restoring it.
+- **Screenshots need a visible, unminimized window.** The webview stops rendering while Peapod is minimized, so captures time out until the window is restored. Pages keep their configured native resolution while the preview is visually scaled, so recording no longer switches the stage layout.
 - **Navigation follow stays on the primary's host.** Followers don't follow links to other sites, by design.
 - **Links that open a new window or tab are blocked**, since popups are disabled.
 - **Windows gets the most testing.** macOS and Linux are supported. Linux builds and passes CI; macOS isn't covered by CI yet.
+- **Per-view network throttling is not available yet.** It requires extending MyGo's WebView2 CDP binding on Windows and native request control on macOS/Linux; see [TODO](docs/TODO.md).
 
 ## FAQ
 
@@ -140,10 +142,10 @@ Client configuration, the full tool reference, the recording format and an examp
 Tools like Responsively or Polypane show *one* URL at several screen sizes. Peapod is built for *several versions* of a flow — different locales, domains or environments — run together, with navigation mapped between them and a record of every step.
 
 **Does it send task data anywhere?**
-No. Peapod has no telemetry and does not upload task URLs, page content, cookies, screenshots, or recordings. Pages contact the sites you open, and the MCP server is loopback-only. If you use the optional release checker, Peapod contacts GitHub for public release metadata without including task data.
+No. Peapod has no telemetry and does not upload task URLs, page content, cookies, screenshots, or recordings. Pages contact the sites you open, and the MCP server is loopback-only. The update feature contacts GitHub for public release metadata and, only after you click **Download and install**, downloads the matching public package without task data.
 
 **How do update checks work?**
-Peapod includes a built-in GitHub release checker. Checks are manual by default, and automatic checks are opt-in. It displays release details and opens GitHub for downloads; it does not download or install binaries inside the app.
+Peapod checks manually by default; automatic checks are opt-in. When an update is found, click **Download and install** to download the matching package, verify SHA256, install, and restart on Windows/Linux. macOS opens the release page.
 
 ## Contributing
 
@@ -155,7 +157,7 @@ go vet ./...
 go test ./...
 ```
 
-CI runs the same build, vet and test steps on Windows and Linux.
+CI runs the same build, vet and test steps on Windows and Linux. Pushing a `v*` tag also runs the Release workflow, which builds the Windows installer and Linux amd64/arm64 packages, generates `SHA256SUMS`, and publishes the GitHub Release.
 
 ## Acknowledgements
 

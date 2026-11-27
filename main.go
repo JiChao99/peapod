@@ -3,6 +3,7 @@ package main
 import (
 	_ "embed"
 	"log"
+	"os"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
@@ -18,6 +19,9 @@ import (
 var iconSmallPNG []byte
 
 func main() {
+	if handled, code := runUpdateHelper(os.Args[1:]); handled {
+		os.Exit(code)
+	}
 	a := newApp()
 	if err := a.loadSettings(); err != nil {
 		log.Printf("load settings: %v", err)

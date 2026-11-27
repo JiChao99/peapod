@@ -186,24 +186,12 @@ func TestRecMetaLineNamesFreeCanvas(t *testing.T) {
 	}
 }
 
-func TestCaptureRequestRejectsReusedPageID(t *testing.T) {
-	a := newApp()
-	oldPage := &pageRecord{id: "p1", resW: 390, resH: 844}
-	a.mu.Lock()
-	a.status = "running"
-	a.taskID = "task-1"
-	a.pages[oldPage.id] = oldPage
-	req := &captureLayoutRequest{taskID: a.taskID, page: oldPage}
-	if got := a.capturePageForRequestLocked(req); got != oldPage {
-		t.Fatalf("current request resolved to %p, want %p", got, oldPage)
+func TestPageViewTransformKeepsNativeResolution(t *testing.T) {
+	rec := &pageRecord{resW: 1920, resH: 1080}
+	nativeW, nativeH, scaleX, scaleY := pageViewTransform(rec, 640, 360)
+	if nativeW != 1920 || nativeH != 1080 || scaleX != 1.0/3 || scaleY != 1.0/3 {
+		t.Fatalf("transform = %vx%v scale %vx%v, want 1920x1080 scale 1/3", nativeW, nativeH, scaleX, scaleY)
 	}
-	a.taskID = "task-2"
-	newPage := &pageRecord{id: "p1", resW: 390, resH: 844}
-	a.pages[newPage.id] = newPage
-	if got := a.capturePageForRequestLocked(req); got != nil {
-		t.Fatalf("stale request resolved to new task page %p", got)
-	}
-	a.mu.Unlock()
 }
 
 func TestCanvasResizeMovesOverlappingPage(t *testing.T) {

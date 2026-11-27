@@ -239,6 +239,9 @@ func (a *app) pageDiagnostics(id string) (map[string]any, error) {
 		if p.navError != nil {
 			out["navError"] = p.navError
 		}
+		if events := a.injectedEventsSnapshotLocked(p); len(events) > 0 {
+			out["injectedEvents"] = events
+		}
 	}
 	a.mu.Unlock()
 	if view == nil {
