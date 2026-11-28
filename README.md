@@ -27,7 +27,7 @@
   <img src="docs/images/mcp-ready-panel.png" alt="Peapod running four locale variants of one site side by side in mobile mode, with per-page sync toggles and a live recording badge">
 </p>
 
-Peapod v0.13.0 opens 2–10 pages in one window. You click, type, scroll and submit on the **primary** page; every other page replays the same operations live, in order. Point the pages at different languages, domains or environments and you can walk through one flow on all of them at once, then keep screenshots and a replayable script of what happened.
+Peapod v0.14.0 opens 2–10 pages in one window. You click, type, scroll and submit on the **primary** page; every other page replays the same operations live, in order. Point the pages at different languages, domains or environments and you can walk through one flow on all of them at once, then keep screenshots and a replayable script of what happened.
 
 It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with its interface made from [Lobe MyGo](https://github.com/lobehub/lobe-mygo) components (the Lobe UI design language for native Go). It ships as a single binary that uses the system webview, with no bundled browser.
 
@@ -88,7 +88,7 @@ Prebuilt packages are available on [GitHub Releases](https://github.com/JiChao99
 
 ### Updates and persistent settings
 
-Peapod includes persistent settings and a built-in updater for [GitHub Releases](https://github.com/JiChao99/peapod/releases). Update checks are **manual by default**; you can opt in to automatic checks. When a newer stable release is available, **Download and install** downloads the matching package, verifies its SHA256 checksum, then installs and restarts Peapod on Windows/Linux. macOS ships a Universal DMG for Apple Silicon and Intel Macs, but the in-app updater currently opens the release page.
+Peapod includes persistent settings and a built-in updater for [GitHub Releases](https://github.com/JiChao99/peapod/releases). Update checks are **manual by default**; you can opt in to automatic checks. When a newer stable release is available, **Download and install** downloads the matching package, verifies its SHA256 checksum, then installs and restarts Peapod on Windows/Linux. If the Windows restart fails, Peapod keeps a recovery record and retries only validated backup/temporary-directory cleanup on the next launch; it never rolls back automatically. macOS ships a Universal DMG for Apple Silicon and Intel Macs, but the in-app updater currently opens the release page.
 
 | Platform | Webview | Notes |
 | --- | --- | --- |
@@ -150,7 +150,7 @@ Tools like Responsively or Polypane show *one* URL at several screen sizes. Peap
 No. Peapod has no telemetry and does not upload task URLs, page content, cookies, screenshots, or recordings. Pages contact the sites you open, and the MCP server is loopback-only. The update feature contacts GitHub for public release metadata and, only after you click **Download and install**, downloads the matching public package without task data.
 
 **How do update checks work?**
-Peapod checks manually by default; automatic checks are opt-in. When an update is found, click **Download and install** to download the matching package, verify SHA256, install, and restart on Windows/Linux. macOS opens the release page.
+Peapod checks manually by default; automatic checks are opt-in. When an update is found, click **Download and install** to download the matching package, verify SHA256, install, and restart on Windows/Linux. A failed Windows restart leaves a recovery record for the next launch to clean validated temporary paths without rolling back. macOS opens the release page.
 
 ## Contributing
 

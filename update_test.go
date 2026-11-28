@@ -756,9 +756,9 @@ func TestValidateWindowsHelperConfigAllowsCallingParentPID(t *testing.T) {
 		}
 	}
 	config := windowsUpdateHelperConfig{
-		ParentPID: os.Getpid(), InstallDir: installDir, Installer: installer,
+		ParentPID: os.Getpid(), Version: "0.14.0", InstallDir: installDir, Installer: installer,
 		Executable: filepath.Join(installDir, "peapod.exe"), BackupDir: backupRoot,
-		WorkDir: workDir, HelperPath: helperPath, ConfigPath: filepath.Join(workDir, "helper.json"),
+		WorkDir: workDir, RecoveryPath: filepath.Join(parent, "update-recovery.json"), HelperPath: helperPath, ConfigPath: filepath.Join(workDir, "helper.json"),
 		ReadyFile: filepath.Join(workDir, "ready"), ErrorFile: filepath.Join(workDir, "error.txt"),
 		LogPath: filepath.Join(workDir, "helper.log"), WorkingDir: parent,
 	}

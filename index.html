@@ -83,7 +83,7 @@
         <div class="hero-orb orb-two"></div>
         <div class="container hero-grid">
           <div class="hero-copy reveal">
-            <div class="eyebrow"><span class="status-dot"></span><span data-i18n="hero.badge">v0.13.0 · Open-source desktop app</span></div>
+            <div class="eyebrow"><span class="status-dot"></span><span data-i18n="hero.badge">v0.14.0 · Open-source desktop app</span></div>
             <h1><span data-i18n="hero.title1">Repeat less. </span><span class="accent-text" data-i18n="hero.title2">Know more.</span></h1>
             <p class="hero-description" data-i18n="hero.description">Run one flow across languages, environments, and devices — side by side, in sync, with evidence at every step.</p>
             <div class="hero-actions">
@@ -269,7 +269,7 @@
         <div class="container">
           <div class="install-panel reveal">
             <div class="install-copy">
-              <span class="section-kicker" data-i18n="install.kicker">v0.13.0 · Install or build from source</span>
+              <span class="section-kicker" data-i18n="install.kicker">v0.14.0 · Install or build from source</span>
               <h2 data-i18n="install.title">One download.<br>A better QA loop.</h2>
               <p data-i18n="install.description">Prebuilt Windows installer, macOS Universal DMG and Linux packages are available on GitHub Releases, or build from source with no extra browser to install. Source builds need Go 1.27.4+ and your system WebView.</p>
               <a class="text-link install-release-link" href="https://github.com/jichao99/peapod/releases" target="_blank" rel="noreferrer"><span data-i18n="install.releases">Download from GitHub Releases</span><svg class="icon small"><use href="#i-arrow-up-right"/></svg></a>
@@ -289,20 +289,20 @@
 
           <div class="release-panel reveal">
             <div class="release-intro">
-              <span class="release-label" data-i18n="release.kicker">New in v0.13.0</span>
-              <h3 data-i18n="release.title">Universal macOS.<br>Built in CI.</h3>
+              <span class="release-label" data-i18n="release.kicker">New in v0.14.0</span>
+              <h3 data-i18n="release.title">Installed updates.<br>Recoverable restarts.</h3>
             </div>
             <div class="release-item">
               <svg class="icon"><use href="#i-profile"/></svg>
-              <div><strong data-i18n="release.macosTitle">One DMG for Apple Silicon & Intel</strong><p data-i18n="release.macosBody">A macOS runner builds Peapod.app, checks both architectures and creates the Universal disk image.</p></div>
+              <div><strong data-i18n="release.recoveryTitle">Restart failure is recorded</strong><p data-i18n="release.recoveryBody">Peapod saves update state before installation and keeps it when automatic restart fails.</p></div>
             </div>
             <div class="release-item">
               <svg class="icon"><use href="#i-terminal"/></svg>
-              <div><strong data-i18n="release.ciTitle">Verified bundle, not just a cross-compile</strong><p data-i18n="release.ciBody">CI checks the bundle ID, version, lipo architectures, ad-hoc signature and DMG integrity.</p></div>
+              <div><strong data-i18n="release.cleanupTitle">Controlled, idempotent cleanup</strong><p data-i18n="release.cleanupBody">The next launch validates installation, backup and temporary paths, then retries cleanup without rolling back.</p></div>
             </div>
             <div class="release-item">
               <svg class="icon"><use href="#i-sync"/></svg>
-              <div><strong data-i18n="release.signTitle">Signing stays honest</strong><p data-i18n="release.signBody">Developer ID signing and notarization remain TODO; Gatekeeper may block the current ad-hoc build.</p></div>
+              <div><strong data-i18n="release.safetyTitle">No automatic rollback</strong><p data-i18n="release.safetyBody">The previous install stays backed up while temporary cleanup is retried; unsafe or unfinished states are never deleted.</p></div>
             </div>
           </div>
         </div>
@@ -314,7 +314,7 @@
           <div class="faq-list reveal reveal-delay">
             <details><summary><span data-i18n="faq.q1">How is this different from a responsive previewer?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a1">Responsive previewers usually show one URL at several viewport sizes. Peapod runs several versions of a complete flow, with mapped navigation, reusable setups, and evidence for every step.</p></details>
             <details><summary><span data-i18n="faq.q2">Does Peapod send my task data anywhere?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a2">Peapod has no telemetry. Task URLs, page content, cookies, screenshots, and recordings are not uploaded. Updates fetch public metadata and, only after Download and install, the matching public package without task data.</p></details>
-            <details><summary><span data-i18n="faq.q3">How do update checks work?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a3">Checks are manual by default. On Windows/Linux, Download and install fetches the matching package, verifies SHA256, installs, and restarts Peapod. macOS opens the release page, where the Universal DMG is available.</p></details>
+            <details><summary><span data-i18n="faq.q3">How do update checks work?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a3">Checks are manual by default. On Windows/Linux, Download and install fetches the matching package, verifies SHA256, installs, and restarts Peapod. A failed Windows restart keeps a recovery record for validated cleanup on the next launch, without automatic rollback. macOS opens the release page, where the Universal DMG is available.</p></details>
             <details><summary><span data-i18n="faq.q4">Can it reproduce Safari-specific bugs?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a4">User-Agent presets only change the UA string. Pages still render in your platform WebView, so engine-specific Safari bugs cannot be reproduced this way.</p></details>
             <details><summary><span data-i18n="faq.q5">Which platforms are supported?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a5">Windows, macOS, and Linux via WebView2, WKWebView, and WebKitGTK respectively. All three build and pass CI; macOS publishes a Universal DMG, while Windows remains the most thoroughly runtime-tested platform.</p></details>
             <details><summary><span data-i18n="faq.q6">Can I simulate a slow network?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a6">Not yet. Per-view offline, latency, and throughput control requires extending the WebView backend; see the project TODO.</p></details>
