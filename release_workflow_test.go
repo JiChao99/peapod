@@ -74,13 +74,16 @@ func TestMacOSWorkflowContract(t *testing.T) {
 			t.Errorf("build-macos.yml missing %q", command)
 		}
 	}
+	collect := findStep(macos.Jobs["build"], "Collect macOS packages")
+	if !strings.Contains(collect.Run, "-macos-universal-app.tar.gz") || !strings.Contains(collect.Run, "cp build/darwin-universal/*.dmg dist/") {
+		t.Errorf("build-macos.yml must collect an app archive and DMG in dist, got %q", collect.Run)
+	}
 	upload := findStep(macos.Jobs["build"], "Upload macOS packages")
 	if upload.Uses != "actions/upload-artifact@v4" {
 		t.Errorf("build-macos.yml upload step uses %q", upload.Uses)
 	}
-	uploadPath := stringValue(upload.With["path"])
-	if !strings.Contains(uploadPath, "-app.tar.gz") || !strings.Contains(uploadPath, "*.dmg") {
-		t.Errorf("build-macos.yml must upload an app archive and DMG, got %q", uploadPath)
+	if uploadPath := stringValue(upload.With["path"]); uploadPath != "dist/*" {
+		t.Errorf("build-macos.yml must upload the collected dist directory, got %q", uploadPath)
 	}
 
 	release := readWorkflowForTest(t, "release.yml")

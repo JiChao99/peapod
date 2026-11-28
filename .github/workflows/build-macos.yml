@@ -43,18 +43,19 @@ jobs:
         shell: bash
         run: bash scripts/verify-macos-package.sh build/darwin-universal
 
-      - name: Archive app bundle
+      - name: Collect macOS packages
         shell: bash
         run: |
+          mkdir -p dist
           version="$(node -p "require('./mygo.json').version")"
-          tar -czf "build/darwin-universal/peapod-${version}-macos-universal-app.tar.gz" -C build/darwin-universal Peapod.app
+          tar -czf "dist/peapod-${version}-macos-universal-app.tar.gz" -C build/darwin-universal Peapod.app
+          cp build/darwin-universal/*.dmg dist/
+          ls -lh dist
 
       - name: Upload macOS packages
         uses: actions/upload-artifact@v4
         with:
           name: peapod-macos-universal
-          path:
-            build/darwin-universal/peapod-*-macos-universal-app.tar.gz
-            build/darwin-universal/peapod-*.dmg
+          path: dist/*
           if-no-files-found: error
           retention-days: 14
