@@ -75,7 +75,7 @@ func TestMacOSWorkflowContract(t *testing.T) {
 		}
 	}
 	collect := findStep(macos.Jobs["build"], "Collect macOS packages")
-	if !strings.Contains(collect.Run, "-macos-universal-app.tar.gz") || !strings.Contains(collect.Run, "cp build/darwin-universal/*.dmg dist/") {
+	if !strings.Contains(collect.Run, `tar -czf "dist/peapod-${version}-macos-universal-app.tar.gz"`) || !strings.Contains(collect.Run, "cp build/darwin-universal/*.dmg dist/") {
 		t.Errorf("build-macos.yml must collect an app archive and DMG in dist, got %q", collect.Run)
 	}
 	upload := findStep(macos.Jobs["build"], "Upload macOS packages")
