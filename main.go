@@ -48,6 +48,7 @@ func main() {
 		if err := a.startMCP(); err != nil {
 			log.Printf("start mcp: %v", err)
 		}
+		a.recoverWindowsUpdate()
 		a.win.Invalidate()
 		a.autoCheckForUpdates()
 	})

@@ -27,7 +27,7 @@
   <img src="docs/images/mcp-ready-panel.png" alt="Peapod 以行動裝置模式並排執行同一網站的四個語言版本，畫面顯示每頁同步開關與即時錄製徽章">
 </p>
 
-Peapod v0.13.0 可於單一視窗開啟 2–10 個頁面。你在**主頁**上點擊、輸入、捲動及送出，其餘頁面會依序即時重播相同操作。把各頁面指向不同語言、網域或環境，就能讓同一條流程在所有版本上同步走一遍，並留下截圖與可回放的腳本。
+Peapod v0.14.0 可於單一視窗開啟 2–10 個頁面。你在**主頁**上點擊、輸入、捲動及送出，其餘頁面會依序即時重播相同操作。把各頁面指向不同語言、網域或環境，就能讓同一條流程在所有版本上同步走一遍，並留下截圖與可回放的腳本。
 
 這是一款以 [MyGo](https://github.com/egoist/mygo) 打造的原生 Go 應用程式，介面採用 [Lobe MyGo](https://github.com/lobehub/lobe-mygo) 元件（Lobe UI 設計語言的原生 Go 實作）。它以單一執行檔提供，直接使用系統 WebView，不內建瀏覽器。
 
@@ -93,7 +93,7 @@ Peapod v0.13.0 可於單一視窗開啟 2–10 個頁面。你在**主頁**上�
 
 ### 更新與設定持久化
 
-Peapod 內建設定持久化與 [GitHub Releases](https://github.com/JiChao99/peapod/releases) 更新器。更新檢查**預設為手動**，也可選擇自動檢查。發現新穩定版後，點擊「下載並安裝」會取得相符的發行包、校驗 SHA256，然後在 Windows/Linux 上安裝並重新啟動 Peapod；macOS 已提供同時支援 Apple Silicon 與 Intel Mac 的 Universal DMG，但應用程式內更新暫時仍會開啟發行頁。
+Peapod 內建設定持久化與 [GitHub Releases](https://github.com/JiChao99/peapod/releases) 更新器。更新檢查**預設為手動**，也可選擇自動檢查。發現新穩定版後，點擊「下載並安裝」會取得相符的發行包、校驗 SHA256，然後在 Windows/Linux 上安裝並重新啟動 Peapod；Windows 重新啟動失敗時會保留恢復記錄，下次啟動僅重試經過校驗的備份/暫存目錄清理，不會自動回滾。macOS 已提供同時支援 Apple Silicon 與 Intel Mac 的 Universal DMG，但應用程式內更新暫時仍會開啟發行頁。
 
 | 平台 | WebView | 說明 |
 | --- | --- | --- |
@@ -155,7 +155,7 @@ Responsively、Polypane 這類工具是把*同一個* URL 以多種螢幕尺寸�
 不會。Peapod 沒有遙測，不會上傳任務 URL、頁面內容、Cookie、截圖或錄製檔案。頁面會聯絡你開啟的網站，MCP 伺服器也只允許本機存取。更新功能只向 GitHub 取得公開發行元資料；只有點擊「下載並安裝」後，才會下載不含任務資料的相符公開套件。
 
 **更新檢查如何運作？**
-Peapod 預設手動檢查，自動檢查需主動開啟。發現更新後點擊「下載並安裝」，會下載相符套件、校驗 SHA256，並在 Windows/Linux 上安裝重新啟動；macOS 暫開啟發行頁。
+Peapod 預設手動檢查，自動檢查需主動開啟。發現更新後點擊「下載並安裝」，會下載相符套件、校驗 SHA256，並在 Windows/Linux 上安裝重新啟動；Windows 重新啟動失敗後，下次啟動會清理經過校驗的暫存路徑，但不會自動回滾。macOS 暫開啟發行頁。
 
 ## 參與貢獻
 

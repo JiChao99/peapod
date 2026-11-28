@@ -54,11 +54,13 @@ var updateDownloadHosts = map[string]bool{
 }
 
 type selectedUpdateAssets struct {
+	Version  string
 	Asset    releaseAsset
 	Checksum releaseAsset
 }
 
 type verifiedUpdate struct {
+	Version   string
 	WorkDir   string
 	AssetPath string
 	Asset     releaseAsset
@@ -247,7 +249,7 @@ func selectUpdateAssets(info *releaseInfo, goos, goarch string) (*selectedUpdate
 	if counts[name] != 1 {
 		return nil, fmt.Errorf("release has no unique asset %q for %s/%s", name, goos, goarch)
 	}
-	selected := &selectedUpdateAssets{}
+	selected := &selectedUpdateAssets{Version: info.Version}
 	for _, asset := range info.Assets {
 		switch asset.Name {
 		case name:
@@ -400,7 +402,7 @@ func downloadAndVerifySelectedUpdate(ctx context.Context, selected *selectedUpda
 		return nil, fmt.Errorf("verifying %s: %w", selected.Asset.Name, err)
 	}
 	emit("verifying", 92)
-	return &verifiedUpdate{WorkDir: workDir, AssetPath: assetPath, Asset: selected.Asset, SHA256: expected}, nil
+	return &verifiedUpdate{Version: selected.Version, WorkDir: workDir, AssetPath: assetPath, Asset: selected.Asset, SHA256: expected}, nil
 }
 
 type tarExtractionLimits struct {
@@ -817,19 +819,21 @@ func validateLinuxUpdateTargetAt(target, home string) error {
 }
 
 type windowsUpdateHelperConfig struct {
-	ParentPID  int      `json:"parentPid"`
-	InstallDir string   `json:"installDir"`
-	Installer  string   `json:"installer"`
-	Executable string   `json:"executable"`
-	BackupDir  string   `json:"backupDir"`
-	WorkDir    string   `json:"workDir"`
-	HelperPath string   `json:"helperPath"`
-	ConfigPath string   `json:"configPath"`
-	ReadyFile  string   `json:"readyFile"`
-	ErrorFile  string   `json:"errorFile"`
-	LogPath    string   `json:"logPath"`
-	WorkingDir string   `json:"workingDir"`
-	Args       []string `json:"args"`
+	ParentPID    int      `json:"parentPid"`
+	Version      string   `json:"version"`
+	InstallDir   string   `json:"installDir"`
+	Installer    string   `json:"installer"`
+	Executable   string   `json:"executable"`
+	BackupDir    string   `json:"backupDir"`
+	WorkDir      string   `json:"workDir"`
+	RecoveryPath string   `json:"recoveryPath"`
+	HelperPath   string   `json:"helperPath"`
+	ConfigPath   string   `json:"configPath"`
+	ReadyFile    string   `json:"readyFile"`
+	ErrorFile    string   `json:"errorFile"`
+	LogPath      string   `json:"logPath"`
+	WorkingDir   string   `json:"workingDir"`
+	Args         []string `json:"args"`
 }
 
 func installWindowsVerifiedUpdate(update *verifiedUpdate) (helperStarted bool, err error) {
@@ -847,10 +851,15 @@ func installWindowsVerifiedUpdate(update *verifiedUpdate) (helperStarted bool, e
 		return false, fmt.Errorf("cannot create an installation backup directory: %w", err)
 	}
 	cleanup := true
+	recoveryPath := windowsUpdateRecoveryPath()
+	recoveryCreated := false
 	defer func() {
 		if cleanup {
 			_ = os.RemoveAll(backupRoot)
 			_ = os.RemoveAll(update.WorkDir)
+			if recoveryCreated {
+				_ = os.Remove(recoveryPath)
+			}
 		}
 	}()
 	helperPath := filepath.Join(update.WorkDir, "peapod-update-helper.exe")
@@ -872,19 +881,21 @@ func installWindowsVerifiedUpdate(update *verifiedUpdate) (helperStarted bool, e
 		}()
 	}
 	config := windowsUpdateHelperConfig{
-		ParentPID:  os.Getpid(),
-		InstallDir: installDir,
-		Installer:  update.AssetPath,
-		Executable: filepath.Join(installDir, "peapod.exe"),
-		BackupDir:  backupRoot,
-		WorkDir:    update.WorkDir,
-		HelperPath: helperPath,
-		ConfigPath: filepath.Join(update.WorkDir, "helper.json"),
-		ReadyFile:  filepath.Join(update.WorkDir, "ready"),
-		ErrorFile:  filepath.Join(update.WorkDir, "error.txt"),
-		LogPath:    filepath.Join(update.WorkDir, "helper.log"),
-		WorkingDir: workingDir,
-		Args:       append([]string(nil), os.Args[1:]...),
+		ParentPID:    os.Getpid(),
+		Version:      update.Version,
+		InstallDir:   installDir,
+		Installer:    update.AssetPath,
+		Executable:   filepath.Join(installDir, "peapod.exe"),
+		BackupDir:    backupRoot,
+		WorkDir:      update.WorkDir,
+		RecoveryPath: windowsUpdateRecoveryPath(),
+		HelperPath:   helperPath,
+		ConfigPath:   filepath.Join(update.WorkDir, "helper.json"),
+		ReadyFile:    filepath.Join(update.WorkDir, "ready"),
+		ErrorFile:    filepath.Join(update.WorkDir, "error.txt"),
+		LogPath:      filepath.Join(update.WorkDir, "helper.log"),
+		WorkingDir:   workingDir,
+		Args:         append([]string(nil), os.Args[1:]...),
 	}
 	data, err := json.Marshal(config)
 	if err != nil {
@@ -905,6 +916,15 @@ func installWindowsVerifiedUpdate(update *verifiedUpdate) (helperStarted bool, e
 	if err := validateWindowsHelperConfig(config); err != nil {
 		return false, err
 	}
+	if _, err := os.Lstat(config.RecoveryPath); err == nil {
+		return false, fmt.Errorf("recover the previous Windows update before installing another")
+	} else if !os.IsNotExist(err) {
+		return false, err
+	}
+	if err := createWindowsUpdateRecovery(config.RecoveryPath, recoveryStateFromConfig(config, windowsRecoveryInstalling, "")); err != nil {
+		return false, fmt.Errorf("save Windows update recovery state: %w", err)
+	}
+	recoveryCreated = true
 	helperStarted, err = startWindowsUpdateHelper(config)
 	if err != nil {
 		if helperStarted {
@@ -1071,27 +1091,33 @@ func runWindowsUpdateHelper(config windowsUpdateHelperConfig) error {
 		_ = os.WriteFile(config.ReadyFile, []byte(windowsHelperFailed), 0o600)
 		return err
 	}
+	if err := writeWindowsUpdateRecovery(config.RecoveryPath, recoveryStateFromConfig(config, windowsRecoveryInstalled, "")); err != nil {
+		return fmt.Errorf("save Windows update recovery state: %w", err)
+	}
 	if err := os.WriteFile(config.ReadyFile, []byte(windowsHelperComplete), 0o600); err != nil {
 		return err
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), updateHelperParentWait)
 	defer cancel()
 	if err := waitForProcessHandle(ctx, parent); err != nil {
-		return fmt.Errorf("waiting for the running application to exit: %w", err)
+		restartErr := fmt.Errorf("update installed, but waiting for the previous application to exit failed: %w", err)
+		if stateErr := recordWindowsUpdateRestartFailure(config, restartErr); stateErr != nil {
+			return fmt.Errorf("%w; saving update recovery state: %v", restartErr, stateErr)
+		}
+		return restartErr
 	}
 	cmd := exec.Command(config.Executable, config.Args...)
 	cmd.Dir = config.WorkingDir
 	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("update installed, but restarting Peapod failed: %w", err)
+		restartErr := fmt.Errorf("update installed, but restarting Peapod failed: %w", err)
+		if stateErr := recordWindowsUpdateRestartFailure(config, restartErr); stateErr != nil {
+			return fmt.Errorf("%w; saving update recovery state: %v", restartErr, stateErr)
+		}
+		return restartErr
 	}
 	if err := cmd.Process.Release(); err != nil {
 		return err
 	}
-	// The new process owns the installation now; temporary update files and the
-	// previous installation are no longer needed. Removal is best effort because
-	// the helper may still be mapped.
-	_ = os.RemoveAll(config.BackupDir)
-	_ = os.RemoveAll(config.WorkDir)
 	return nil
 }
 
@@ -1195,7 +1221,10 @@ func validateWindowsHelperConfig(config windowsUpdateHelperConfig) error {
 	if config.ParentPID <= 0 {
 		return errors.New("invalid helper parent process")
 	}
-	paths := []string{config.InstallDir, config.Installer, config.Executable, config.BackupDir, config.WorkDir, config.WorkingDir, config.HelperPath, config.ConfigPath, config.ReadyFile, config.ErrorFile, config.LogPath}
+	if !semver.IsValid("v" + config.Version) {
+		return errors.New("invalid helper update version")
+	}
+	paths := []string{config.InstallDir, config.Installer, config.Executable, config.BackupDir, config.WorkDir, config.RecoveryPath, config.WorkingDir, config.HelperPath, config.ConfigPath, config.ReadyFile, config.ErrorFile, config.LogPath}
 	for _, item := range paths {
 		if item == "" || !filepath.IsAbs(item) || filepath.Clean(item) != item {
 			return fmt.Errorf("invalid helper path %q", item)
@@ -1217,6 +1246,11 @@ func validateWindowsHelperConfig(config windowsUpdateHelperConfig) error {
 	}
 	if pathIsWithin(config.WorkDir, config.InstallDir) || pathIsWithin(config.InstallDir, config.WorkDir) {
 		return errors.New("helper working directory overlaps the installation")
+	}
+	for _, target := range []string{config.InstallDir, config.BackupDir, config.WorkDir} {
+		if pathIsWithin(target, config.RecoveryPath) || pathIsWithin(config.RecoveryPath, target) {
+			return errors.New("helper recovery state overlaps update directories")
+		}
 	}
 	realInstallDir, err := filepath.EvalSymlinks(config.InstallDir)
 	if err != nil {
