@@ -71,6 +71,17 @@ func (a *app) renderSettings(c *ui.Context, tk *theme.Tokens) {
 			settingsToggle(c, tk, a.tr("ui.primaryOnly"), &a.settingsDraft.DefaultPrimaryOnly)
 			settingsToggle(c, tk, a.tr("ui.record"), &a.settingsDraft.DefaultRecord)
 
+			settingsSection(c, tk, lucide.ShieldCheck(), a.tr("ui.settings.mcp"))
+			settingsToggle(c, tk, a.tr("ui.settings.mcpWarnPrivate"), &a.settingsDraft.MCPWarnPrivate)
+			settingsLabel(c, tk, a.tr("ui.settings.mcpAllowlist"))
+			field.TextArea(c, &a.settingsDraft.MCPPrivateAllowlist, field.TextAreaProps{
+				Placeholder: a.tr("ui.settings.mcpAllowlistHint"),
+				MinRows:     2,
+				MaxRows:     4,
+				Variant:     field.InputOutlined,
+			}).AlignSelf(ui.Stretch)
+			ui.Text(c, a.tr("ui.settings.mcpAllowlistHint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
+
 			settingsSection(c, tk, lucide.RefreshCw(), a.tr("ui.settings.updates"))
 			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 				ui.Text(c, a.tr("ui.update.current", appVersion)).FontSize(13).TextColor(tk.TextSecondary).Grow(1)

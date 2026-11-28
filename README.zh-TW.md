@@ -27,7 +27,7 @@
   <img src="docs/images/mcp-ready-panel.png" alt="Peapod 以行動裝置模式並排執行同一網站的四個語言版本，畫面顯示每頁同步開關與即時錄製徽章">
 </p>
 
-Peapod v0.14.0 可於單一視窗開啟 2–10 個頁面。你在**主頁**上點擊、輸入、捲動及送出，其餘頁面會依序即時重播相同操作。把各頁面指向不同語言、網域或環境，就能讓同一條流程在所有版本上同步走一遍，並留下截圖與可回放的腳本。
+Peapod v0.15.0 可於單一視窗開啟 2–10 個頁面。你在**主頁**上點擊、輸入、捲動及送出，其餘頁面會依序即時重播相同操作。把各頁面指向不同語言、網域或環境，就能讓同一條流程在所有版本上同步走一遍，並留下截圖與可回放的腳本。
 
 這是一款以 [MyGo](https://github.com/egoist/mygo) 打造的原生 Go 應用程式，介面採用 [Lobe MyGo](https://github.com/lobehub/lobe-mygo) 元件（Lobe UI 設計語言的原生 Go 實作）。它以單一執行檔提供，直接使用系統 WebView，不內建瀏覽器。
 
@@ -124,6 +124,8 @@ Peapod 啟動後，會在 `127.0.0.1` 的隨機連接埠提供 Streamable-HTTP M
 工具：`peapod_status`、`peapod_start`、`peapod_stop`、`peapod_navigate`、`peapod_reload`、`peapod_set_sync`、`peapod_send_operation`、`peapod_replay`、`peapod_screenshot`、`peapod_verify`、`peapod_diagnostics`。
 
 用戶端設定、完整工具說明、錄製格式與 agent 使用範例見 **[docs/mcp.md](docs/mcp.md)**。設定 `PEAPOD_MCP_DISABLE=1` 可關閉此服務。
+
+MCP 導覽到 localhost、回環、私網、鏈路本機或 mDNS 位址時，預設只顯示警告，絕不阻擋。`peapod_start`、`peapod_navigate` 與 `peapod_status` 的每頁狀態都會提供 `warnings`；重新導向和跟隨頁面對應 URL 會同步更新警告。可在設定中加入精確主機/IP 免警告清單，只關閉提示、不改變存取權限。Peapod 不會透過解析 DNS 來判斷目標類型。
 
 ## 隱私與安全
 
