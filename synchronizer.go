@@ -184,6 +184,7 @@ func (a *app) reconcileNavLocked(p *pageRecord, navigating bool) string {
 	nav := p.pendingNav
 	p.pendingNav = ""
 	p.navPendingAt = time.Time{}
+	markNavigationStartedLocked(p)
 	return nav
 }
 
@@ -207,6 +208,7 @@ func (a *app) applyNavBarrier(p *pageRecord) {
 		if !p.replaying && time.Since(p.navPendingAt) >= navFollowGrace {
 			p.pendingNav = ""
 			p.navPendingAt = time.Time{}
+			markNavigationStartedLocked(p)
 			view := p.view
 			reached := sameFollowURL(target, p.url)
 			a.mu.Unlock()

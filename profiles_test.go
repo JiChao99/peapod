@@ -25,6 +25,7 @@ func sampleProfile() profileData {
 		ShareStorage: true,
 		PrimaryOnly:  true,
 		Record:       true,
+		Diagnostics:  true,
 		Pages: []profilePage{
 			{Name: "primary", Vars: "host=example.com, lang=en-us", InjectJS: "document.body.dataset.qa = 'primary';", ResW: 390, ResH: 844},
 			{Name: "de", Vars: "host=example.com, lang=de", InjectJS: "document.body.dataset.qa = 'de';", ResW: 390, ResH: 844},
@@ -43,7 +44,7 @@ func TestProfileFileRoundTrip(t *testing.T) {
 		t.Fatalf("readProfileFile: %v", err)
 	}
 	if got.Template != want.Template || got.ViewMode != want.ViewMode || got.UAPreset != want.UAPreset ||
-		got.ShareStorage != want.ShareStorage || got.PrimaryOnly != want.PrimaryOnly || got.Record != want.Record || len(got.Pages) != 2 ||
+		got.ShareStorage != want.ShareStorage || got.PrimaryOnly != want.PrimaryOnly || got.Record != want.Record || got.Diagnostics != want.Diagnostics || len(got.Pages) != 2 ||
 		got.Pages[0].Vars != want.Pages[0].Vars || got.Pages[0].InjectJS != want.Pages[0].InjectJS || got.Pages[1].ResH != 844 {
 		t.Fatalf("round trip mismatch: %+v vs %+v", got, want)
 	}
@@ -107,7 +108,7 @@ func TestSaveLoadFormRoundTrip(t *testing.T) {
 	a.template = "https://{host}/{lang}"
 	a.viewMode, a.lastViewMode = "mobile", "desktop"
 	a.uaPreset, a.uaCustom = "ipad", ""
-	a.shareStorage, a.record = true, true
+	a.shareStorage, a.record, a.diagnostics = true, true, true
 	a.configs = []*pageConfig{
 		{id: "c1", vars: "host=a.com, lang=en", injectJS: "document.body.dataset.qa = 'en';", resW: 400, resH: 900},
 		{id: "c2", vars: "host=a.com, lang=de", injectJS: "document.body.dataset.qa = 'de';", resW: 400, resH: 900},
@@ -131,7 +132,7 @@ func TestSaveLoadFormRoundTrip(t *testing.T) {
 		t.Fatalf("notice = %q, want loaded", b.notice)
 	}
 	if b.template != a.template || b.viewMode != "mobile" || b.uaPreset != "ipad" ||
-		!b.shareStorage || !b.record {
+		!b.shareStorage || !b.record || !b.diagnostics {
 		t.Fatalf("form not restored: %+v", b.currentProfile())
 	}
 	if len(b.configs) != 2 {

@@ -228,6 +228,7 @@ func sameQueryValues(a, b string) bool {
 // same failed URL), which keeps the error so a DNS failure is never masked as
 // ready. The caller holds a.mu.
 func (a *app) markNavCommittedLocked(p *pageRecord, u string) {
+	p.navSeq++
 	// A commit starts a fresh load attempt, so the previous attempt's failure no
 	// longer gates this attempt's finish. Reset before the same-URL early return:
 	// a successful in-page retry commits under the failed URL and must still be
@@ -305,9 +306,17 @@ func (a *app) clearManualNavLocked(p *pageRecord) {
 // resetNavLocked clears a page's failures and marks it loading for an explicit
 // navigate or reload, which also lifts a pause: a fresh document supersedes the
 // desync that paused it. The caller holds a.mu.
+func markNavigationStartedLocked(p *pageRecord) {
+	p.navSeq++
+	if p.status != "paused" {
+		p.status = "loading"
+	}
+}
+
 func resetNavLocked(p *pageRecord) {
 	p.navError = nil
 	p.navFailed = false
 	p.lastError = nil
+	markNavigationStartedLocked(p)
 	p.status = "loading"
 }

@@ -249,6 +249,7 @@ func (a *app) followTargets(primary *pageRecord, raw string) []followTarget {
 			continue
 		}
 		f.pendingNav = ""
+		markNavigationStartedLocked(f)
 		targets = append(targets, followTarget{view: f.view, url: target})
 	}
 	return targets

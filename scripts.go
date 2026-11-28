@@ -423,7 +423,16 @@ func diagPreload() string {
     if (window.__peapodDiag) return;
     const MAX = 200;
     const diag = { console: [], network: [], errors: [] };
-    window.__peapodDiag = diag;
+    // Expose snapshots so page scripts cannot clear the evidence buffers.
+    Object.defineProperty(window, '__peapodDiag', {
+      configurable: false,
+      enumerable: false,
+      get: () => ({
+        console: diag.console.map(item => ({ ...item })),
+        network: diag.network.map(item => ({ ...item })),
+        errors: diag.errors.map(item => ({ ...item })),
+      }),
+    });
     const now = () => Date.now();
     const push = (arr, item) => { arr.push(item); if (arr.length > MAX) arr.shift(); };
     const clip = (s) => String(s).slice(0, 2000);

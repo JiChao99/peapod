@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestValidateOperation(t *testing.T) {
@@ -48,6 +49,24 @@ func TestErrorCode(t *testing.T) {
 		if got := errorCode(c.err); got != c.want {
 			t.Errorf("errorCode(%v) = %q, want %q", c.err, got, c.want)
 		}
+	}
+}
+
+func TestReconcileNavMarksNavigationStarted(t *testing.T) {
+	a := newApp()
+	p := &pageRecord{
+		id: "p2", url: "https://staging.example.com/", status: "ready", syncOn: true,
+		pendingNav: "https://staging.example.com/cart", navPendingAt: time.Now().Add(-2 * navFollowGrace),
+		queue: newOpQueue(0), navSeq: 7,
+	}
+	a.mu.Lock()
+	nav := a.reconcileNavLocked(p, false)
+	a.mu.Unlock()
+	if nav != "https://staging.example.com/cart" {
+		t.Fatalf("navigation = %q", nav)
+	}
+	if p.navSeq != 8 || p.status != "loading" || p.pendingNav != "" {
+		t.Fatalf("navigation start not marked: %+v", p)
 	}
 }
 

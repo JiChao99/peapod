@@ -51,6 +51,7 @@ type pageRecord struct {
 	navError      *navFailure    // failed navigation (DNS/TLS/timeout…); guarded by mu
 	navFailed     bool           // current load attempt failed; gates Linux finish-after-fail; guarded by mu
 	capture       *captureFlight // outstanding CapturePage coalescing concurrent shots; guarded by mu
+	diagnostics   bool           // collect console/network/error evidence from document start
 	queue         *opQueue
 	injectEvents  []injectedEvent // bounded host events from injected JS; guarded by mu
 	injectTokens  float64
@@ -71,6 +72,7 @@ type pageRecord struct {
 	// navSignal is a buffered ping sent on every committed navigation so a
 	// queued navigation barrier can wait for the follower to reach its target.
 	navSignal chan struct{}
+	navSeq    uint64
 
 	// appliedZoom is touched only on the main thread by the native panel: it
 	// tracks the last zoom set to fit the configured resolution.
@@ -132,6 +134,10 @@ type appState struct {
 	RecordDir     string       `json:"recordDir,omitempty"`
 	Replay        *replayState `json:"replay,omitempty"`
 
+	// Verification is the latest completed multi-page assertion run.
+	Verification *verificationReport `json:"verification,omitempty"`
+	VerifyBusy   bool                `json:"verifyBusy,omitempty"`
+
 	// SyncDelayMs is the running task's pace for continuous operations
 	// (input/scroll); 0 replays them instantly.
 	SyncDelayMs float64 `json:"syncDelayMs"`
@@ -191,6 +197,9 @@ type app struct {
 	rec    *recorder
 	replay *replayRun
 
+	verification     *verificationReport
+	verificationBusy bool
+
 	// taskViewMode is the resolved view mode of the running task, guarded by mu.
 	// The stage renders from it, not the setup form's viewMode, so an MCP-started
 	// task lays out by the mode it actually requested.
@@ -242,6 +251,7 @@ type app struct {
 	shareStorage bool
 	primaryOnly  bool
 	record       bool   // record operations + per-step screenshots; UI-owned like shareStorage
+	diagnostics  bool   // collect console/network/error evidence from document start
 	syncDelay    string // continuous-operation pace in ms ("0" = instant); UI-owned like shareStorage
 	syncUI       map[string]*bool
 	urlDrafts    map[string]*urlDraft
@@ -303,7 +313,8 @@ type app struct {
 
 	// recView is the in-app recordings browser (recordview.go), UI-owned like
 	// the setup form: touched only on the main thread in view().
-	recView recBrowser
+	recView    recBrowser
+	verifyView verificationView
 }
 
 func newApp() *app {
@@ -332,6 +343,10 @@ func newApp() *app {
 		urlDrafts:    map[string]*urlDraft{},
 		canvasWidths: map[string]float64{},
 		canvasPos:    map[string][2]float64{},
+		verifyView: verificationView{
+			checks:    []verificationCheck{{Kind: "console", Operator: "clean"}},
+			timeoutMs: "5000",
+		},
 		configs: []*pageConfig{
 			{id: "c1", resW: 1280, resH: 800},
 			{id: "c2", resW: 1280, resH: 800},
@@ -695,7 +710,7 @@ func (a *app) buildRequest() (startRequest, error) {
 		}
 	}
 	return startRequest{pages: pages, shareStorage: a.shareStorage, primaryOnly: a.primaryOnly, viewMode: a.viewMode,
-		userAgent: resolveUA(a.uaPreset, a.uaCustom, a.viewMode), record: a.record,
+		userAgent: resolveUA(a.uaPreset, a.uaCustom, a.viewMode), record: a.record, diagnostics: a.diagnostics,
 		syncDelay: formSyncDelay(a.syncDelay)}, nil
 }
 
@@ -768,6 +783,7 @@ func (a *app) launch(req startRequest) error {
 	a.startAt = time.Now()
 	a.message = ""
 	a.clearNoticeLocked()
+	a.verification = nil
 	a.cancel = make(chan struct{})
 	cancel := a.cancel
 	taskID := a.taskID
@@ -802,7 +818,7 @@ func (a *app) stopTask() error {
 		a.mu.Unlock()
 		return nil
 	}
-	if a.status == "starting" && a.cancel != nil {
+	if a.cancel != nil {
 		close(a.cancel)
 		a.cancel = nil
 	}
@@ -1335,19 +1351,20 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 			continue
 		}
 		p := &pageRecord{
-			id:        id,
-			name:      rp.name,
-			url:       rp.url,
-			base:      rp.base,
-			resW:      rp.resW,
-			resH:      rp.resH,
-			view:      view,
-			session:   session,
-			status:    "loading",
-			syncOn:    true,
-			isPrimary: i == 0,
-			queue:     newOpQueue(req.syncDelay),
-			navSignal: make(chan struct{}, 1),
+			id:          id,
+			name:        rp.name,
+			url:         rp.url,
+			base:        rp.base,
+			resW:        rp.resW,
+			resH:        rp.resH,
+			view:        view,
+			session:     session,
+			status:      "loading",
+			syncOn:      true,
+			isPrimary:   i == 0,
+			diagnostics: req.diagnostics,
+			queue:       newOpQueue(req.syncDelay),
+			navSignal:   make(chan struct{}, 1),
 		}
 		a.attachHandlers(p)
 
@@ -1398,6 +1415,17 @@ func (a *app) attachHandlers(p *pageRecord) {
 	page := p.view.Page()
 	page.SetWindowOpenHandler(func(mygo.WindowOpenRequest) *mygo.WindowOptions { return nil })
 	page.SetPermissionHandler(func(mygo.PermissionRequest) bool { return false })
+	page.OnWillNavigate(func(e *mygo.NavigateEvent) {
+		a.mu.Lock()
+		if !p.closed {
+			p.navSeq++
+			if !sameDocumentURL(p.url, e.URL) && p.status != "paused" {
+				p.status = "loading"
+			}
+		}
+		a.mu.Unlock()
+		a.pushState()
+	})
 	page.OnDOMReady(func() {
 		a.mu.Lock()
 		a.markReadyLocked(p)
@@ -1567,6 +1595,8 @@ func (a *app) snapshot() appState {
 	if rp := a.replay; rp != nil {
 		st.Replay = &replayState{Active: rp.active, Done: rp.done, Total: rp.total, Skipped: rp.skipped, Error: rp.err}
 	}
+	st.Verification = a.verification
+	st.VerifyBusy = a.verificationBusy
 	return st
 }
 

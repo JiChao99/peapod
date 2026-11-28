@@ -27,7 +27,7 @@
   <img src="docs/images/mcp-ready-panel.png" alt="Peapod 以行動裝置模式並排執行同一網站的四個語言版本，畫面顯示每頁同步開關與即時錄製徽章">
 </p>
 
-Peapod v0.11.0 可於單一視窗開啟 2–10 個頁面。你在**主頁**上點擊、輸入、捲動及送出，其餘頁面會依序即時重播相同操作。把各頁面指向不同語言、網域或環境，就能讓同一條流程在所有版本上同步走一遍，並留下截圖與可回放的腳本。
+Peapod v0.12.0 可於單一視窗開啟 2–10 個頁面。你在**主頁**上點擊、輸入、捲動及送出，其餘頁面會依序即時重播相同操作。把各頁面指向不同語言、網域或環境，就能讓同一條流程在所有版本上同步走一遍，並留下截圖與可回放的腳本。
 
 這是一款以 [MyGo](https://github.com/egoist/mygo) 打造的原生 Go 應用程式，介面採用 [Lobe MyGo](https://github.com/lobehub/lobe-mygo) 元件（Lobe UI 設計語言的原生 Go 實作）。它以單一執行檔提供，直接使用系統 WebView，不內建瀏覽器。
 
@@ -45,7 +45,7 @@ Peapod v0.11.0 可於單一視窗開啟 2–10 個頁面。你在**主頁**上�
 1. **新增頁面**：輸入主頁 URL，最多新增 10 個頁面；留空的頁面沿用主頁 URL。使用**批次新增**貼上 URL 清單，一次產生多頁，或複製任一列再修改差異。若要比較變體，可設定 `https://{host}/{lang}` 或 `https://{host}/?yplang={lang}` 這類範本，再為每頁填入自己的變數（`host=staging.example.com, lang=de`）。
 2. **選擇設定**：選擇桌面模式（一次顯示一個大頁面）、行動模式（所有頁面並排），或自由畫布（可拖曳頁面，並等比例獨立調整大小）；設定每頁解析度，為整個任務選擇一個 User-Agent 預設（預設跟隨模式，因此行動模式使用 iPhone），選擇共用或隔離儲存空間，並視需要開啟**操作錄製**或**僅限主頁操作**。也可將整套設定儲存為具名設定檔，之後直接載入。
 3. **啟動並操作**：像平常一樣操作主頁，其餘頁面會自動跟隨。點擊頁面卡片可將該頁移到最前面。執行中可直接修改任一頁面的 URL 並按下**開啟**，在同一頁面內跳轉並保留工作階段與 Cookie，適合登入後返回原本要訪問的頁面。
-4. **收集證據**：一鍵批次截圖所有頁面，自由畫布另可將整張畫布儲存為一張 PNG。開啟**錄製紀錄**查看步驟時間軸、回放工作階段或匯出 HTML 報告。回放會在包含主頁在內的所有頁面重播操作，但不包含導覽，因此請先在流程入口 URL 啟動任務。
+4. **收集證據並驗證**：一鍵批次截圖所有頁面，自由畫布另可將整張畫布儲存為一張 PNG；也可開啟**驗證**，檢查全部頁面的文字、DOM、URL、HTTP 與 Console 結果。開啟**錄製紀錄**可查看步驟時間軸、回放工作階段或匯出 HTML 報告。回放會在包含主頁在內的所有頁面重播操作，但不包含導覽，因此請先在流程入口 URL 啟動任務。
 5. **停止任務**：所有頁面隨即關閉，工作階段資料全部清除。
 
 ## 功能
@@ -74,11 +74,12 @@ Peapod v0.11.0 可於單一視窗開啟 2–10 個頁面。你在**主頁**上�
 - **整張畫布截圖**：自由畫布下可依目前排列將所有可見頁面合成一張 `canvas.png`；單一頁面失敗時，會在對應位置放入含名稱的佔位圖。
 - **操作錄製**：開啟後，每項操作都會寫入可回放的 `script.jsonl`，任務穩定後還會截取所有頁面。彈出視窗（DOM 對話框、浮動提示、原生 `alert`/`confirm`/`prompt`）會記錄文字，DOM 彈出視窗另附截圖，方便驗證多語言文案。
 - **錄製紀錄檢視器**：列出歷史錄製，可查看逐步時間軸、每頁縮圖與穿插在步驟中的彈出視窗；可在執行中的任務上回放，也可匯出包含彈出視窗文字與截圖的獨立 HTML 報告。
+- **驗證斷言**：開啟**驗證**，對全部頁面執行最多 5 條文字、DOM、URL、HTTP 或 Console 斷言。Peapod 會等待條件成立、留存截圖，並在本機 HTML 報告中列出 PASS/FAIL 與跨頁面差異。
 
 ### 自動化
 
-- **MCP 伺服器**：由 token 保護的本機 [Model Context Protocol](https://modelcontextprotocol.io) 端點，讓 AI agent 無需操作介面，即可啟動任務、導覽、執行操作、回放、截圖、診斷與停止任務。
-- **驗收診斷**：導覽失敗時會提供固定的錯誤名稱（`NAME_NOT_RESOLVED`、`TIMEOUT` 等）。另有僅限 MCP、需主動開啟的收集器，可提供主文件 HTTP 狀態、頁面文字，以及 console、network 與 error 活動，讓 agent 根據實際結果判斷，而不只看截圖。
+- **MCP 伺服器**：由 token 保護的本機 [Model Context Protocol](https://modelcontextprotocol.io) 端點，讓 AI agent 無需操作介面，即可啟動任務、導覽、執行操作、回放、截圖、驗證、診斷與停止任務。
+- **驗收診斷**：導覽失敗時會提供固定的錯誤名稱（`NAME_NOT_RESOLVED`、`TIMEOUT` 等）。在進階設定中開啟**驗收診斷**（或透過 MCP 傳入 `diagnostics:true`），即可從文件開始時收集主文件 HTTP 狀態、頁面文字，以及 console、network 與 error 活動。
 - **每檢視 JS 注入**：可在每個文件開始時注入測試指令碼。存取 DOM 前請等待 `DOMContentLoaded`；呼叫 `window.peapod.emit(name, payload)` 可把受限事件回傳至 `peapod_diagnostics.injectedEvents`。
 
 ### 日常體驗
@@ -118,7 +119,7 @@ Peapod 啟動後，會在 `127.0.0.1` 的隨機連接埠提供 Streamable-HTTP M
 | macOS | `~/Library/Application Support/Peapod/mcp.json` |
 | Linux | `~/.config/Peapod/mcp.json` |
 
-工具：`peapod_status`、`peapod_start`、`peapod_stop`、`peapod_navigate`、`peapod_reload`、`peapod_set_sync`、`peapod_send_operation`、`peapod_replay`、`peapod_screenshot`、`peapod_diagnostics`。
+工具：`peapod_status`、`peapod_start`、`peapod_stop`、`peapod_navigate`、`peapod_reload`、`peapod_set_sync`、`peapod_send_operation`、`peapod_replay`、`peapod_screenshot`、`peapod_verify`、`peapod_diagnostics`。
 
 用戶端設定、完整工具說明、錄製格式與 agent 使用範例見 **[docs/mcp.md](docs/mcp.md)**。設定 `PEAPOD_MCP_DISABLE=1` 可關閉此服務。
 
@@ -128,13 +129,14 @@ Peapod 啟動後，會在 `127.0.0.1` 的隨機連接埠提供 Streamable-HTTP M
 - 只接受 `http`/`https` URL，內嵌認證資訊的 URL 會被拒絕。
 - 工作階段都是暫時的，任務停止時資料即被清除。
 - 彈出視窗與權限請求（攝影機、麥克風、通知等）會被封鎖；每頁的 IPC 只對自己的 origin 開放。
-- 截圖與錄製只留在本機，分別位於 `Pictures/Peapod/screenshots` 與 `Pictures/Peapod/recordings`（Windows 上即「圖片」資料夾）。錄製腳本包含其他輸入文字，請視為敏感檔案。
+- 截圖與錄製只留在本機，分別位於 `Pictures/Peapod/screenshots`、`Pictures/Peapod/recordings` 與 `Pictures/Peapod/verifications`（Windows 上即「圖片」資料夾）。錄製腳本包含其他輸入文字，請視為敏感檔案。
 - Peapod 沒有遙測，不會上傳任務 URL、頁面內容、Cookie、截圖或錄製檔案。更新功能只取得公開發行元資料；只有點擊「下載並安裝」後才會下載相符公開套件，兩種請求都不包含任務資料。
 - MCP 伺服器只監聽本機迴環位址，每個請求都必須帶 token，並拒絕瀏覽器發出的跨源請求。頁面內容屬於不可信資料，agent 不應執行其中夾帶的指令。
 
 ## 已知限制
 
 - **User-Agent 預設只改變 UA 字串**：頁面仍由平台 WebView 渲染，因此無法重現特定引擎的問題（例如在 Windows 上重現 Safari 獨有的 bug）。
+- **驗證層保持輕量**：斷言只等待有界的頁面條件並比較結果，不引入 Checkpoint Sync、通用測試 DSL 或完整的瀏覽器自動化執行器。
 - **截圖需要視窗可見且不可最小化**：Peapod 最小化時 WebView 會停止渲染，截圖會逾時，直到視窗恢復。頁面始終保持設定的原生解析度，僅對預覽做視覺縮放，因此錄製不再切換舞台配置。
 - **導覽跟隨只在主頁所在主機內生效**：跟隨頁不會跟著跳到其他網站，這是刻意設計。
 - **開啟新視窗或新分頁的連結會被封鎖**，因為彈出視窗已停用。

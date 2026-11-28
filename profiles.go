@@ -33,6 +33,7 @@ type profileData struct {
 	ShareStorage bool          `json:"shareStorage"`
 	PrimaryOnly  bool          `json:"primaryOnly"`
 	Record       bool          `json:"record"`
+	Diagnostics  bool          `json:"diagnostics"`
 	SyncDelay    string        `json:"syncDelay"`
 	Pages        []profilePage `json:"pages"`
 }
@@ -104,6 +105,7 @@ func (a *app) currentProfile() profileData {
 		ShareStorage: a.shareStorage,
 		PrimaryOnly:  a.primaryOnly,
 		Record:       a.record,
+		Diagnostics:  a.diagnostics,
 		SyncDelay:    a.syncDelay,
 		Pages:        pages,
 	}
@@ -157,6 +159,7 @@ func (a *app) applyProfile(p profileData) error {
 	a.shareStorage = p.ShareStorage
 	a.primaryOnly = p.PrimaryOnly
 	a.record = p.Record
+	a.diagnostics = p.Diagnostics
 	syncDelay := "100"
 	for _, v := range syncDelayOptions {
 		if v == p.SyncDelay {

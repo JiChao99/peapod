@@ -31,6 +31,10 @@ type captureResult struct {
 }
 
 func (a *app) captureAtConfiguredSize(p *pageRecord, timeout time.Duration) ([]byte, error) {
+	return a.captureAtConfiguredSizeContext(context.Background(), p, timeout)
+}
+
+func (a *app) captureAtConfiguredSizeContext(parent context.Context, p *pageRecord, timeout time.Duration) ([]byte, error) {
 	if timeout <= 0 {
 		timeout = captureTimeout
 	}
@@ -40,7 +44,7 @@ func (a *app) captureAtConfiguredSize(p *pageRecord, timeout time.Duration) ([]b
 	if a.captureGate == nil {
 		return nil, fmt.Errorf("capture gate is not initialized")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
 	select {
