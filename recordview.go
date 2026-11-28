@@ -876,6 +876,7 @@ func recListHas(list []recSessionMeta, dir string) bool {
 func (a *app) toggleRecordings() {
 	a.recView.open = !a.recView.open
 	if a.recView.open {
+		a.verifyView.open = false
 		a.refreshRecList()
 	}
 	a.invalidate()

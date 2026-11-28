@@ -158,6 +158,8 @@ func (a *app) view(c *ui.Context) {
 	c.OnWindowShortcut(0, ui.KeyEscape, func() {
 		if a.recView.open && a.recView.lightbox == nil {
 			a.toggleRecordings()
+		} else if a.verifyView.open {
+			a.toggleVerification()
 		}
 	})
 
@@ -753,6 +755,14 @@ func (a *app) advancedBody(c *ui.Context, tk *theme.Tokens) {
 				})
 				choice.Switch(c, &a.record, choice.SwitchProps{})
 			})
+
+			ui.Row(c).Gap(10).AlignItems(ui.Center).Children(func() {
+				ui.Column(c).Grow(1).Gap(2).Children(func() {
+					ui.Text(c, a.tr("ui.diagnostics")).FontSize(14).TextColor(tk.Text)
+					ui.Text(c, a.tr("ui.diagnostics.hint")).FontSize(12).TextColor(tk.TextTertiary).Wrap()
+				})
+				choice.Switch(c, &a.diagnostics, choice.SwitchProps{})
+			})
 		})
 	})
 }
@@ -1211,7 +1221,9 @@ func (a *app) renderStage(c *ui.Context, tk *theme.Tokens, st appState) {
 	ui.Column(c).Grow(1).MinWidth(0).Background(tk.BgLayout).Children(func() {
 		ui.Row(c).Height(toolbarHeight).Padding(0, 16).Gap(10).AlignItems(ui.Center).
 			Background(tk.BgContainer).Children(func() {
-			if a.recView.open {
+			if a.verifyView.open {
+				ui.Text(c, a.tr("ui.verify")).FontSize(15).Bold().TextColor(tk.TextHeading).Grow(1).MinWidth(0).SingleLine()
+			} else if a.recView.open {
 				ui.Text(c, a.tr("rec.title")).FontSize(15).Bold().TextColor(tk.TextHeading).Grow(1).MinWidth(0).SingleLine()
 			} else if mobile && len(all) > 0 {
 				ui.Text(c, a.tr("ui.mobile.title", len(all))).FontSize(15).Bold().TextColor(tk.TextHeading).Grow(1).MinWidth(0).SingleLine()
@@ -1228,10 +1240,16 @@ func (a *app) renderStage(c *ui.Context, tk *theme.Tokens, st appState) {
 				}
 			}
 			a.recToggleButton(c, tk)
+			if !a.recView.open {
+				a.iconButton(c, tk, lucide.ShieldCheck(), a.tr("ui.verify"), func() { a.toggleVerification() })
+			}
 			if a.recView.open {
 				a.iconButton(c, tk, lucide.X(), a.tr("rec.close"), func() { a.toggleRecordings() })
 			}
-			if !a.recView.open && activeView != nil {
+			if a.verifyView.open {
+				a.iconButton(c, tk, lucide.X(), a.tr("ui.verify.close"), func() { a.toggleVerification() })
+			}
+			if !a.recView.open && !a.verifyView.open && activeView != nil {
 				if free {
 					a.iconButton(c, tk, lucide.Scan(), a.tr("ui.canvas.reset"), func() { a.resetCanvasLayout(all) })
 					a.iconButton(c, tk, lucide.Image(), a.tr("ui.canvas.shot"), func() { a.screenshotCanvas() }, st.ShotBusy)
@@ -1253,6 +1271,8 @@ func (a *app) renderStage(c *ui.Context, tk *theme.Tokens, st appState) {
 		}
 		if a.recView.open {
 			a.renderRecordingsOverlay(c, tk, barH)
+		} else if a.verifyView.open {
+			a.renderVerificationOverlay(c, tk, st, barH)
 		}
 	})
 }

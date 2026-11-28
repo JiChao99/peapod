@@ -72,6 +72,7 @@ Because the port/token rotate per launch, either regenerate this config from `mc
 | `peapod_send_operation` | `operation` | Replay a host-trusted operation on every synced follower. |
 | `peapod_replay` | `scriptPath`, optional `delayMs` (0–5000, default 500) | Re-enact a recorded `script.jsonl` on **every** page of the running task, including the primary. Returns `{"status":"replaying","steps":n}` immediately; poll `peapod_status.replay` until `active` is `false` (see [Recording & replay](#recording--replay)). |
 | `peapod_screenshot` | optional `pageId` (default primary), `timeoutMs` (1000–60000, default 10000) | Capture one page as a PNG at its configured `resW × resH`, regardless of the scaled canvas size. Bounded by a timeout: a page that is not rendering fails with an error instead of hanging (see below). |
+| `peapod_verify` | `checks[]` (1–5), optional `timeoutMs` (250–30000, default 5000) | Run text/DOM/URL/HTTP/console checks on every running page, wait for conditions, capture screenshots, and return PASS/FAIL results, cross-page differences and a local HTML report path. |
 | `peapod_diagnostics` | optional `pageId` (default primary) | Read a page's acceptance diagnostics: `status`/`navError`, plus URL/title/readyState, the main document's HTTP status, bounded body text, and recent console/network/error activity. Installs the opt-in collector on demand (idempotent) if it was not injected at start. |
 
 ### `peapod_status` response
@@ -144,6 +145,43 @@ Returns the Go-side page state plus an in-page read (via a bounded Eval). It als
 - `console`, `network` and `errors` are bounded ring buffers collected by an **opt-in** preload hook (console output, uncaught errors/rejections, fetch/XHR activity and resource timing). The hook is **off by default** — it never wraps a page's `console`/`fetch`/`XHR` unless you ask for diagnostics. It is installed lazily on the first `peapod_diagnostics` call (idempotent: re-calling never double-wraps or resets the buffers), or injected at document start when `peapod_start` sets `diagnostics:true` so early page-load activity is captured too. The buffers reset on a full document navigation and accumulate across same-document (SPA) moves. Every hook passes the original call through unchanged and never throws into the page; the capture/replay sync path is untouched.
 - On a failed page (e.g. a DNS error showing WebView2's error document) the in-page read may be unavailable: the result then carries `evalError` instead of `eval`, while `status` and `navError` are still returned.
 
+### `peapod_verify`
+
+`peapod_verify` turns the diagnostics snapshot into a small, explicit verification layer. It does not execute caller-supplied JavaScript, install diagnostics hooks, or change synchronization/replay behavior.
+
+```json
+{
+  "checks": [
+    { "kind": "text", "selector": "#total", "operator": "contains", "value": "10.99" },
+    { "kind": "dom", "selector": "#pay", "operator": "visible" },
+    { "kind": "url", "operator": "contains", "value": "/checkout" },
+    { "kind": "http", "operator": "success" },
+    { "kind": "console", "operator": "clean" }
+  ],
+  "timeoutMs": 5000
+}
+```
+
+Supported checks:
+
+- `text`: `contains`, `equals`, `not_contains`; `selector` is optional and defaults to body text.
+- `dom`: `visible` or `exists`; `selector` is required.
+- `url`: `contains`, `equals`, `not_contains`.
+- `http`: `success` (2xx) or `equals` with a status from 100–599.
+- `console`: `clean` (no `console.error`, uncaught errors or unhandled rejections collected so far). Requires `diagnostics:true` at task start, or **Acceptance diagnostics** enabled in the native panel; without document-start evidence the check fails instead of reporting an empty history as success.
+
+Limits are deliberately small: 1–5 checks, selectors up to 512 bytes, expected values up to 2000 bytes, and a per-page wait budget of 250 ms–30 s. Checks run concurrently across pages but sequentially within each page. A check returns as soon as all conditions pass; `console:clean` is therefore a snapshot of errors collected up to that point, not a guarantee that no later error can occur. Start with `diagnostics:true`, or enable **Acceptance diagnostics** in the native panel before starting the flow, when early page-load errors matter. Stopping the task cancels an in-flight verification.
+
+The response includes `taskId`, `runId`, overall `status`, every page's URL and per-check `expected`/`actual`/`pass`, cross-page `differences`, screenshot errors, and `reportPath`. Artifacts are written under `Pictures/Peapod/verifications/verification_<timestamp>-*`:
+
+```
+verification.json
+report.html
+screenshots/page-01.png
+```
+
+The HTML report escapes all page content and references screenshots only inside the run folder. A missing screenshot is reported separately and does not change the business-check verdict. The native panel's **Verify** view runs the same checks and shows the latest result; `peapod_status` also exposes `verification` and `verifyBusy`.
+
 ### `peapod_start` pages
 
 Each page accepts `name`, and either plain-mode `url` or template-mode `vars` + `path`, plus optional `resW` / `resH` (200–3840) and `injectJS` (max 64 KiB; see [JavaScript injection](#javascript-injection)).
@@ -151,7 +189,7 @@ Each page accepts `name`, and either plain-mode `url` or template-mode `vars` + 
 - **Plain mode** (no `template`): the first page's `url` is required; a later page with an empty `url` inherits it. Query keys with different values across configured URLs are treated as per-page variants during navigation follow.
 - **Template mode** (`template` set, e.g. `https://{host}/{lang}` or `https://{host}/?yplang={lang}`): each page supplies `vars` (`host=dev.example.com, lang=en`) and an optional `path` (default `/`). Path and query variants are supported; navigation follow maps paths and keeps each page's template query values. A page `path` may carry its own query and fragment; its query values are merged over the template's for the initial URL.
 
-`diagnostics` (default `false`) is a task-level opt-in: when `true`, the console/network/error collector is injected into every page at document start, so activity from the very first load is captured. Leave it `false` for ordinary mirroring — `peapod_diagnostics` still works and installs the collector on demand the first time you call it (capturing activity from that point on). The native panel never injects the collector.
+`diagnostics` (default `false`) is a task-level opt-in: when `true`, the console/network/error collector is injected into every page at document start, so activity from the very first load is captured. Leave it `false` for ordinary mirroring — `peapod_diagnostics` still works and installs the collector on demand the first time you call it (capturing activity from that point on). The native panel exposes the same opt-in as **Acceptance diagnostics** in advanced settings and saves it with setup profiles.
 
 ### View modes and primary-only operation
 

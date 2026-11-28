@@ -75,12 +75,16 @@ func TestBuildRequestInheritsPrimaryURL(t *testing.T) {
 	a := newApp()
 	a.configs[0].url = "https://example.com"
 	a.configs[1].name = "Staging"
+	a.diagnostics = true
 	req, err := a.buildRequest()
 	if err != nil {
 		t.Fatalf("buildRequest: %v", err)
 	}
 	if len(req.pages) != 3 {
 		t.Fatalf("got %d pages, want 3", len(req.pages))
+	}
+	if !req.diagnostics {
+		t.Fatal("diagnostics setting not passed to start request")
 	}
 	wantNames := []string{"主页面", "Staging", "页面 3"}
 	for i, p := range req.pages {

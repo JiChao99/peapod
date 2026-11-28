@@ -14,7 +14,7 @@ import (
 )
 
 const (
-	appVersion         = "0.11.0"
+	appVersion         = "0.12.0"
 	latestReleaseURL   = "https://api.github.com/repos/JiChao99/peapod/releases/latest"
 	maxReleaseBytes    = 1 << 20
 	releaseHTTPTimeout = 12 * time.Second

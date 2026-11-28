@@ -70,7 +70,7 @@ func TestMarkNavFailedClosedNoop(t *testing.T) {
 
 func TestMarkNavCommittedClearsError(t *testing.T) {
 	a := newApp()
-	p := &pageRecord{id: "p1", status: "error", navError: &navFailure{URL: "https://bad.invalid/", Name: "NAME_NOT_RESOLVED"}}
+	p := &pageRecord{id: "p1", status: "error", navSeq: 2, navError: &navFailure{URL: "https://bad.invalid/", Name: "NAME_NOT_RESOLVED"}}
 	a.mu.Lock()
 	a.markNavCommittedLocked(p, "https://good.example/")
 	a.mu.Unlock()
@@ -79,6 +79,9 @@ func TestMarkNavCommittedClearsError(t *testing.T) {
 	}
 	if p.status != "loading" {
 		t.Fatalf("status = %q, want loading", p.status)
+	}
+	if p.navSeq != 3 {
+		t.Fatalf("navSeq = %d, want 3", p.navSeq)
 	}
 }
 
@@ -314,11 +317,11 @@ func TestSameFollowURL(t *testing.T) {
 
 func TestResetNavLocked(t *testing.T) {
 	p := &pageRecord{
-		status: "paused", navError: &navFailure{URL: "https://bad.invalid/"},
+		status: "paused", navError: &navFailure{URL: "https://bad.invalid/"}, navSeq: 4,
 		navFailed: true, lastError: &syncError{Code: "NOT_FOUND"},
 	}
 	resetNavLocked(p)
-	if p.status != "loading" || p.navError != nil || p.navFailed || p.lastError != nil {
+	if p.status != "loading" || p.navError != nil || p.navFailed || p.lastError != nil || p.navSeq != 5 {
 		t.Fatalf("reset left %+v", p)
 	}
 }

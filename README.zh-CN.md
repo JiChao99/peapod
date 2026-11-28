@@ -27,7 +27,7 @@
   <img src="docs/images/mcp-ready-panel.png" alt="Peapod 在移动端模式下同屏对比同一站点的四个语言变体，面板显示每页同步开关与实时录制徽标">
 </p>
 
-Peapod v0.11.0 在一个窗口里同时打开 2–10 个页面。你在**主页面**上点击、输入、滚动、提交，其余页面会按相同顺序实时回放这些操作。把各个页面指向不同的语言、域名或环境，一条流程就能在所有变体上同时走一遍，并留下截图和可回放的脚本。
+Peapod v0.12.0 在一个窗口里同时打开 2–10 个页面。你在**主页面**上点击、输入、滚动、提交，其余页面会按相同顺序实时回放这些操作。把各个页面指向不同的语言、域名或环境，一条流程就能在所有变体上同时走一遍，并留下截图和可回放的脚本。
 
 这是一款基于 [MyGo](https://github.com/egoist/mygo) 的原生 Go 应用，界面采用 [Lobe MyGo](https://github.com/lobehub/lobe-mygo) 组件（Lobe UI 设计语言的原生 Go 实现）：单个二进制，直接使用系统 webview，不内置浏览器。
 
@@ -45,7 +45,7 @@ Peapod v0.11.0 在一个窗口里同时打开 2–10 个页面。你在**主页�
 1. **添加页面**：填写主页面 URL，最多添加 10 个页面；留空的页面沿用主页面 URL。用**批量添加**粘贴 URL 列表一次生成多页，或复制任意一行再改差异。如果要对比变体，可以设置 `https://{host}/{lang}` 或 `https://{host}/?yplang={lang}` 这样的模板，再给每页填写各自的变量（`host=staging.example.com, lang=de`）。
 2. **选择配置**：选择桌面模式（一次显示一个大页面）、移动模式（所有页面并排），或自由画布（可拖动页面，并按比例独立调整大小），然后设置每页分辨率，为整个任务选一个 User-Agent 预设（默认跟随模式，移动模式即为 iPhone），选择隔离还是共享存储；需要时打开**操作录制**或**仅允许操作主页面**。也可以将整套配置保存为具名方案，之后直接载入。
 3. **启动并操作**：像平时一样操作主页面，其余页面会自动跟随。点击页面卡片可以把对应页面切到前台。运行中可直接修改某个页面的 URL 并点**打开**，在同一个页面内跳转并保留会话与 Cookie，适合登录后从首页快速回到原本要访问的链接。
-4. **收集证据**：一键批量截图所有页面，自由画布还可以整张画布截图并保存为一个 PNG。或者打开**录制记录**查看步骤时间线，回放录制或导出 HTML 报告。回放会在包括主页面在内的所有页面上重演各步操作，但不包含导航，所以请先在流程的入口 URL 启动任务。
+4. **收集证据并验证**：一键批量截图所有页面，自由画布还可以整张画布截图并保存为一个 PNG；也可以打开**验证**，检查全部页面的文本、DOM、URL、HTTP 与 Console 结果。打开**录制记录**可查看步骤时间线、回放录制或导出 HTML 报告。回放会在包括主页面在内的所有页面上重演各步操作，但不包含导航，所以请先在流程的入口 URL 启动任务。
 5. **停止任务**：所有页面随即关闭，会话数据全部清除。
 
 ## 功能
@@ -71,10 +71,11 @@ Peapod v0.11.0 在一个窗口里同时打开 2–10 个页面。你在**主页�
 - **整张画布截图**：自由画布下可将所有页面按当前排列合成一个 `canvas.png`；单个页面截图失败时，会在对应位置放入带名称的占位图。
 - **操作录制**：开启后，每个操作都会写入可回放的 `script.jsonl`，每当任务稳定下来，还会给所有页面截图。弹窗（DOM 对话框、浮动提示、原生 `alert`/`confirm`/`prompt`）会自动记录文本，DOM 弹窗另有截图，方便断言多语言文案。
 - **录制记录浏览器**：列出历史录制，可查看逐步时间线、每页缩略图和与步骤混排的弹窗；可以在运行中的任务上回放，也可以导出包含弹窗文本与截图的独立 HTML 报告。
+- **验证断言**：打开**验证**，对全部页面运行最多 5 条文本、DOM、URL、HTTP 或 Console 断言。Peapod 会等待条件满足、留存截图，并在本机 HTML 报告中给出 PASS/FAIL 与跨页面差异。
 
 ### 自动化
-- **MCP 服务器**：本机 [Model Context Protocol](https://modelcontextprotocol.io) 端点，由 token 保护。AI agent 无需操作界面，就能启动任务、导航、执行操作、回放、截图、诊断和停止任务。
-- **验收诊断**：导航失败时会给出固定的错误名（`NAME_NOT_RESOLVED`、`TIMEOUT` 等）。另有一个仅限 MCP、需主动开启的采集器，可提供主文档 HTTP 状态、页面文本，以及 console、network 和 error 记录，让 agent 依据实际结果做判断，而不是只看截图。
+- **MCP 服务器**：本机 [Model Context Protocol](https://modelcontextprotocol.io) 端点，由 token 保护。AI agent 无需操作界面，就能启动任务、导航、执行操作、回放、截图、验证、诊断和停止任务。
+- **验收诊断**：导航失败时会给出固定的错误名（`NAME_NOT_RESOLVED`、`TIMEOUT` 等）。在高级设置中开启**验收诊断**（或通过 MCP 传 `diagnostics:true`），即可从文档开始时采集主文档 HTTP 状态、页面文本以及 console、network 和 error 记录。
 - **每视图 JS 注入**：可在每个文档开始时注入测试脚本。访问 DOM 前请等待 `DOMContentLoaded`；调用 `window.peapod.emit(name, payload)` 可把受限事件回传到 `peapod_diagnostics.injectedEvents`。
 
 ### 日常体验
@@ -113,7 +114,7 @@ Peapod 启动后，会在 `127.0.0.1` 的随机端口上提供 Streamable-HTTP M
 | macOS | `~/Library/Application Support/Peapod/mcp.json` |
 | Linux | `~/.config/Peapod/mcp.json` |
 
-工具：`peapod_status`、`peapod_start`、`peapod_stop`、`peapod_navigate`、`peapod_reload`、`peapod_set_sync`、`peapod_send_operation`、`peapod_replay`、`peapod_screenshot`、`peapod_diagnostics`。
+工具：`peapod_status`、`peapod_start`、`peapod_stop`、`peapod_navigate`、`peapod_reload`、`peapod_set_sync`、`peapod_send_operation`、`peapod_replay`、`peapod_screenshot`、`peapod_verify`、`peapod_diagnostics`。
 
 客户端配置、完整的工具说明、录制格式和 agent 使用示例见 **[docs/mcp.md](docs/mcp.md)**。设置 `PEAPOD_MCP_DISABLE=1` 可以关闭该服务。
 
@@ -123,13 +124,14 @@ Peapod 启动后，会在 `127.0.0.1` 的随机端口上提供 Streamable-HTTP M
 - 只接受 `http`/`https` URL，带内嵌凭据的 URL 会被拒绝。
 - 会话都是临时的，任务停止时数据即被清除。
 - 弹窗和权限请求（摄像头、麦克风、通知等）一律拦截；每个页面的 IPC 只对它自己的 origin 开放。
-- 截图和录制只保存在本机：分别位于用户主目录下的 `Pictures/Peapod/screenshots` 和 `Pictures/Peapod/recordings`（Windows 上即“图片”文件夹）。录制脚本里会包含其他输入过的文本，请当作敏感文件处理。
+- 截图和录制只保存在本机：分别位于用户主目录下的 `Pictures/Peapod/screenshots`、`Pictures/Peapod/recordings` 和 `Pictures/Peapod/verifications`（Windows 上即“图片”文件夹）。录制脚本里会包含其他输入过的文本，请当作敏感文件处理。
 - Peapod 没有遥测，不会上传任务 URL、页面内容、Cookie、截图或录制文件。更新功能只获取公开发布元数据；只有点击“下载并安装”后才会下载对应公开安装包，两种请求都不包含任务数据。
 - MCP 服务只监听本机回环地址，每个请求都必须带 token，并拒绝浏览器发起的跨源请求。页面内容属于不可信数据，agent 不应执行其中夹带的指令。
 
 ## 已知限制
 
 - **User-Agent 预设只改 UA 字符串**：页面仍由系统 webview 渲染，因此无法用它复现特定引擎的问题（比如在 Windows 上复现 Safari 独有的 bug）。
+- **验证层保持轻量**：断言只等待有界的页面条件并比较结果，不引入 Checkpoint Sync、通用测试 DSL 或完整的浏览器自动化运行器。
 - **截图要求窗口可见且不能最小化**：Peapod 窗口最小化时 webview 会停止渲染，截图会超时，直到窗口恢复。页面始终保持配置的原生分辨率，仅对预览做视觉缩放，因此录制不再切换舞台布局。
 - **导航跟随只在主页面所在主机内生效**：跟随页不会跟着跳到其他站点，这是有意的设计。
 - **打开新窗口或新标签页的链接会被拦截**，因为弹窗已被禁用。

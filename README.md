@@ -27,7 +27,7 @@
   <img src="docs/images/mcp-ready-panel.png" alt="Peapod running four locale variants of one site side by side in mobile mode, with per-page sync toggles and a live recording badge">
 </p>
 
-Peapod v0.11.0 opens 2–10 pages in one window. You click, type, scroll and submit on the **primary** page; every other page replays the same operations live, in order. Point the pages at different languages, domains or environments and you can walk through one flow on all of them at once, then keep screenshots and a replayable script of what happened.
+Peapod v0.12.0 opens 2–10 pages in one window. You click, type, scroll and submit on the **primary** page; every other page replays the same operations live, in order. Point the pages at different languages, domains or environments and you can walk through one flow on all of them at once, then keep screenshots and a replayable script of what happened.
 
 It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with its interface made from [Lobe MyGo](https://github.com/lobehub/lobe-mygo) components (the Lobe UI design language for native Go). It ships as a single binary that uses the system webview, with no bundled browser.
 
@@ -45,7 +45,7 @@ It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with it
 1. **Add pages.** Enter the primary URL and add up to 10 pages. A page left empty inherits the primary URL. Paste a URL list under **Bulk add** to generate several pages at once, or duplicate any row and tweak the difference. To work with variants, set a template such as `https://{host}/{lang}` or `https://{host}/?yplang={lang}` and give each page its own values (`host=staging.example.com, lang=de`).
 2. **Choose the setup.** Pick desktop mode (one large page at a time), mobile mode (all pages side by side), or free canvas (draggable pages with independent, proportional resizing), set each page's resolution, pick one User-Agent preset for the whole task (by default it follows the mode, so mobile mode uses iPhone), choose shared or isolated storage, and optionally turn on **Record operations** or **Primary page only**. Save the setup as a named profile to reload it later.
 3. **Start and operate.** Use the primary page as you normally would. The other pages follow. Click a page card to bring that page to the front. Edit a running page's URL and press **Open** to move that same page without losing its session or cookies; this is useful after a login redirects away from the page you need.
-4. **Collect evidence.** Take a batch screenshot of every page, or capture the whole free canvas as one PNG. Open **Recordings** to browse the step timeline, replay a session, or export an HTML report. Replay runs the steps on every page, including the primary, but doesn't include navigations, so start the task at the flow's entry URL first.
+4. **Collect evidence and verify.** Take a batch screenshot of every page, capture the whole free canvas as one PNG, or open **Verify** to check text, DOM, URL, HTTP and console outcomes across all pages. Open **Recordings** to browse the step timeline, replay a session, or export an HTML report. Replay runs the steps on every page, including the primary, but doesn't include navigations, so start the task at the flow's entry URL first.
 5. **Stop.** Every page is torn down and its session data is wiped.
 
 ## Features
@@ -71,10 +71,11 @@ It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with it
 - **Whole-canvas capture.** In free canvas mode, capture every visible page into one `canvas.png`, preserving the arranged layout and adding a labeled placeholder for a page that fails to capture.
 - **Operation recording.** When turned on, every operation goes into a replayable `script.jsonl`, and all pages are screenshotted once the task settles. Popups (DOM dialogs, floating toasts, native `alert`/`confirm`/`prompt`) are captured with their text and, for DOM popups, a screenshot — useful for asserting localized copy.
 - **Recordings browser.** Lists past sessions with a step-by-step timeline, per-page thumbnails and popups inline with the steps. You can replay a session on a running task or export a self-contained HTML report that includes popup text and shots.
+- **Verification checks.** Open **Verify** to run up to five text, DOM, URL, HTTP or console checks on every page. Peapod waits for conditions, captures evidence and reports PASS/FAIL plus cross-page differences in a local HTML report.
 
 ### Automation
-- **MCP server.** A local [Model Context Protocol](https://modelcontextprotocol.io) endpoint, protected by a token, lets an AI agent start, navigate, operate, replay, screenshot, diagnose and stop tasks without using the UI.
-- **Acceptance diagnostics.** Failed navigations report stable error names (`NAME_NOT_RESOLVED`, `TIMEOUT`, …). An opt-in, MCP-only collector also reports the main document's HTTP status, the page text and console, network and error activity, so an agent can check actual outcomes rather than judge from screenshots.
+- **MCP server.** A local [Model Context Protocol](https://modelcontextprotocol.io) endpoint, protected by a token, lets an AI agent start, navigate, operate, replay, screenshot, verify, diagnose and stop tasks without using the UI.
+- **Acceptance diagnostics.** Failed navigations report stable error names (`NAME_NOT_RESOLVED`, `TIMEOUT`, …). Enable **Acceptance diagnostics** in advanced settings (or `diagnostics:true` via MCP) to collect the main document's HTTP status, page text and console, network and error activity from document start.
 - **Per-page JavaScript injection.** Inject a test script at document start on each view. Wait for `DOMContentLoaded` before DOM access, and use `window.peapod.emit(name, payload)` to send bounded events back to `peapod_diagnostics.injectedEvents`.
 
 ### Everyday
@@ -113,7 +114,7 @@ When Peapod starts, it serves a Streamable-HTTP MCP endpoint on a random `127.0.
 | macOS | `~/Library/Application Support/Peapod/mcp.json` |
 | Linux | `~/.config/Peapod/mcp.json` |
 
-Tools: `peapod_status`, `peapod_start`, `peapod_stop`, `peapod_navigate`, `peapod_reload`, `peapod_set_sync`, `peapod_send_operation`, `peapod_replay`, `peapod_screenshot`, `peapod_diagnostics`.
+Tools: `peapod_status`, `peapod_start`, `peapod_stop`, `peapod_navigate`, `peapod_reload`, `peapod_set_sync`, `peapod_send_operation`, `peapod_replay`, `peapod_screenshot`, `peapod_verify`, `peapod_diagnostics`.
 
 Client configuration, the full tool reference, the recording format and an example agent workflow are in **[docs/mcp.md](docs/mcp.md)**. Set `PEAPOD_MCP_DISABLE=1` to turn the server off.
 
@@ -123,13 +124,14 @@ Client configuration, the full tool reference, the recording format and an examp
 - Only `http`/`https` URLs are accepted, and URLs with embedded credentials are rejected.
 - Sessions are ephemeral, and their data is wiped when the task stops.
 - Popups and permission prompts (camera, microphone, notifications, …) are blocked. Each page's IPC is locked to its own origin.
-- Screenshots and recordings stay on your machine, in `Pictures/Peapod/screenshots` and `Pictures/Peapod/recordings`. Recorded scripts do contain other typed text, so treat them as sensitive.
+- Screenshots and recordings stay on your machine, in `Pictures/Peapod/screenshots`, `Pictures/Peapod/recordings` and `Pictures/Peapod/verifications`. Recorded scripts do contain other typed text, so treat them as sensitive.
 - Peapod has no telemetry and does not upload task URLs, page content, cookies, screenshots, or recordings. The update feature retrieves public release metadata and downloads the matching public package only after you click **Download and install**; neither request includes task data.
 - The MCP server listens on loopback only, requires the token on every request and rejects cross-origin browser calls. Page content is untrusted data, and agents must not follow instructions found in it.
 
 ## Known limitations
 
 - **User-Agent presets change only the UA string.** Pages still render in the platform webview, so engine-specific bugs (for example, Safari-only bugs on Windows) can't be reproduced this way.
+- **Verification is intentionally lightweight.** Checks wait for bounded page conditions and compare results; they do not add checkpoint sync, a general test DSL or a full browser automation runner.
 - **Screenshots need a visible, unminimized window.** The webview stops rendering while Peapod is minimized, so captures time out until the window is restored. Pages keep their configured native resolution while the preview is visually scaled, so recording no longer switches the stage layout.
 - **Navigation follow stays on the primary's host.** Followers don't follow links to other sites, by design.
 - **Links that open a new window or tab are blocked**, since popups are disabled.
