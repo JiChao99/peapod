@@ -27,7 +27,7 @@
   <img src="docs/images/mcp-ready-panel.png" alt="Peapod running four locale variants of one site side by side in mobile mode, with per-page sync toggles and a live recording badge">
 </p>
 
-Peapod v0.12.0 opens 2–10 pages in one window. You click, type, scroll and submit on the **primary** page; every other page replays the same operations live, in order. Point the pages at different languages, domains or environments and you can walk through one flow on all of them at once, then keep screenshots and a replayable script of what happened.
+Peapod v0.13.0 opens 2–10 pages in one window. You click, type, scroll and submit on the **primary** page; every other page replays the same operations live, in order. Point the pages at different languages, domains or environments and you can walk through one flow on all of them at once, then keep screenshots and a replayable script of what happened.
 
 It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with its interface made from [Lobe MyGo](https://github.com/lobehub/lobe-mygo) components (the Lobe UI design language for native Go). It ships as a single binary that uses the system webview, with no bundled browser.
 
@@ -88,13 +88,15 @@ Prebuilt packages are available on [GitHub Releases](https://github.com/JiChao99
 
 ### Updates and persistent settings
 
-Peapod includes persistent settings and a built-in updater for [GitHub Releases](https://github.com/JiChao99/peapod/releases). Update checks are **manual by default**; you can opt in to automatic checks. When a newer stable release is available, **Download and install** downloads the matching package, verifies its SHA256 checksum, then installs and restarts Peapod on Windows/Linux. macOS currently opens the release page because no macOS package is published.
+Peapod includes persistent settings and a built-in updater for [GitHub Releases](https://github.com/JiChao99/peapod/releases). Update checks are **manual by default**; you can opt in to automatic checks. When a newer stable release is available, **Download and install** downloads the matching package, verifies its SHA256 checksum, then installs and restarts Peapod on Windows/Linux. macOS ships a Universal DMG for Apple Silicon and Intel Macs, but the in-app updater currently opens the release page.
 
 | Platform | Webview | Notes |
 | --- | --- | --- |
 | Windows 10/11 | WebView2 | Preinstalled on current Windows 10/11. This is the primary tested platform. |
-| macOS | WKWebView | Part of the OS. |
+| macOS | WKWebView | Universal DMG for Apple Silicon and Intel; ad-hoc signed. |
 | Linux | WebKitGTK | Install the WebKitGTK development package from your distro. |
+
+On macOS, download `peapod-<version>.dmg` from Releases, open it, and drag `Peapod.app` to Applications. The current package is ad-hoc signed but not notarized, so Gatekeeper may block it on another Mac; Developer ID signing and notarization remain on the [TODO](docs/TODO.md) list.
 
 ```sh
 git clone https://github.com/JiChao99/peapod.git
@@ -135,7 +137,8 @@ Client configuration, the full tool reference, the recording format and an examp
 - **Screenshots need a visible, unminimized window.** The webview stops rendering while Peapod is minimized, so captures time out until the window is restored. Pages keep their configured native resolution while the preview is visually scaled, so recording no longer switches the stage layout.
 - **Navigation follow stays on the primary's host.** Followers don't follow links to other sites, by design.
 - **Links that open a new window or tab are blocked**, since popups are disabled.
-- **Windows gets the most testing.** macOS and Linux are supported. Linux builds and passes CI; macOS isn't covered by CI yet.
+- **Windows gets the most runtime testing.** macOS and Linux build and pass CI, and macOS publishes a Universal DMG built on a macOS runner. The macOS real-device capability matrix is still pending.
+- **macOS packages are ad-hoc signed and not notarized.** Gatekeeper may block them until Developer ID signing and notarization are configured; see [TODO](docs/TODO.md).
 - **Per-view network throttling is not available yet.** It requires extending MyGo's WebView2 CDP binding on Windows and native request control on macOS/Linux; see [TODO](docs/TODO.md).
 
 ## FAQ
@@ -159,7 +162,7 @@ go vet ./...
 go test ./...
 ```
 
-CI runs the same build, vet and test steps on Windows and Linux. Pushing a `v*` tag also runs the Release workflow, which builds the Windows installer and Linux amd64/arm64 packages, generates `SHA256SUMS`, and publishes the GitHub Release.
+CI runs the same build, vet and test steps on Windows, macOS and Linux. The **Build macOS** workflow also verifies the Universal app bundle and DMG. Pushing a `v*` tag runs the Release workflow, which builds the Windows installer, macOS Universal DMG and Linux amd64/arm64 packages, generates `SHA256SUMS`, and publishes the GitHub Release.
 
 ## Acknowledgements
 

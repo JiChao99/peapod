@@ -27,7 +27,7 @@
   <img src="docs/images/mcp-ready-panel.png" alt="Peapod がモバイル表示で同じサイトの4つの言語バリアントを並行実行。ページごとの同期切り替えとライブ録画バッジを表示">
 </p>
 
-Peapod v0.12.0 は、1つのウィンドウで2〜10個のページを開きます。**メインページ**でクリック、入力、スクロール、送信を行うと、ほかのページが同じ操作を順番にリアルタイムで再生します。各ページを異なる言語、ドメイン、環境に向ければ、同じフローをすべてのバージョンで同時に進めながら、スクリーンショットと再生可能なスクリプトを残せます。
+Peapod v0.13.0 は、1つのウィンドウで2〜10個のページを開きます。**メインページ**でクリック、入力、スクロール、送信を行うと、ほかのページが同じ操作を順番にリアルタイムで再生します。各ページを異なる言語、ドメイン、環境に向ければ、同じフローをすべてのバージョンで同時に進めながら、スクリーンショットと再生可能なスクリプトを残せます。
 
 [MyGo](https://github.com/egoist/mygo) を使ったネイティブの Go アプリで、UI には [Lobe MyGo](https://github.com/lobehub/lobe-mygo) のコンポーネントを採用しています（Lobe UI デザイン言語のネイティブ Go 実装）。単一の実行ファイルで配布され、ブラウザーを同梱せず、システムの WebView を直接利用します。
 
@@ -93,13 +93,15 @@ Peapod v0.12.0 は、1つのウィンドウで2〜10個のページを開きま�
 
 ### 更新と設定の永続化
 
-Peapod は設定の永続化と [GitHub Releases](https://github.com/JiChao99/peapod/releases) の内蔵アップデータを備えています。更新確認は**既定では手動**で、自動確認は任意で有効にできます。新しい安定版があると、「ダウンロードしてインストール」が対応するパッケージを取得し、SHA256 を検証してから Windows/Linux にインストールして Peapod を再起動します。macOS はパッケージ未公開のためリリースページを開きます。
+Peapod は設定の永続化と [GitHub Releases](https://github.com/JiChao99/peapod/releases) の内蔵アップデータを備えています。更新確認は**既定では手動**で、自動確認は任意で有効にできます。新しい安定版があると、「ダウンロードしてインストール」が対応するパッケージを取得し、SHA256 を検証してから Windows/Linux にインストールして Peapod を再起動します。macOS は Apple Silicon と Intel Mac の両方に対応する Universal DMG を公開していますが、アプリ内更新は現在もリリースページを開きます。
 
 | プラットフォーム | WebView | 備考 |
 | --- | --- | --- |
 | Windows 10/11 | WebView2 | 現行の Windows 10/11 にはプリインストール済み。主なテスト対象。 |
-| macOS | WKWebView | OS に内蔵。 |
+| macOS | WKWebView | Apple Silicon と Intel の両方に対応する Universal DMG。ad-hoc 署名。 |
 | Linux | WebKitGTK | ディストリビューションのパッケージマネージャーで WebKitGTK 開発パッケージをインストールしてください。 |
+
+macOS では Releases から `peapod-<version>.dmg` をダウンロードして開き、`Peapod.app` を「アプリケーション」にドラッグします。現在のパッケージは ad-hoc 署名で、公証されていないため、別の Mac では Gatekeeper にブロックされる可能性があります。Developer ID 署名と公証は [TODO](docs/TODO.md) に残しています。
 
 ```sh
 git clone https://github.com/JiChao99/peapod.git
@@ -140,7 +142,8 @@ Peapod の起動時、`127.0.0.1` のランダムなポートで Streamable-HTTP
 - **撮影には表示中のウィンドウが必要です。** Peapod を最小化すると WebView の描画が停止し、ウィンドウを復元するまで撮影がタイムアウトします。ページは設定されたネイティブ解像度を維持し、プレビューだけを視覚的に縮小するため、録画中にステージのレイアウトを切り替えません。
 - **ナビゲーションの追従はメインページのホスト内に限定されます。** 追随ページが別サイトへ移動することはありません。
 - **新しいウィンドウやタブを開くリンクはブロックされます。** ポップアップを無効化しているためです。
-- **Windows が最もテストされています。** macOS と Linux にも対応しています。Linux はビルドと CI を通過していますが、macOS は現時点で CI の対象外です。
+- **Windows が実行時に最もテストされています。** macOS と Linux はビルドと CI を通過し、macOS は macOS Runner で Universal DMG をビルドして公開します。macOS の実機能力マトリクスは未整備です。
+- **macOS パッケージは ad-hoc 署名で、公証されていません。** Developer ID 署名と公証を設定するまで Gatekeeper にブロックされる可能性があります。詳細は [TODO](docs/TODO.md) を参照してください。
 - **ページ別のネットワーク制限は未実装です。** Windows では MyGo の WebView2 CDP 連携、macOS/Linux ではネイティブのリクエスト制御が必要です。詳細は [TODO](docs/TODO.md) を参照してください。
 
 ## よくある質問
@@ -164,7 +167,7 @@ go vet ./...
 go test ./...
 ```
 
-CI は Windows と Linux で同じビルド、vet、テストを実行します。`v*` タグを推送すると Release ワークフローも実行され、Windows インストーラーと Linux amd64/arm64 パッケージをビルドして `SHA256SUMS` を生成し、GitHub Release を公開します。
+CI は Windows、macOS、Linux で同じビルド、vet、テストを実行します。**Build macOS** ワークフローは Universal app bundle と DMG も検証します。`v*` タグを推送すると Release ワークフローが Windows インストーラー、macOS Universal DMG、Linux amd64/arm64 パッケージをビルドし、`SHA256SUMS` を生成して GitHub Release を公開します。
 
 ## 謝辞
 
