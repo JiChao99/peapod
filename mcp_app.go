@@ -73,6 +73,7 @@ func (a *app) navigatePage(id, url string) error {
 	}
 	p := a.pages[id]
 	var view *mygo.WebView
+	var warning navigationWarning
 	if p != nil && !p.closed {
 		// A fragment-only (same-document) move does not reload the document and
 		// emits no new-document load callbacks on some platforms, so preserve the
@@ -93,9 +94,11 @@ func (a *app) navigatePage(id, url string) error {
 		// destination after this URL commits, undoing the requested move.
 		p.pendingNav = ""
 		p.navPendingAt = time.Time{}
+		warning, _ = a.updatePageNavigationWarningsLocked(p, url)
 		view = p.view
 	}
 	a.mu.Unlock()
+	a.notifyMCPNavigationWarning(warning)
 	if view == nil {
 		return fmt.Errorf("unknown page %q", id)
 	}

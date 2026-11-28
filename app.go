@@ -48,10 +48,12 @@ type pageRecord struct {
 	manualNav     bool // suppress follower reconciliation until this explicit load finishes
 	manualNavFrom string
 	lastError     *syncError
-	navError      *navFailure    // failed navigation (DNS/TLS/timeout…); guarded by mu
-	navFailed     bool           // current load attempt failed; gates Linux finish-after-fail; guarded by mu
-	capture       *captureFlight // outstanding CapturePage coalescing concurrent shots; guarded by mu
-	diagnostics   bool           // collect console/network/error evidence from document start
+	navError      *navFailure         // failed navigation (DNS/TLS/timeout…); guarded by mu
+	navWarnURL    string              // requested/current destination for warning policy refresh; guarded by mu
+	navWarnings   []navigationWarning // current URL's MCP local/private warnings; guarded by mu
+	navFailed     bool                // current load attempt failed; gates Linux finish-after-fail; guarded by mu
+	capture       *captureFlight      // outstanding CapturePage coalescing concurrent shots; guarded by mu
+	diagnostics   bool                // collect console/network/error evidence from document start
 	queue         *opQueue
 	injectEvents  []injectedEvent // bounded host events from injected JS; guarded by mu
 	injectTokens  float64
@@ -93,10 +95,11 @@ type pageState struct {
 	// Syncing/Pending expose the replay queue so the panel can show "syncing"
 	// as soon as an operation is queued, instead of leaving the card "ready"
 	// while the follower waits for an anchor.
-	Syncing  bool        `json:"syncing,omitempty"`
-	Pending  int         `json:"pending,omitempty"`
-	Error    *syncError  `json:"error"`
-	NavError *navFailure `json:"navError,omitempty"`
+	Syncing  bool                `json:"syncing,omitempty"`
+	Pending  int                 `json:"pending,omitempty"`
+	Error    *syncError          `json:"error"`
+	NavError *navFailure         `json:"navError,omitempty"`
+	Warnings []navigationWarning `json:"warnings,omitempty"`
 }
 
 // urlDraft keeps runtime URL edits stable while navigation updates the card.
@@ -280,6 +283,7 @@ type app struct {
 	captionTheme            string
 	scalePct                string // UI zoom percent: 100 | 125 | 150
 	defaults                userSettings
+	mcpNavPolicy            mcpNavigationPolicy // guarded by mu; immutable after replacement
 	settingsOpen            bool
 	settingsDraft           userSettings
 	settingsErr             string
@@ -337,6 +341,7 @@ func newApp() *app {
 		themeMode:    "system",
 		scalePct:     "100",
 		defaults:     defaultUserSettings(),
+		mcpNavPolicy: mcpNavigationPolicy{WarnPrivate: true, Allowlist: map[string]bool{}},
 		syncDelay:    "100",
 		lang:         "zh",
 		syncUI:       map[string]*bool{},
@@ -867,6 +872,14 @@ func (a *app) reloadPage(id string) {
 				resync = mapNavigation(primary.base, p.base, primary.url)
 			}
 		}
+		target := resync
+		if target == "" {
+			target = p.navWarnURL
+			if target == "" {
+				target = p.url
+			}
+		}
+		a.updatePageNavigationWarningsLocked(p, target)
 	}
 	a.mu.Unlock()
 	if view != nil {
@@ -914,6 +927,7 @@ func (a *app) gotoPageHome(id string) {
 		p.navPendingAt = time.Time{}
 		view = p.view
 		home = p.base
+		a.updatePageNavigationWarningsLocked(p, home)
 	}
 	a.mu.Unlock()
 	if view != nil && home != "" {
@@ -1378,11 +1392,14 @@ func (a *app) createPages(taskID string, req startRequest, lang string) {
 			return
 		}
 		a.pages[id] = p
+		var warning navigationWarning
+		warning, _ = a.updatePageNavigationWarningsLocked(p, rp.url)
 		a.order = append(a.order, id)
 		if i == 0 {
 			a.primaryID = id
 		}
 		a.mu.Unlock()
+		a.notifyMCPNavigationWarning(warning)
 		if err := view.Page().LoadURL(rp.url); err != nil {
 			a.mu.Lock()
 			p.status = "error"
@@ -1417,13 +1434,19 @@ func (a *app) attachHandlers(p *pageRecord) {
 	page.SetPermissionHandler(func(mygo.PermissionRequest) bool { return false })
 	page.OnWillNavigate(func(e *mygo.NavigateEvent) {
 		a.mu.Lock()
+		var warning navigationWarning
+		var warned bool
 		if !p.closed {
 			p.navSeq++
 			if !sameDocumentURL(p.url, e.URL) && p.status != "paused" {
 				p.status = "loading"
 			}
+			warning, warned = a.updatePageNavigationWarningsLocked(p, e.URL)
 		}
 		a.mu.Unlock()
+		if warned {
+			a.notifyMCPNavigationWarning(warning)
+		}
 		a.pushState()
 	})
 	page.OnDOMReady(func() {
@@ -1450,10 +1473,14 @@ func (a *app) attachHandlers(p *pageRecord) {
 		a.mu.Lock()
 		var targets []followTarget
 		var nav string
+		var warning navigationWarning
+		var warned bool
+		var navWarning navigationWarning
 		view := p.view
 		if !p.closed {
 			p.url = u
 			a.markNavCommittedLocked(p, u)
+			warning, warned = a.updatePageNavigationWarningsLocked(p, u)
 			select {
 			case p.navSignal <- struct{}{}:
 			default:
@@ -1468,14 +1495,22 @@ func (a *app) attachHandlers(p *pageRecord) {
 					p.pendingNav = ""
 				} else {
 					nav = a.reconcileNavLocked(p, false)
+					if nav != "" && len(p.navWarnings) > 0 {
+						navWarning = p.navWarnings[0]
+					}
 				}
 			}
 		}
 		a.mu.Unlock()
+		if warned {
+			a.notifyMCPNavigationWarning(warning)
+		}
 		for _, t := range targets {
+			a.notifyMCPNavigationWarning(t.warning)
 			t.view.Page().LoadURL(t.url)
 		}
 		if nav != "" && view != nil {
+			a.notifyMCPNavigationWarning(navWarning)
 			view.Page().LoadURL(nav)
 		}
 		a.pushState()
@@ -1581,6 +1616,7 @@ func (a *app) snapshot() appState {
 			ID: p.id, Name: p.name, URL: p.url, Status: p.status,
 			SyncOn: p.syncOn, IsPrimary: p.isPrimary, Error: p.lastError, NavError: p.navError,
 			ResW: p.resW, ResH: p.resH, Syncing: syncing, Pending: pending,
+			Warnings: cloneNavigationWarnings(p.navWarnings),
 		})
 		if p.lastError != nil {
 			st.Errors = append(st.Errors, *p.lastError)

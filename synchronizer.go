@@ -160,7 +160,12 @@ func (a *app) finishReplay(p *pageRecord, op operation) {
 	p.replaying = false
 	nav := a.reconcileNavLocked(p, op.Type != "scroll")
 	view := p.view
+	var warning navigationWarning
+	if nav != "" && len(p.navWarnings) > 0 {
+		warning = p.navWarnings[0]
+	}
 	a.mu.Unlock()
+	a.notifyMCPNavigationWarning(warning)
 	if nav != "" && view != nil {
 		view.Page().LoadURL(nav)
 	}
@@ -185,6 +190,7 @@ func (a *app) reconcileNavLocked(p *pageRecord, navigating bool) string {
 	p.pendingNav = ""
 	p.navPendingAt = time.Time{}
 	markNavigationStartedLocked(p)
+	a.updatePageNavigationWarningsLocked(p, nav)
 	return nav
 }
 
@@ -209,9 +215,11 @@ func (a *app) applyNavBarrier(p *pageRecord) {
 			p.pendingNav = ""
 			p.navPendingAt = time.Time{}
 			markNavigationStartedLocked(p)
+			warning, _ := a.updatePageNavigationWarningsLocked(p, target)
 			view := p.view
 			reached := sameFollowURL(target, p.url)
 			a.mu.Unlock()
+			a.notifyMCPNavigationWarning(warning)
 			if reached || view == nil {
 				return
 			}

@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -21,6 +22,8 @@ type userSettings struct {
 	DefaultPrimaryOnly  bool   `json:"defaultPrimaryOnly"`
 	DefaultRecord       bool   `json:"defaultRecord"`
 	DefaultSyncDelay    string `json:"defaultSyncDelay"`
+	MCPWarnPrivate      bool   `json:"mcpWarnPrivate"`
+	MCPPrivateAllowlist string `json:"mcpPrivateAllowlist"`
 }
 
 func defaultUserSettings() userSettings {
@@ -30,6 +33,7 @@ func defaultUserSettings() userSettings {
 		Scale:            "100",
 		DefaultViewMode:  "desktop",
 		DefaultSyncDelay: "100",
+		MCPWarnPrivate:   true,
 	}
 }
 
@@ -54,6 +58,8 @@ func normalizeSettings(s userSettings) userSettings {
 	d.DefaultShareStorage = s.DefaultShareStorage
 	d.DefaultPrimaryOnly = s.DefaultPrimaryOnly
 	d.DefaultRecord = s.DefaultRecord
+	d.MCPWarnPrivate = s.MCPWarnPrivate
+	d.MCPPrivateAllowlist = strings.TrimSpace(s.MCPPrivateAllowlist)
 	return d
 }
 
@@ -72,6 +78,16 @@ func readSettingsFrom(path string) (userSettings, error) {
 	}
 	if err := json.Unmarshal(data, &s); err != nil {
 		return s, err
+	}
+	var presence struct {
+		MCPWarnPrivate *bool `json:"mcpWarnPrivate"`
+	}
+	if err := json.Unmarshal(data, &presence); err != nil {
+		return s, err
+	}
+	s.MCPWarnPrivate = defaultUserSettings().MCPWarnPrivate
+	if presence.MCPWarnPrivate != nil {
+		s.MCPWarnPrivate = *presence.MCPWarnPrivate
 	}
 	return normalizeSettings(s), nil
 }
@@ -141,6 +157,7 @@ func (a *app) applyUserSettings(s userSettings) {
 	a.themeMode = s.Theme
 	a.scalePct = s.Scale
 	a.applyTaskDefaults(s)
+	a.setMCPNavigationPolicy(s)
 }
 
 func (a *app) applyTaskDefaults(s userSettings) {
@@ -276,6 +293,7 @@ func (a *app) saveSettingsTo(path string) {
 	taskChanged := taskDefaultsChanged(previous, s)
 	modeChanged := previous.DefaultViewMode != s.DefaultViewMode
 	a.defaults = s
+	a.setMCPNavigationPolicy(s)
 	a.lang = s.Lang
 	a.langVal.Store(s.Lang)
 	a.themeMode = s.Theme

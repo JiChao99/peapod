@@ -74,8 +74,10 @@ jobs:
           const decodeEntities = value => value
             .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
             .replace(/&quot;/g, '"').replace(/&#39;/g, "'");
-          const normalize = value => decodeEntities(value).replace(/\s+/g, ' ').trim();
-          for (const match of html.matchAll(/<(p|span|h2|h3|strong)\b[^>]*\bdata-i18n="([^"]+)"[^>]*>([^<]+)<\/\1>/g)) {
+          const normalize = value => decodeEntities(value)
+            .replace(/<br\s*\/?>/gi, '<br>')
+            .replace(/\s+/g, ' ').trim();
+          for (const match of html.matchAll(/<(p|span|h2|h3|strong)\b[^>]*\bdata-i18n="([^"]+)"[^>]*>([\s\S]*?)<\/\1>/g)) {
             const [, , key, text] = match;
             if (dictionaries.en[key] && normalize(text) !== normalize(dictionaries.en[key])) {
               throw new Error(`Landing page default text differs from en translation: ${key}`);

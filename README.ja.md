@@ -27,7 +27,7 @@
   <img src="docs/images/mcp-ready-panel.png" alt="Peapod がモバイル表示で同じサイトの4つの言語バリアントを並行実行。ページごとの同期切り替えとライブ録画バッジを表示">
 </p>
 
-Peapod v0.14.0 は、1つのウィンドウで2〜10個のページを開きます。**メインページ**でクリック、入力、スクロール、送信を行うと、ほかのページが同じ操作を順番にリアルタイムで再生します。各ページを異なる言語、ドメイン、環境に向ければ、同じフローをすべてのバージョンで同時に進めながら、スクリーンショットと再生可能なスクリプトを残せます。
+Peapod v0.15.0 は、1つのウィンドウで2〜10個のページを開きます。**メインページ**でクリック、入力、スクロール、送信を行うと、ほかのページが同じ操作を順番にリアルタイムで再生します。各ページを異なる言語、ドメイン、環境に向ければ、同じフローをすべてのバージョンで同時に進めながら、スクリーンショットと再生可能なスクリプトを残せます。
 
 [MyGo](https://github.com/egoist/mygo) を使ったネイティブの Go アプリで、UI には [Lobe MyGo](https://github.com/lobehub/lobe-mygo) のコンポーネントを採用しています（Lobe UI デザイン言語のネイティブ Go 実装）。単一の実行ファイルで配布され、ブラウザーを同梱せず、システムの WebView を直接利用します。
 
@@ -124,6 +124,8 @@ Peapod の起動時、`127.0.0.1` のランダムなポートで Streamable-HTTP
 ツール：`peapod_status`、`peapod_start`、`peapod_stop`、`peapod_navigate`、`peapod_reload`、`peapod_set_sync`、`peapod_send_operation`、`peapod_replay`、`peapod_screenshot`、`peapod_verify`、`peapod_diagnostics`。
 
 クライアント設定、ツールの完全なリファレンス、録画フォーマット、エージェントの使用例は **[docs/mcp.md](docs/mcp.md)** を参照してください。`PEAPOD_MCP_DISABLE=1` を設定すると、サーバーを無効にできます。
+
+MCP による localhost、ループバック、プライベート、リンクローカル、mDNS アドレスへの移動は、既定では警告のみでブロックしません。`peapod_start`、`peapod_navigate`、`peapod_status` の各ページに `warnings` が含まれ、リダイレクトや追随ページの変換後 URL でも更新されます。設定の完全一致ホスト/IP 許可リストで警告だけを抑止でき、アクセス権限は変わりません。Peapod は宛先の分類に DNS 解決を使用しません。
 
 ## プライバシーとセキュリティ
 

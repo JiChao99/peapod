@@ -27,7 +27,7 @@
   <img src="docs/images/mcp-ready-panel.png" alt="Peapod running four locale variants of one site side by side in mobile mode, with per-page sync toggles and a live recording badge">
 </p>
 
-Peapod v0.14.0 opens 2–10 pages in one window. You click, type, scroll and submit on the **primary** page; every other page replays the same operations live, in order. Point the pages at different languages, domains or environments and you can walk through one flow on all of them at once, then keep screenshots and a replayable script of what happened.
+Peapod v0.15.0 opens 2–10 pages in one window. You click, type, scroll and submit on the **primary** page; every other page replays the same operations live, in order. Point the pages at different languages, domains or environments and you can walk through one flow on all of them at once, then keep screenshots and a replayable script of what happened.
 
 It is a native Go app built with [MyGo](https://github.com/egoist/mygo), with its interface made from [Lobe MyGo](https://github.com/lobehub/lobe-mygo) components (the Lobe UI design language for native Go). It ships as a single binary that uses the system webview, with no bundled browser.
 
@@ -119,6 +119,8 @@ When Peapod starts, it serves a Streamable-HTTP MCP endpoint on a random `127.0.
 Tools: `peapod_status`, `peapod_start`, `peapod_stop`, `peapod_navigate`, `peapod_reload`, `peapod_set_sync`, `peapod_send_operation`, `peapod_replay`, `peapod_screenshot`, `peapod_verify`, `peapod_diagnostics`.
 
 Client configuration, the full tool reference, the recording format and an example agent workflow are in **[docs/mcp.md](docs/mcp.md)**. Set `PEAPOD_MCP_DISABLE=1` to turn the server off.
+
+MCP navigation to localhost, loopback, private, link-local or mDNS addresses is warned about by default but is never blocked. `peapod_start`, `peapod_navigate` and each page's `peapod_status` entry expose `warnings`; redirects and mapped follower URLs update them. In Settings, the exact-host/IP allowlist suppresses those warnings without changing access. Peapod does not resolve DNS to classify destinations.
 
 ## Privacy and security
 

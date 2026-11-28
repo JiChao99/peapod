@@ -203,8 +203,9 @@ func mergeFollowQuery(rawQuery string, primaryQuery, followerQuery url.Values) s
 // followTarget is one follower navigation decided under the lock and applied
 // after it is released.
 type followTarget struct {
-	view *mygo.WebView
-	url  string
+	view    *mygo.WebView
+	url     string
+	warning navigationWarning
 }
 
 // followTargets decides which followers load a mapped URL after the primary
@@ -250,7 +251,8 @@ func (a *app) followTargets(primary *pageRecord, raw string) []followTarget {
 		}
 		f.pendingNav = ""
 		markNavigationStartedLocked(f)
-		targets = append(targets, followTarget{view: f.view, url: target})
+		warning, _ := a.updatePageNavigationWarningsLocked(f, target)
+		targets = append(targets, followTarget{view: f.view, url: target, warning: warning})
 	}
 	return targets
 }
