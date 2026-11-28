@@ -872,6 +872,14 @@ func (a *app) reloadPage(id string) {
 				resync = mapNavigation(primary.base, p.base, primary.url)
 			}
 		}
+		target := resync
+		if target == "" {
+			target = p.navWarnURL
+			if target == "" {
+				target = p.url
+			}
+		}
+		a.updatePageNavigationWarningsLocked(p, target)
 	}
 	a.mu.Unlock()
 	if view != nil {
@@ -919,6 +927,7 @@ func (a *app) gotoPageHome(id string) {
 		p.navPendingAt = time.Time{}
 		view = p.view
 		home = p.base
+		a.updatePageNavigationWarningsLocked(p, home)
 	}
 	a.mu.Unlock()
 	if view != nil && home != "" {

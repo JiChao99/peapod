@@ -158,6 +158,26 @@ func TestMCPNavigationPolicyRefreshesExistingPages(t *testing.T) {
 	}
 }
 
+func TestPanelNavigationUpdatesRequestedWarningURL(t *testing.T) {
+	a, primary := followFixture()
+	a.status = "running"
+	follower := a.pages["p2"]
+	follower.base = "http://127.0.0.1:8099"
+	a.reloadPage("p2")
+	if follower.navWarnURL != "http://127.0.0.1:8099/step2" || len(follower.navWarnings) != 1 {
+		t.Fatalf("resync warning target = %q, warnings = %+v", follower.navWarnURL, follower.navWarnings)
+	}
+	a.gotoPageHome("p2")
+	if follower.navWarnURL != "http://127.0.0.1:8099" || len(follower.navWarnings) != 1 {
+		t.Fatalf("home warning target = %q, warnings = %+v", follower.navWarnURL, follower.navWarnings)
+	}
+	primary.navWarnURL = "https://a.com/current"
+	a.reloadPage("p1")
+	if primary.navWarnURL != "https://a.com/current" || len(primary.navWarnings) != 0 {
+		t.Fatalf("reload warning target = %q, warnings = %+v", primary.navWarnURL, primary.navWarnings)
+	}
+}
+
 func TestMCPNavigationPolicyRefreshUsesRequestedURL(t *testing.T) {
 	a := newApp()
 	publicInFlight := &pageRecord{id: "p1", url: "http://127.0.0.1:8099/old", navWarnURL: "https://example.com/next"}
