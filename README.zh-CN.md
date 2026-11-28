@@ -27,7 +27,7 @@
   <img src="docs/images/mcp-ready-panel.png" alt="Peapod 在移动端模式下同屏对比同一站点的四个语言变体，面板显示每页同步开关与实时录制徽标">
 </p>
 
-Peapod v0.12.0 在一个窗口里同时打开 2–10 个页面。你在**主页面**上点击、输入、滚动、提交，其余页面会按相同顺序实时回放这些操作。把各个页面指向不同的语言、域名或环境，一条流程就能在所有变体上同时走一遍，并留下截图和可回放的脚本。
+Peapod v0.13.0 在一个窗口里同时打开 2–10 个页面。你在**主页面**上点击、输入、滚动、提交，其余页面会按相同顺序实时回放这些操作。把各个页面指向不同的语言、域名或环境，一条流程就能在所有变体上同时走一遍，并留下截图和可回放的脚本。
 
 这是一款基于 [MyGo](https://github.com/egoist/mygo) 的原生 Go 应用，界面采用 [Lobe MyGo](https://github.com/lobehub/lobe-mygo) 组件（Lobe UI 设计语言的原生 Go 实现）：单个二进制，直接使用系统 webview，不内置浏览器。
 
@@ -88,13 +88,15 @@ Peapod v0.12.0 在一个窗口里同时打开 2–10 个页面。你在**主页�
 
 ### 更新与持久化设置
 
-Peapod 内置持久化设置和面向 [GitHub Releases](https://github.com/JiChao99/peapod/releases) 的更新器。更新检查**默认手动执行**，也可主动开启自动检查。发现新稳定版后，点击“下载并安装”会下载匹配的发布包、校验 SHA256，然后在 Windows/Linux 上安装并重启 Peapod；macOS 因暂无安装包，暂时打开发布页。
+Peapod 内置持久化设置和面向 [GitHub Releases](https://github.com/JiChao99/peapod/releases) 的更新器。更新检查**默认手动执行**，也可主动开启自动检查。发现新稳定版后，点击“下载并安装”会下载匹配的发布包、校验 SHA256，然后在 Windows/Linux 上安装并重启 Peapod；macOS 已提供同时支持 Apple Silicon 与 Intel Mac 的 Universal DMG，但应用内更新暂时仍会打开发布页。
 
 | 平台 | Webview | 说明 |
 | --- | --- | --- |
 | Windows 10/11 | WebView2 | 当前版本的 Windows 10/11 已预装；主要测试平台 |
-| macOS | WKWebView | 系统自带 |
+| macOS | WKWebView | 同时支持 Apple Silicon 与 Intel 的 Universal DMG；ad-hoc 签名。 |
 | Linux | WebKitGTK | 通过发行版的包管理器安装 WebKitGTK 开发包 |
+
+macOS 用户可从 Releases 下载 `peapod-<version>.dmg`，打开后把 `Peapod.app` 拖入“应用程序”。当前安装包使用 ad-hoc 签名且尚未公证，因此在另一台 Mac 上可能被 Gatekeeper 拦截；Developer ID 签名与公证仍列在 [TODO](docs/TODO.md) 中。
 
 ```sh
 git clone https://github.com/JiChao99/peapod.git
@@ -135,7 +137,8 @@ Peapod 启动后，会在 `127.0.0.1` 的随机端口上提供 Streamable-HTTP M
 - **截图要求窗口可见且不能最小化**：Peapod 窗口最小化时 webview 会停止渲染，截图会超时，直到窗口恢复。页面始终保持配置的原生分辨率，仅对预览做视觉缩放，因此录制不再切换舞台布局。
 - **导航跟随只在主页面所在主机内生效**：跟随页不会跟着跳到其他站点，这是有意的设计。
 - **打开新窗口或新标签页的链接会被拦截**，因为弹窗已被禁用。
-- **Windows 测试最充分**：macOS 与 Linux 均受支持；Linux 可构建并通过 CI，macOS 暂未纳入 CI。
+- **Windows 运行测试最充分**：macOS 与 Linux 均可构建并通过 CI，macOS 还会在 macOS Runner 上构建并发布 Universal DMG；macOS 真机能力矩阵仍待补充。
+- **macOS 安装包使用 ad-hoc 签名且尚未公证**：在配置 Developer ID 签名与公证前，Gatekeeper 可能拦截安装，详见 [TODO](docs/TODO.md)。
 - **暂不支持每视图弱网模拟**：Windows 需扩展 MyGo 的 WebView2 CDP 绑定，macOS/Linux 需原生请求控制，详见 [TODO](docs/TODO.md)。
 
 ## 常见问题
@@ -159,7 +162,7 @@ go vet ./...
 go test ./...
 ```
 
-CI 会在 Windows 和 Linux 上运行相同的构建、vet 和测试步骤。推送 `v*` tag 后，Release 工作流还会构建 Windows 安装包与 Linux amd64/arm64 包、生成 `SHA256SUMS` 并发布 GitHub Release。
+CI 会在 Windows、macOS 和 Linux 上运行相同的构建、vet 和测试步骤；**Build macOS** 工作流还会校验 Universal app bundle 与 DMG。推送 `v*` tag 后，Release 工作流会构建 Windows 安装包、macOS Universal DMG 和 Linux amd64/arm64 包，生成 `SHA256SUMS` 并发布 GitHub Release。
 
 ## 致谢
 

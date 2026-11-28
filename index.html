@@ -83,7 +83,7 @@
         <div class="hero-orb orb-two"></div>
         <div class="container hero-grid">
           <div class="hero-copy reveal">
-            <div class="eyebrow"><span class="status-dot"></span><span data-i18n="hero.badge">v0.12.0 · Open-source desktop app</span></div>
+            <div class="eyebrow"><span class="status-dot"></span><span data-i18n="hero.badge">v0.13.0 · Open-source desktop app</span></div>
             <h1><span data-i18n="hero.title1">Repeat less. </span><span class="accent-text" data-i18n="hero.title2">Know more.</span></h1>
             <p class="hero-description" data-i18n="hero.description">Run one flow across languages, environments, and devices — side by side, in sync, with evidence at every step.</p>
             <div class="hero-actions">
@@ -194,13 +194,13 @@
             <article class="feature-card feature-large reveal">
               <div class="feature-icon"><svg class="icon"><use href="#i-play"/></svg></div>
               <h3 data-i18n="features.evidenceTitle">Record, replay, and keep popup evidence</h3>
-              <p data-i18n="features.evidenceBody">Browse a step timeline, replay sessions, and export a self-contained HTML report. DOM dialogs, floating toasts, and native prompts keep their text; DOM popups also keep a screenshot.</p>
+              <p data-i18n="features.evidenceBody">Browse a step timeline, replay sessions, run text/DOM/URL/HTTP/console checks, and export PASS/FAIL reports with per-page screenshots and cross-page differences.</p>
               <div class="evidence-tags"><span>script.jsonl</span><span>screenshots/</span><span>report.html</span></div>
             </article>
             <article class="feature-card feature-large reveal">
               <div class="feature-icon"><svg class="icon"><use href="#i-bot"/></svg></div>
               <h3 data-i18n="features.mcpTitle">Let an AI agent take the wheel</h3>
-              <p data-i18n="features.mcpBody">A token-protected local MCP server lets agents start, navigate, operate, replay, screenshot, diagnose, and stop tasks without using the UI.</p>
+              <p data-i18n="features.mcpBody">A token-protected local MCP server lets agents start, navigate, operate, replay, screenshot, verify, diagnose, and stop tasks without using the UI.</p>
               <div class="code-line"><span>peapod</span>_screenshot <span>→</span> <i></i></div>
             </article>
             <article class="feature-card reveal">
@@ -260,7 +260,7 @@
             <article class="step"><span class="step-number">01</span><div><h3 data-i18n="how.step1Title">Add your pages</h3><p data-i18n="how.step1Body">Paste a URL list or use a variable template. Configure up to 10 language, environment, or device pages at once.</p></div><svg class="icon step-icon"><use href="#i-globe"/></svg></article>
             <article class="step"><span class="step-number">02</span><div><h3 data-i18n="how.step2Title">Choose and save a setup</h3><p data-i18n="how.step2Body">Pick a layout, resolutions, User-Agent, session isolation, primary-only input, and recording. Save it all as a reusable profile.</p></div><svg class="icon step-icon"><use href="#i-profile"/></svg></article>
             <article class="step"><span class="step-number">03</span><div><h3 data-i18n="how.step3Title">Operate as usual</h3><p data-i18n="how.step3Body">Complete the flow on the primary page. Followers stay in sync. Edit any running URL in place without losing its session or cookies.</p></div><svg class="icon step-icon"><use href="#i-cursor"/></svg></article>
-            <article class="step"><span class="step-number">04</span><div><h3 data-i18n="how.step4Title">Capture, replay, export</h3><p data-i18n="how.step4Body">Take configured-resolution screenshots or one whole-canvas PNG. Review recordings, popup evidence, and replays, then export an HTML report.</p></div><svg class="icon step-icon"><use href="#i-camera"/></svg></article>
+            <article class="step"><span class="step-number">04</span><div><h3 data-i18n="how.step4Title">Capture, replay, export</h3><p data-i18n="how.step4Body">Take configured-resolution screenshots, review recordings, run verification checks, then export PASS/FAIL and difference reports.</p></div><svg class="icon step-icon"><use href="#i-camera"/></svg></article>
           </div>
         </div>
       </section>
@@ -269,9 +269,9 @@
         <div class="container">
           <div class="install-panel reveal">
             <div class="install-copy">
-              <span class="section-kicker" data-i18n="install.kicker">v0.12.0 · Install or build from source</span>
+              <span class="section-kicker" data-i18n="install.kicker">v0.13.0 · Install or build from source</span>
               <h2 data-i18n="install.title">One download.<br>A better QA loop.</h2>
-              <p data-i18n="install.description">Prebuilt packages are available on GitHub Releases, or build from source with no extra browser to install. Source builds need Go 1.27.4+ and your system WebView.</p>
+              <p data-i18n="install.description">Prebuilt Windows installer, macOS Universal DMG and Linux packages are available on GitHub Releases, or build from source with no extra browser to install. Source builds need Go 1.27.4+ and your system WebView.</p>
               <a class="text-link install-release-link" href="https://github.com/jichao99/peapod/releases" target="_blank" rel="noreferrer"><span data-i18n="install.releases">Download from GitHub Releases</span><svg class="icon small"><use href="#i-arrow-up-right"/></svg></a>
               <div class="install-requirements"><span><svg class="icon small"><use href="#i-check"/></svg>Go 1.27.4+</span><span><svg class="icon small"><use href="#i-check"/></svg><span data-i18n="install.webview">System WebView</span></span><span><svg class="icon small"><use href="#i-check"/></svg><span data-i18n="install.binary">Single binary</span></span></div>
             </div>
@@ -289,20 +289,20 @@
 
           <div class="release-panel reveal">
             <div class="release-intro">
-              <span class="release-label" data-i18n="release.kicker">New in v0.12.0</span>
-              <h3 data-i18n="release.title">Verify outcomes.<br>See every difference.</h3>
+              <span class="release-label" data-i18n="release.kicker">New in v0.13.0</span>
+              <h3 data-i18n="release.title">Universal macOS.<br>Built in CI.</h3>
             </div>
             <div class="release-item">
               <svg class="icon"><use href="#i-profile"/></svg>
-              <div><strong data-i18n="release.verifyTitle">Text, DOM, URL, HTTP & console checks</strong><p data-i18n="release.verifyBody">Run up to five explicit checks on every page and wait for conditions without writing a test script.</p></div>
+              <div><strong data-i18n="release.macosTitle">One DMG for Apple Silicon & Intel</strong><p data-i18n="release.macosBody">A macOS runner builds Peapod.app, checks both architectures and creates the Universal disk image.</p></div>
             </div>
             <div class="release-item">
               <svg class="icon"><use href="#i-terminal"/></svg>
-              <div><strong data-i18n="release.reportTitle">PASS/FAIL difference reports</strong><p data-i18n="release.reportBody">Compare actual values across variants, keep per-page screenshots, and export a local HTML report.</p></div>
+              <div><strong data-i18n="release.ciTitle">Verified bundle, not just a cross-compile</strong><p data-i18n="release.ciBody">CI checks the bundle ID, version, lipo architectures, ad-hoc signature and DMG integrity.</p></div>
             </div>
             <div class="release-item">
               <svg class="icon"><use href="#i-sync"/></svg>
-              <div><strong data-i18n="release.noteTitle">Intentionally lightweight</strong><p data-i18n="release.note">No test DSL, checkpoint sync, or general automation runner.</p></div>
+              <div><strong data-i18n="release.signTitle">Signing stays honest</strong><p data-i18n="release.signBody">Developer ID signing and notarization remain TODO; Gatekeeper may block the current ad-hoc build.</p></div>
             </div>
           </div>
         </div>
@@ -313,10 +313,10 @@
           <div class="reveal"><span class="section-kicker" data-i18n="faq.kicker">FAQ</span><h2 data-i18n="faq.title">Good to know.</h2><p data-i18n="faq.description">How Peapod works — and where its boundaries are.</p></div>
           <div class="faq-list reveal reveal-delay">
             <details><summary><span data-i18n="faq.q1">How is this different from a responsive previewer?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a1">Responsive previewers usually show one URL at several viewport sizes. Peapod runs several versions of a complete flow, with mapped navigation, reusable setups, and evidence for every step.</p></details>
-            <details><summary><span data-i18n="faq.q2">Does Peapod send my task data anywhere?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a2">Peapod has no telemetry. Task URLs, page content, cookies, screenshots, and recordings are not uploaded by Peapod. Optional release checks contact GitHub only for public release metadata and include no task data.</p></details>
-            <details><summary><span data-i18n="faq.q3">How do update checks work?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a3">Checks are manual by default. On Windows/Linux, Download and install fetches the matching package, verifies SHA256, installs, and restarts Peapod. macOS opens the release page.</p></details>
+            <details><summary><span data-i18n="faq.q2">Does Peapod send my task data anywhere?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a2">Peapod has no telemetry. Task URLs, page content, cookies, screenshots, and recordings are not uploaded. Updates fetch public metadata and, only after Download and install, the matching public package without task data.</p></details>
+            <details><summary><span data-i18n="faq.q3">How do update checks work?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a3">Checks are manual by default. On Windows/Linux, Download and install fetches the matching package, verifies SHA256, installs, and restarts Peapod. macOS opens the release page, where the Universal DMG is available.</p></details>
             <details><summary><span data-i18n="faq.q4">Can it reproduce Safari-specific bugs?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a4">User-Agent presets only change the UA string. Pages still render in your platform WebView, so engine-specific Safari bugs cannot be reproduced this way.</p></details>
-            <details><summary><span data-i18n="faq.q5">Which platforms are supported?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a5">Windows, macOS, and Linux via WebView2, WKWebView, and WebKitGTK respectively. Windows is currently the most thoroughly tested platform.</p></details>
+            <details><summary><span data-i18n="faq.q5">Which platforms are supported?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a5">Windows, macOS, and Linux via WebView2, WKWebView, and WebKitGTK respectively. All three build and pass CI; macOS publishes a Universal DMG, while Windows remains the most thoroughly runtime-tested platform.</p></details>
             <details><summary><span data-i18n="faq.q6">Can I simulate a slow network?</span><svg class="icon"><use href="#i-arrow-right"/></svg></summary><p data-i18n="faq.a6">Not yet. Per-view offline, latency, and throughput control requires extending the WebView backend; see the project TODO.</p></details>
           </div>
         </div>
@@ -328,7 +328,7 @@
           <span class="section-kicker" data-i18n="cta.kicker">Open source · Local-first · Built for focus</span>
           <h2 data-i18n="cta.title">Repeat less. Know more.</h2>
           <p data-i18n="cta.description">Let Peapod watch every other page while you focus on the one that matters.</p>
-          <div class="hero-actions"><a class="button button-light" href="https://github.com/jichao99/peapod/releases" target="_blank" rel="noreferrer"><svg class="icon"><use href="#i-github"/></svg><span data-i18n="cta.button">Get Peapod v0.12.0</span><svg class="icon small"><use href="#i-arrow-up-right"/></svg></a><a class="button button-dark-ghost" href="https://github.com/jichao99/peapod/#quick-start" target="_blank" rel="noreferrer"><svg class="icon"><use href="#i-arrow-right"/></svg><span data-i18n="cta.docs">Quick start</span></a></div>
+          <div class="hero-actions"><a class="button button-light" href="https://github.com/jichao99/peapod/releases" target="_blank" rel="noreferrer"><svg class="icon"><use href="#i-github"/></svg><span data-i18n="cta.button">Get Peapod</span><svg class="icon small"><use href="#i-arrow-up-right"/></svg></a><a class="button button-dark-ghost" href="https://github.com/jichao99/peapod/#quick-start" target="_blank" rel="noreferrer"><svg class="icon"><use href="#i-arrow-right"/></svg><span data-i18n="cta.docs">Quick start</span></a></div>
         </div>
       </section>
     </main>

@@ -9,7 +9,7 @@ jobs:
   build:
     strategy:
       matrix:
-        os: [windows-latest, ubuntu-latest]
+        os: [windows-latest, ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -32,6 +32,7 @@ jobs:
           node --input-type=module <<'NODE'
           import { existsSync, readFileSync } from 'node:fs';
           import { dirname, resolve } from 'node:path';
+          import vm from 'node:vm';
 
           const root = process.cwd();
           const html = readFileSync(resolve(root, 'index.html'), 'utf8');
@@ -54,4 +55,31 @@ jobs:
             const path = resolve(base, ref.replace(/^\.\//, '').replace(/^\//, ''));
             if (!existsSync(path)) throw new Error(`Missing landing page asset: ${ref}`);
           }
+
+          const siteJS = readFileSync(resolve(root, 'site/assets/site.js'), 'utf8');
+          const boundary = siteJS.indexOf('const supportedLanguages');
+          if (boundary < 0) throw new Error('Landing page translations boundary not found');
+          const context = vm.createContext({});
+          vm.runInContext(siteJS.slice(0, boundary) + '\nglobalThis.translations = translations;', context);
+          const dictionaries = context.translations;
+          const englishKeys = Object.keys(dictionaries.en).sort();
+          for (const lang of ['zh', 'zh-TW', 'ja']) {
+            const keys = Object.keys(dictionaries[lang]).sort();
+            const missing = englishKeys.filter(key => !keys.includes(key));
+            const extra = keys.filter(key => !englishKeys.includes(key));
+            if (missing.length || extra.length) {
+              throw new Error(`${lang} translation keys: missing=${missing.join(',')} extra=${extra.join(',')}`);
+            }
+          }
+          const decodeEntities = value => value
+            .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+            .replace(/&quot;/g, '"').replace(/&#39;/g, "'");
+          const normalize = value => decodeEntities(value).replace(/\s+/g, ' ').trim();
+          for (const match of html.matchAll(/<(p|span|h2|h3|strong)\b[^>]*\bdata-i18n="([^"]+)"[^>]*>([^<]+)<\/\1>/g)) {
+            const [, , key, text] = match;
+            if (dictionaries.en[key] && normalize(text) !== normalize(dictionaries.en[key])) {
+              throw new Error(`Landing page default text differs from en translation: ${key}`);
+            }
+          }
+          console.log(`landing assets and translations ok (${refs.length} refs, ${englishKeys.length} keys)`);
           NODE

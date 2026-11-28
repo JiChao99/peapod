@@ -16,6 +16,8 @@ jobs:
         include:
           - name: windows-amd64
             os: windows-latest
+          - name: macos-universal
+            os: macos-latest
           - name: linux
             os: ubuntu-latest
     runs-on: ${{ matrix.os }}
@@ -51,6 +53,15 @@ jobs:
         if: runner.os == 'Windows'
         run: go tool mygo build
 
+      - name: Build macOS Universal app and DMG
+        if: runner.os == 'macOS'
+        run: go tool mygo build -platform darwin/universal
+
+      - name: Verify macOS Universal package
+        if: runner.os == 'macOS'
+        shell: bash
+        run: bash scripts/verify-macos-package.sh build/darwin-universal
+
       - name: Build Linux amd64 and arm64 packages
         if: runner.os == 'Linux'
         run: |
@@ -63,6 +74,8 @@ jobs:
           mkdir -p dist
           if [[ "$RUNNER_OS" == 'Windows' ]]; then
             cp "build/windows-amd64/peapod-setup-${PACKAGE_VERSION}-amd64.exe" dist/
+          elif [[ "$RUNNER_OS" == 'macOS' ]]; then
+            cp build/darwin-universal/*.dmg dist/
           else
             cp "build/linux-amd64/peapod-${PACKAGE_VERSION}-linux-amd64.tar.gz" dist/
             cp "build/linux-arm64/peapod-${PACKAGE_VERSION}-linux-arm64.tar.gz" dist/

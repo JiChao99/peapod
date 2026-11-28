@@ -1,0 +1,60 @@
+name: Build macOS
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - '.github/workflows/build-macos.yml'
+      - '.github/workflows/release.yml'
+      - 'assets/**'
+      - '**/*.go'
+      - 'go.mod'
+      - 'go.sum'
+      - 'mygo.json'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build, vet and test
+        run: |
+          go build ./...
+          go vet ./...
+          go test ./...
+
+      - name: Build macOS Universal
+        run: go tool mygo build -platform darwin/universal
+
+      - name: Verify app bundle and disk image
+        shell: bash
+        run: bash scripts/verify-macos-package.sh build/darwin-universal
+
+      - name: Archive app bundle
+        shell: bash
+        run: |
+          version="$(node -p "require('./mygo.json').version")"
+          tar -czf "build/darwin-universal/peapod-${version}-macos-universal-app.tar.gz" -C build/darwin-universal Peapod.app
+
+      - name: Upload macOS packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: peapod-macos-universal
+          path:
+            build/darwin-universal/peapod-*-macos-universal-app.tar.gz
+            build/darwin-universal/peapod-*.dmg
+          if-no-files-found: error
+          retention-days: 14
